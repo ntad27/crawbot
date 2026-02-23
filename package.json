@@ -36,6 +36,8 @@
         "package:win": "vite build && zx scripts/bundle-openclaw.mjs && electron-builder --win",
         "package:linux": "vite build && zx scripts/bundle-openclaw.mjs && electron-builder --linux",
         "release": "pnpm run uv:download && vite build && electron-builder --publish always",
+        "release:prepare": "zx scripts/release.mjs",
+        "release:rebuild": "zx scripts/release.mjs --rebuild",
         "version:patch": "pnpm version patch",
         "version:minor": "pnpm version minor",
         "version:major": "pnpm version major",
