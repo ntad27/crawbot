@@ -179,7 +179,7 @@
     "about": {
         "title": "About",
         "appName": "CrawBot",
-        "tagline": "Graphical AI Assistant",
+        "tagline": "Personal Agentic AI Assistant",
         "basedOn": "Based on OpenClaw",
         "version": "Version {{version}}",
         "docs": "Website",

@@ -179,7 +179,7 @@
     "about": {
         "title": "Giới thiệu",
         "appName": "CrawBot",
-        "tagline": "Trợ lý AI đồ họa",
+        "tagline": "Trợ lý AI cá nhân tự chủ hoàn toàn",
         "basedOn": "Dựa trên OpenClaw",
         "version": "Phiên bản {{version}}",
         "docs": "Trang web",
