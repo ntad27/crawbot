@@ -6,7 +6,7 @@
 <h1 align="center">CrawBot</h1>
 
 <p align="center">
-  <strong>Giao diện Desktop cho Trợ lý AI OpenClaw</strong>
+  <strong>Trợ lý AI Agent tự chủ hoàn toàn cho người không rành công nghệ</strong>
 </p>
 
 <p align="center">
