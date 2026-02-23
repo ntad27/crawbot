@@ -62,6 +62,7 @@
     "id": "ID Agent",
     "idPlaceholder": "vd: dev, main, assistant",
     "idHelp": "Định danh duy nhất (chữ thường, không dấu cách)",
+    "idDuplicate": "Agent với ID này đã tồn tại",
     "name": "Tên Agent",
     "namePlaceholder": "vd: Dev Agent, Trợ lý chính",
     "emoji": "Biểu tượng",
@@ -86,12 +87,13 @@
     "selectFolder": "Chọn thư mục",
     "newFolder": "Thư mục mới...",
     "newFolderName": "Tên thư mục",
-    "newFolderPlaceholder": "vd: workspace-dev",
+    "newFolderPlaceholder": "vd: dev, research",
     "create": "Tạo",
     "cancel": "Hủy",
     "creating": "Đang tạo...",
     "created": "Đã tạo thư mục",
-    "createFailed": "Không thể tạo thư mục"
+    "createFailed": "Không thể tạo thư mục",
+    "folderDuplicate": "Thư mục workspace này đã tồn tại"
   },
   "toast": {
     "created": "Đã tạo agent",

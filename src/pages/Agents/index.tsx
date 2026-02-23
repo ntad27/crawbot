@@ -137,8 +137,9 @@ function WorkspaceSelector({
   }, []);
 
   const handleCreateFolder = async () => {
-    const name = newFolderName.trim().replace(/[^a-zA-Z0-9._-]/g, '');
-    if (!name) return;
+    const suffix = newFolderName.trim().replace(/[^a-zA-Z0-9._-]/g, '');
+    if (!suffix) return;
+    const name = `workspace-${suffix}`;
     setCreating(true);
     try {
       const result = (await window.electron.ipcRenderer.invoke('agent:createFolder', name)) as {
@@ -194,28 +195,40 @@ function WorkspaceSelector({
         </Button>
       </div>
 
-      {showNewFolder && (
-        <div className="flex gap-2 items-center p-2 rounded-md border bg-muted/50">
-          <Input
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value.replace(/[^a-zA-Z0-9._-]/g, ''))}
-            placeholder={t('workspace.newFolderPlaceholder')}
-            className="flex-1 h-8 text-sm"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreateFolder();
-              if (e.key === 'Escape') {
-                setShowNewFolder(false);
-                setNewFolderName('');
-              }
-            }}
-          />
-          <Button
-            size="sm"
-            variant="default"
-            onClick={handleCreateFolder}
-            disabled={!newFolderName.trim() || creating}
-            className="h-8"
-          >
+      {showNewFolder && (() => {
+        const suffix = newFolderName.trim().replace(/[^a-zA-Z0-9._-]/g, '');
+        const folderDuplicate = suffix.length > 0 && folders.includes(`workspace-${suffix}`);
+        return (
+        <div className="space-y-1">
+          <div className="flex gap-2 items-center p-2 rounded-md border bg-muted/50">
+            <div className={cn(
+              'flex items-center flex-1 h-8 rounded-md border bg-background text-sm overflow-hidden',
+              folderDuplicate ? 'border-destructive' : 'border-input',
+            )}>
+              <span className="px-2 text-muted-foreground bg-muted border-r border-input shrink-0 h-full flex items-center text-xs">
+                workspace-
+              </span>
+              <input
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value.replace(/[^a-zA-Z0-9._-]/g, ''))}
+                placeholder={t('workspace.newFolderPlaceholder')}
+                className="flex-1 h-full px-2 bg-transparent outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !folderDuplicate) handleCreateFolder();
+                  if (e.key === 'Escape') {
+                    setShowNewFolder(false);
+                    setNewFolderName('');
+                  }
+                }}
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handleCreateFolder}
+              disabled={!newFolderName.trim() || folderDuplicate || creating}
+              className="h-8"
+            >
             {creating ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
@@ -233,8 +246,13 @@ function WorkspaceSelector({
           >
             <X className="h-3 w-3" />
           </Button>
+          </div>
+          {folderDuplicate && (
+            <p className="text-xs text-destructive px-2">{t('workspace.folderDuplicate')}</p>
+          )}
         </div>
-      )}
+        );
+      })()}
 
       {value && (
         <p className="text-xs text-muted-foreground font-mono truncate">{value}</p>
@@ -356,11 +374,13 @@ function AgentCard({
 function CreateAgentDialog({
   open,
   defaults,
+  existingAgentIds,
   onClose,
   onCreate,
 }: {
   open: boolean;
   defaults: AgentDefaults | null;
+  existingAgentIds: string[];
   onClose: () => void;
   onCreate: (input: AgentCreateInput) => Promise<void>;
 }) {
@@ -373,8 +393,10 @@ function CreateAgentDialog({
   const [isDefault, setIsDefault] = useState(false);
   const [creating, setCreating] = useState(false);
 
+  const idDuplicate = id.trim().length > 0 && existingAgentIds.includes(id.trim());
+
   const handleCreate = async () => {
-    if (!id.trim() || !name.trim()) return;
+    if (!id.trim() || !name.trim() || idDuplicate) return;
     setCreating(true);
     try {
       await onCreate({
@@ -421,8 +443,13 @@ function CreateAgentDialog({
               value={id}
               onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, ''))}
               placeholder={t('create.idPlaceholder')}
+              className={idDuplicate ? 'border-destructive' : ''}
             />
-            <p className="text-xs text-muted-foreground">{t('create.idHelp')}</p>
+            {idDuplicate ? (
+              <p className="text-xs text-destructive">{t('create.idDuplicate')}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">{t('create.idHelp')}</p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -473,7 +500,7 @@ function CreateAgentDialog({
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={!id.trim() || !name.trim() || creating}
+              disabled={!id.trim() || !name.trim() || idDuplicate || creating}
             >
               {creating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {creating ? t('create.creating') : t('create.create')}
@@ -1150,6 +1177,7 @@ export function Agents() {
       <CreateAgentDialog
         open={showCreateDialog}
         defaults={defaults}
+        existingAgentIds={agents.map((a) => a.id)}
         onClose={() => setShowCreateDialog(false)}
         onCreate={handleCreate}
       />

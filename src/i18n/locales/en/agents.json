@@ -62,6 +62,7 @@
     "id": "Agent ID",
     "idPlaceholder": "e.g. dev, main, assistant",
     "idHelp": "Unique identifier (lowercase, no spaces)",
+    "idDuplicate": "An agent with this ID already exists",
     "name": "Agent Name",
     "namePlaceholder": "e.g. Dev Agent, Main Assistant",
     "emoji": "Icon",
@@ -86,12 +87,13 @@
     "selectFolder": "Select a folder",
     "newFolder": "New folder...",
     "newFolderName": "Folder name",
-    "newFolderPlaceholder": "e.g. workspace-dev",
+    "newFolderPlaceholder": "e.g. dev, research",
     "create": "Create",
     "cancel": "Cancel",
     "creating": "Creating...",
     "created": "Folder created",
-    "createFailed": "Failed to create folder"
+    "createFailed": "Failed to create folder",
+    "folderDuplicate": "This workspace folder already exists"
   },
   "toast": {
     "created": "Agent created",
