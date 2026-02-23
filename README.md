@@ -6,7 +6,7 @@
 <h1 align="center">CrawBot</h1>
 
 <p align="center">
-  <strong>The Desktop Interface for OpenClaw AI Agents</strong>
+  <strong>Personal Agentic AI Assistant for non-tech user powered by OpenClaw</strong>
 </p>
 
 <p align="center">
