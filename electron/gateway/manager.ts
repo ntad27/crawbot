@@ -3,6 +3,7 @@
  * Manages the OpenClaw Gateway process lifecycle
  */
 import { app } from 'electron';
+import crypto from 'crypto';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
@@ -826,15 +827,10 @@ export class GatewayManager extends EventEmitter {
         reject(err);
       };
       
-      this.ws.on('open', async () => {
-        logger.debug('Gateway WebSocket opened, sending connect handshake');
-        
-        // Re-fetch token here before generating payload just in case it updated while connecting
+      // Helper: send the connect handshake frame (called after receiving challenge nonce)
+      const sendConnect = async (challengeNonce: string) => {
         const currentToken = await getSetting('gatewayToken');
-        
-        // Send proper connect handshake as required by OpenClaw Gateway protocol
-        // The Gateway expects: { type: "req", id: "...", method: "connect", params: ConnectParams }
-        // Since 2026.2.15, scopes are only granted when a signed device identity is included.
+
         connectId = `connect-${Date.now()}`;
         const role = 'operator';
         const scopes = ['operator.admin'];
@@ -844,7 +840,7 @@ export class GatewayManager extends EventEmitter {
 
         const device = (() => {
           if (!this.deviceIdentity) return undefined;
-          
+
           const payload = buildDeviceAuthPayload({
             deviceId: this.deviceIdentity.deviceId,
             clientId,
@@ -853,6 +849,8 @@ export class GatewayManager extends EventEmitter {
             scopes,
             signedAtMs,
             token: currentToken ?? null,
+            nonce: challengeNonce,
+            version: 'v2',
           });
           const signature = signDevicePayload(this.deviceIdentity.privateKeyPem, payload);
           return {
@@ -860,6 +858,7 @@ export class GatewayManager extends EventEmitter {
             publicKey: publicKeyRawBase64UrlFromPem(this.deviceIdentity.publicKeyPem),
             signature,
             signedAt: signedAtMs,
+            nonce: challengeNonce,
           };
         })();
 
@@ -886,9 +885,9 @@ export class GatewayManager extends EventEmitter {
             device,
           },
         };
-        
+
         this.ws?.send(JSON.stringify(connectFrame));
-        
+
         // Store pending connect request
         const requestTimeout = setTimeout(() => {
           if (!handshakeComplete) {
@@ -898,7 +897,7 @@ export class GatewayManager extends EventEmitter {
           }
         }, 10000);
         handshakeTimeout = requestTimeout;
-        
+
         this.pendingRequests.set(connectId, {
           resolve: (_result) => {
             handshakeComplete = true;
@@ -917,11 +916,31 @@ export class GatewayManager extends EventEmitter {
           },
           timeout: requestTimeout,
         });
+      };
+
+      this.ws.on('open', () => {
+        logger.debug('Gateway WebSocket opened, waiting for connect.challenge');
       });
-      
+
       this.ws.on('message', (data) => {
         try {
           const message = JSON.parse(data.toString());
+
+          // Handle connect.challenge event: Gateway sends nonce, we reply with connect
+          const msg = message as Record<string, unknown>;
+          if (msg.event === 'connect.challenge' && !handshakeComplete) {
+            const payload = msg.payload as Record<string, unknown> | undefined;
+            const nonce = typeof payload?.nonce === 'string' ? payload.nonce.trim() : '';
+            if (!nonce) {
+              rejectOnce(new Error('Gateway connect.challenge missing nonce'));
+              this.ws?.close(1008, 'connect challenge missing nonce');
+              return;
+            }
+            logger.debug('Received connect.challenge, sending connect with nonce');
+            sendConnect(nonce);
+            return;
+          }
+
           this.handleMessage(message);
         } catch (error) {
           logger.debug('Failed to parse Gateway WebSocket message:', error);
