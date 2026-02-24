@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CrawBot is an Electron desktop application that provides a graphical interface for OpenClaw AI agents. It connects to an OpenClaw Gateway process (managed as a child process) over WebSocket using JSON-RPC.
 
+### OpenClaw Source Reference
+
+The OpenClaw source code is cloned at `~/openclaw` for reference when investigating Gateway behavior, RPC protocol, or plugin internals.
+
 ## Commands
 
 ```bash

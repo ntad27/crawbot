@@ -3,6 +3,7 @@
  * Manages channel configuration in OpenClaw config files
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
+import https from 'https';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getOpenClawResolvedDir } from './paths';
@@ -560,8 +561,28 @@ async function validateTelegramCredentials(
     }
 
     try {
-        const response = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
-        const data = (await response.json()) as { ok?: boolean; description?: string; result?: { username?: string } };
+        // Use node:https with family:4 instead of fetch() because undici's
+        // autoSelectFamily can fail on networks where IPv6 is unreachable
+        // (e.g. Raspberry Pi) — it abandons IPv4 too early when IPv6 errors.
+        const data = await new Promise<{ ok?: boolean; description?: string; result?: { username?: string } }>((resolve, reject) => {
+            const req = https.get(
+                `https://api.telegram.org/bot${botToken}/getMe`,
+                { family: 4, timeout: 15000 },
+                (res) => {
+                    let body = '';
+                    res.on('data', (chunk: Buffer) => (body += chunk));
+                    res.on('end', () => {
+                        try {
+                            resolve(JSON.parse(body));
+                        } catch {
+                            reject(new Error(`Invalid JSON response: ${body.slice(0, 100)}`));
+                        }
+                    });
+                },
+            );
+            req.on('error', reject);
+            req.on('timeout', () => req.destroy(new Error('Request timeout')));
+        });
 
         if (data.ok) {
             return {
