@@ -198,6 +198,20 @@ export function saveChannelConfig(
         enabled: transformedConfig.enabled ?? true,
     };
 
+    // Bundled channel plugins (e.g. telegram, discord) are disabled by default
+    // in OpenClaw's plugin system. Ensure the plugin entry is enabled so the
+    // Gateway actually starts the channel after a config reload.
+    if (!currentConfig.plugins) {
+        currentConfig.plugins = {};
+    }
+    if (!currentConfig.plugins.entries) {
+        currentConfig.plugins.entries = {};
+    }
+    if (!currentConfig.plugins.entries[channelType]) {
+        currentConfig.plugins.entries[channelType] = {};
+    }
+    currentConfig.plugins.entries[channelType].enabled = true;
+
     writeOpenClawConfig(currentConfig);
     logger.info('Channel config saved', {
         channelType,
@@ -288,6 +302,10 @@ export function deleteChannelConfig(channelType: string): void {
 
     if (currentConfig.channels?.[channelType]) {
         delete currentConfig.channels[channelType];
+        // Also remove the plugin entry that was added when saving
+        if (currentConfig.plugins?.entries?.[channelType]) {
+            delete currentConfig.plugins.entries[channelType];
+        }
         writeOpenClawConfig(currentConfig);
         console.log(`Deleted channel config for ${channelType}`);
     } else if (PLUGIN_CHANNELS.includes(channelType)) {
