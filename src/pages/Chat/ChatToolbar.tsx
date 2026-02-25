@@ -10,7 +10,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
 import { useAgentsStore } from '@/stores/agents';
+import { useProviderStore } from '@/stores/providers';
 import { useFileBrowserStore } from '@/stores/file-browser';
+import { resolveAgentModel } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 
@@ -34,14 +36,19 @@ export function ChatToolbar() {
   const setSelectedModel = useModelsStore((s) => s.setSelectedModel);
 
   const agents = useAgentsStore((s) => s.agents);
+  const defaults = useAgentsStore((s) => s.defaults);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+
+  const configuredProviders = useProviderStore((s) => s.providers);
+  const fetchProviders = useProviderStore((s) => s.fetchProviders);
 
   const { t } = useTranslation('chat');
 
-  // Load agents list on mount
+  // Load agents and providers on mount
   useEffect(() => {
     if (agents.length === 0) fetchAgents();
-  }, [agents.length, fetchAgents]);
+    if (configuredProviders.length === 0) fetchProviders();
+  }, [agents.length, fetchAgents, configuredProviders.length, fetchProviders]);
 
   // Filter sessions for the selected agent
   const agentPrefix = `agent:${selectedAgentId}:`;
@@ -69,18 +76,39 @@ export function ChatToolbar() {
     setSelectedModel(value || null);
   };
 
-  // Group models by provider
+  // Set of provider types the user has configured
+  const configuredProviderTypes = useMemo(
+    () => new Set(configuredProviders.map((p) => p.type)),
+    [configuredProviders],
+  );
+
+  // Filter models to only configured providers, then group by provider
   const groupedModels = useMemo(() => {
     const groups: Record<string, typeof models> = {};
     for (const model of models) {
       const provider = model.provider || 'other';
+      if (!configuredProviderTypes.has(provider)) continue;
       if (!groups[provider]) groups[provider] = [];
       groups[provider].push(model);
     }
     return groups;
-  }, [models]);
+  }, [models, configuredProviderTypes]);
 
-  const providers = Object.keys(groupedModels).sort();
+  const providerKeys = Object.keys(groupedModels).sort();
+
+  // Resolve the default model name for the current agent
+  const defaultModelLabel = useMemo(() => {
+    const agent = agents.find((a) => a.id === selectedAgentId);
+    const modelId = agent ? resolveAgentModel(agent, defaults) : defaults?.model?.primary;
+    if (modelId) {
+      // Try to find a display name from the catalog
+      const catalogEntry = models.find(
+        (m) => m.id === modelId || `${m.provider}/${m.id}` === modelId,
+      );
+      return catalogEntry?.name || modelId;
+    }
+    return t('toolbar.model.default');
+  }, [agents, selectedAgentId, defaults, models, t]);
 
   return (
     <div className="flex items-center gap-2">
@@ -141,7 +169,7 @@ export function ChatToolbar() {
       </div>
 
       {/* Model Selector */}
-      {models.length > 0 && (
+      {(providerKeys.length > 0 || defaultModelLabel !== t('toolbar.model.default')) && (
         <Tooltip>
           <TooltipTrigger asChild>
             <div className="relative">
@@ -156,8 +184,8 @@ export function ChatToolbar() {
                   'focus:outline-none focus:ring-2 focus:ring-ring',
                 )}
               >
-                <option value="">{t('toolbar.model.default')}</option>
-                {providers.map((provider) => (
+                <option value="">{defaultModelLabel}</option>
+                {providerKeys.map((provider) => (
                   <optgroup key={provider} label={provider}>
                     {groupedModels[provider].map((model) => (
                       <option
