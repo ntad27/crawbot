@@ -69,6 +69,9 @@ import {
   listOpenclawFolders,
   createOpenclawFolder,
   getOpenclawDirPath,
+  listDirectoryContents,
+  readAnyFile,
+  writeAnyFile,
 } from '../utils/agent-config';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { exportConfigBundle, importConfigBundle, validateConfigBundle } from '../utils/config-bundle';
@@ -350,6 +353,38 @@ function registerAgentHandlers(): void {
       return { success: true, channels };
     } catch (error) {
       console.error('Failed to list channels:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ── File browser IPC handlers ──────────────────────────────────
+
+  ipcMain.handle('file:listDir', async (_, dirPath: string, showHidden?: boolean) => {
+    try {
+      const files = listDirectoryContents(dirPath, showHidden ?? false);
+      return { success: true, files };
+    } catch (error) {
+      console.error('Failed to list directory:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('file:readAny', async (_, filePath: string) => {
+    try {
+      const result = readAnyFile(filePath);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Failed to read file:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('file:writeAny', async (_, filePath: string, content: string) => {
+    try {
+      writeAnyFile(filePath, content);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to write file:', error);
       return { success: false, error: String(error) };
     }
   });

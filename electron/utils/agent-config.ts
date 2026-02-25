@@ -323,6 +323,75 @@ export function getOpenclawDirPath(): string {
   return OPENCLAW_DIR;
 }
 
+// ── Generic file-browser helpers ──────────────────────────────────
+
+const MAX_READ_SIZE = 1 * 1024 * 1024; // 1 MB guard
+
+/**
+ * List all entries in a directory (files + subdirectories).
+ * Returns dirs first, then files, both sorted alphabetically.
+ * Skips hidden entries (dotfiles) by default.
+ */
+export function listDirectoryContents(
+  dirPath: string,
+  showHidden = false,
+): Array<{ name: string; path: string; isDirectory: boolean }> {
+  if (!existsSync(dirPath)) return [];
+
+  try {
+    const entries = readdirSync(dirPath);
+    const dirs: Array<{ name: string; path: string; isDirectory: boolean }> = [];
+    const files: Array<{ name: string; path: string; isDirectory: boolean }> = [];
+
+    for (const entry of entries) {
+      if (!showHidden && entry.startsWith('.')) continue;
+      const fullPath = join(dirPath, entry);
+      try {
+        const stat = statSync(fullPath);
+        const item = { name: entry, path: fullPath, isDirectory: stat.isDirectory() };
+        if (stat.isDirectory()) dirs.push(item);
+        else files.push(item);
+      } catch {
+        // skip inaccessible entries
+      }
+    }
+
+    dirs.sort((a, b) => a.name.localeCompare(b.name));
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    return [...dirs, ...files];
+  } catch (err) {
+    logger.error('Failed to list directory', err);
+    return [];
+  }
+}
+
+/**
+ * Read any file as UTF-8 (with size guard).
+ */
+export function readAnyFile(filePath: string): { content: string; truncated: boolean } {
+  if (!existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`);
+  }
+  const stat = statSync(filePath);
+  if (stat.size > MAX_READ_SIZE) {
+    const content = readFileSync(filePath, 'utf-8').slice(0, MAX_READ_SIZE);
+    return { content, truncated: true };
+  }
+  return { content: readFileSync(filePath, 'utf-8'), truncated: false };
+}
+
+/**
+ * Write any file as UTF-8 (creates parent dirs if needed).
+ */
+export function writeAnyFile(filePath: string, content: string): void {
+  const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+  if (dir && !existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(filePath, content, 'utf-8');
+  logger.info('File written', { filePath });
+}
+
 /**
  * List configured channel types (for agent-channel binding UI)
  */

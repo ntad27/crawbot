@@ -140,6 +140,10 @@ const electronAPI = {
         'log:getFilePath',
         'log:getDir',
         'log:listFiles',
+        // File browser
+        'file:listDir',
+        'file:readAny',
+        'file:writeAny',
         // File staging & media
         'file:stage',
         'file:stageBuffer',

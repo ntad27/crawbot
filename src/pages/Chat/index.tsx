@@ -9,10 +9,14 @@ import { AlertCircle, Bot, MessageSquare, Sparkles } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
+import { useAgentsStore } from '@/stores/agents';
+import { useFileBrowserStore } from '@/stores/file-browser';
+import { resolveAgentWorkspace } from '@/types/agent';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { ChatToolbar } from './ChatToolbar';
+import { WorkspacePanel } from './WorkspacePanel';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 
@@ -34,8 +38,23 @@ export function Chat() {
   const abortRun = useChatStore((s) => s.abortRun);
   const clearError = useChatStore((s) => s.clearError);
 
+  const agents = useAgentsStore((s) => s.agents);
+  const defaults = useAgentsStore((s) => s.defaults);
+  const selectedAgentId = useChatStore((s) => s.selectedAgentId);
+  const panelOpen = useFileBrowserStore((s) => s.panelOpen);
+  const setRootPath = useFileBrowserStore((s) => s.setRootPath);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
+
+  // Sync workspace path when agent changes
+  useEffect(() => {
+    const agent = agents.find((a) => a.id === selectedAgentId);
+    if (agent) {
+      const workspace = resolveAgentWorkspace(agent, defaults);
+      if (workspace) setRootPath(workspace);
+    }
+  }, [selectedAgentId, agents, defaults, setRootPath]);
 
   // Load data when gateway is running
   useEffect(() => {
@@ -95,89 +114,95 @@ export function Chat() {
   const shouldRenderStreaming = sending && (hasStreamText || hasStreamThinking || hasStreamTools || hasStreamImages || hasStreamToolStatus);
 
   return (
-    <div className="flex flex-col -m-3 sm:-m-6" style={{ height: 'calc(100vh - 2.5rem)' }}>
-      {/* Toolbar */}
-      <div className="flex shrink-0 items-center justify-end px-4 py-2">
-        <ChatToolbar />
-      </div>
-
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        <div className="max-w-4xl mx-auto space-y-4">
-          {loading ? (
-            <div className="flex h-full items-center justify-center py-20">
-              <LoadingSpinner size="lg" />
-            </div>
-          ) : messages.length === 0 && !sending ? (
-            <WelcomeScreen />
-          ) : (
-            <>
-              {messages.map((msg, idx) => (
-                <ChatMessage
-                  key={msg.id || `msg-${idx}`}
-                  message={msg}
-                  showThinking={showThinking}
-                />
-              ))}
-
-              {/* Streaming message */}
-              {shouldRenderStreaming && (
-                <ChatMessage
-                  message={(streamMsg
-                    ? {
-                        ...(streamMsg as Record<string, unknown>),
-                        role: (typeof streamMsg.role === 'string' ? streamMsg.role : 'assistant') as RawMessage['role'],
-                        content: streamMsg.content ?? streamText,
-                        timestamp: streamMsg.timestamp ?? streamingTimestamp,
-                      }
-                    : {
-                        role: 'assistant',
-                        content: streamText,
-                        timestamp: streamingTimestamp,
-                      }) as RawMessage}
-                  showThinking={showThinking}
-                  isStreaming
-                  streamingTools={streamingTools}
-                />
-              )}
-
-              {/* Typing indicator when sending but no stream yet */}
-              {sending && !hasStreamText && !hasStreamThinking && !hasStreamTools && !hasStreamImages && !hasStreamToolStatus && (
-                <TypingIndicator />
-              )}
-            </>
-          )}
-
-          {/* Scroll anchor */}
-          <div ref={messagesEndRef} />
+    <div className="flex -m-3 sm:-m-6" style={{ height: 'calc(100vh - 2.5rem)' }}>
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Toolbar */}
+        <div className="flex shrink-0 items-center justify-end px-4 py-2">
+          <ChatToolbar />
         </div>
-      </div>
 
-      {/* Error bar */}
-      {error && (
-        <div className="px-4 py-2 bg-destructive/10 border-t border-destructive/20">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <p className="text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </p>
-            <button
-              onClick={clearError}
-              className="text-xs text-destructive/60 hover:text-destructive underline"
-            >
-              {t('common:actions.dismiss')}
-            </button>
+        {/* Messages Area */}
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="max-w-4xl mx-auto space-y-4">
+            {loading ? (
+              <div className="flex h-full items-center justify-center py-20">
+                <LoadingSpinner size="lg" />
+              </div>
+            ) : messages.length === 0 && !sending ? (
+              <WelcomeScreen />
+            ) : (
+              <>
+                {messages.map((msg, idx) => (
+                  <ChatMessage
+                    key={msg.id || `msg-${idx}`}
+                    message={msg}
+                    showThinking={showThinking}
+                  />
+                ))}
+
+                {/* Streaming message */}
+                {shouldRenderStreaming && (
+                  <ChatMessage
+                    message={(streamMsg
+                      ? {
+                          ...(streamMsg as Record<string, unknown>),
+                          role: (typeof streamMsg.role === 'string' ? streamMsg.role : 'assistant') as RawMessage['role'],
+                          content: streamMsg.content ?? streamText,
+                          timestamp: streamMsg.timestamp ?? streamingTimestamp,
+                        }
+                      : {
+                          role: 'assistant',
+                          content: streamText,
+                          timestamp: streamingTimestamp,
+                        }) as RawMessage}
+                    showThinking={showThinking}
+                    isStreaming
+                    streamingTools={streamingTools}
+                  />
+                )}
+
+                {/* Typing indicator when sending but no stream yet */}
+                {sending && !hasStreamText && !hasStreamThinking && !hasStreamTools && !hasStreamImages && !hasStreamToolStatus && (
+                  <TypingIndicator />
+                )}
+              </>
+            )}
+
+            {/* Scroll anchor */}
+            <div ref={messagesEndRef} />
           </div>
         </div>
-      )}
 
-      {/* Input Area */}
-      <ChatInput
-        onSend={sendMessage}
-        onStop={abortRun}
-        disabled={!isGatewayRunning}
-        sending={sending}
-      />
+        {/* Error bar */}
+        {error && (
+          <div className="px-4 py-2 bg-destructive/10 border-t border-destructive/20">
+            <div className="max-w-4xl mx-auto flex items-center justify-between">
+              <p className="text-sm text-destructive flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                {error}
+              </p>
+              <button
+                onClick={clearError}
+                className="text-xs text-destructive/60 hover:text-destructive underline"
+              >
+                {t('common:actions.dismiss')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Input Area */}
+        <ChatInput
+          onSend={sendMessage}
+          onStop={abortRun}
+          disabled={!isGatewayRunning}
+          sending={sending}
+        />
+      </div>
+
+      {/* Workspace Panel (right side, collapsible) */}
+      {panelOpen && <WorkspacePanel />}
     </div>
   );
 }
