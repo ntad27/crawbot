@@ -44,7 +44,7 @@ export function Dashboard() {
 
   // Calculate statistics safely
   const connectedChannels = Array.isArray(channels) ? channels.filter((c) => c.status === 'connected').length : 0;
-  const enabledSkills = Array.isArray(skills) ? skills.filter((s) => s.enabled).length : 0;
+  const activeSkills = Array.isArray(skills) ? skills.filter((s) => s.isActive).length : 0;
 
   // Update uptime periodically
   useEffect(() => {
@@ -125,9 +125,9 @@ export function Dashboard() {
             <Puzzle className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{enabledSkills}</div>
+            <div className="text-2xl font-bold">{activeSkills}</div>
             <p className="text-xs text-muted-foreground">
-              {t('enabledOf', { enabled: enabledSkills, total: skills.length })}
+              {t('enabledOf', { enabled: activeSkills, total: skills.length })}
             </p>
           </CardContent>
         </Card>
@@ -245,7 +245,7 @@ export function Dashboard() {
             <CardTitle className="text-lg">{t('activeSkills')}</CardTitle>
           </CardHeader>
           <CardContent>
-            {skills.filter((s) => s.enabled).length === 0 ? (
+            {skills.filter((s) => s.isActive).length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 <Puzzle className="h-8 w-8 mx-auto mb-2 opacity-50" />
                 <p>{t('noSkills')}</p>
@@ -256,7 +256,7 @@ export function Dashboard() {
             ) : (
               <div className="flex flex-wrap gap-2">
                 {skills
-                  .filter((s) => s.enabled)
+                  .filter((s) => s.isActive)
                   .slice(0, 12)
                   .map((skill) => (
                     <Badge key={skill.id} variant="secondary">
@@ -264,9 +264,9 @@ export function Dashboard() {
                       {skill.name}
                     </Badge>
                   ))}
-                {skills.filter((s) => s.enabled).length > 12 && (
+                {skills.filter((s) => s.isActive).length > 12 && (
                   <Badge variant="outline">
-                    {t('more', { count: skills.filter((s) => s.enabled).length - 12 })}
+                    {t('more', { count: skills.filter((s) => s.isActive).length - 12 })}
                   </Badge>
                 )}
               </div>
