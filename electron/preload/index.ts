@@ -151,6 +151,8 @@ const electronAPI = {
         'file:createDir',
         'file:getLocalUrl',
         'file:convertOffice',
+        'file:watch',
+        'file:unwatch',
         // File staging & media
         'file:stage',
         'file:stageBuffer',
@@ -202,6 +204,7 @@ const electronAPI = {
         'update:downloaded',
         'update:error',
         'cron:updated',
+        'file:changed',
       ];
 
       if (validChannels.includes(channel)) {

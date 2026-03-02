@@ -106,6 +106,8 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
     if (get().panelOpen) {
       get().loadDirectory(path);
     }
+    // Start watching new directory for changes
+    window.electron.ipcRenderer.invoke('file:watch', path);
   },
 
   openFolder: async () => {
@@ -307,3 +309,11 @@ export const useFileBrowserStore = create<FileBrowserState>((set, get) => ({
     set({ selectedPaths: new Set<string>(), lastClickedPath: null });
   },
 }));
+
+// Listen for file system changes from the main process watcher and auto-refresh the tree.
+window.electron.ipcRenderer.on('file:changed', () => {
+  const { rootPath, panelOpen } = useFileBrowserStore.getState();
+  if (rootPath && panelOpen) {
+    useFileBrowserStore.getState().refreshTree();
+  }
+});

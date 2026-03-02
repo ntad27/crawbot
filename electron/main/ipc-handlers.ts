@@ -3,7 +3,7 @@
  * Registers all IPC handlers for main-renderer communication
  */
 import { ipcMain, BrowserWindow, shell, dialog, app, nativeImage } from 'electron';
-import { existsSync, copyFileSync, cpSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, copyFileSync, cpSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, watch, type FSWatcher } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, extname, basename, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -447,6 +447,60 @@ function registerAgentHandlers(): void {
       console.error('Failed to create directory:', error);
       return { success: false, error: String(error) };
     }
+  });
+
+  // ── File watcher ──
+  // Watch a directory for changes and send notifications to the renderer.
+  // Uses fs.watch with recursive option (works on macOS, Windows; Linux falls back gracefully).
+  let activeWatcher: FSWatcher | null = null;
+  let watchedPath: string | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  ipcMain.handle('file:watch', async (_, dirPath: string) => {
+    // Close previous watcher if any
+    if (activeWatcher) {
+      activeWatcher.close();
+      activeWatcher = null;
+      watchedPath = null;
+    }
+
+    try {
+      activeWatcher = watch(dirPath, { recursive: true }, () => {
+        // Debounce: batch rapid changes into a single notification
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          const win = BrowserWindow.getAllWindows()[0];
+          win?.webContents?.send('file:changed');
+        }, 300);
+      });
+
+      // Silently handle watcher errors (e.g. directory deleted)
+      activeWatcher.on('error', () => {
+        activeWatcher?.close();
+        activeWatcher = null;
+        watchedPath = null;
+      });
+
+      watchedPath = dirPath;
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to watch directory:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('file:unwatch', async () => {
+    if (activeWatcher) {
+      activeWatcher.close();
+      activeWatcher = null;
+      watchedPath = null;
+    }
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    return { success: true };
   });
 
   // Return a local-file:// protocol URL for binary file viewing (images, audio, video, PDF).
