@@ -156,21 +156,27 @@ export class ClawHubService {
             return lines.map(line => {
                 const cleanLine = this.stripAnsi(line);
 
-                // Format could be: slug vversion description (score)
-                // Or sometimes: slug  vversion  description
-                const match = cleanLine.match(/^(\S+)\s+v?(\d+\.\S+)\s+(.+)$/);
+                // Actual search output format: slug  description  (score)
+                // Example: code-stats  Code Stats  (3.421)
+                const match = cleanLine.match(/^(\S+)\s+(.+?)\s+\([\d.]+\)\s*$/);
                 if (match) {
-                    const slug = match[1];
-                    const version = match[2];
-                    let description = match[3];
-
-                    // Clean up score if present at the end
-                    description = description.replace(/\(\d+\.\d+\)$/, '').trim();
-
                     return {
-                        slug,
-                        name: slug,
-                        version,
+                        slug: match[1],
+                        name: match[1],
+                        version: 'latest',
+                        description: match[2].trim(),
+                    };
+                }
+
+                // Fallback: slug vversion description (for future format changes)
+                const versionMatch = cleanLine.match(/^(\S+)\s+v?(\d+\.\S+)\s+(.+)$/);
+                if (versionMatch) {
+                    let description = versionMatch[3];
+                    description = description.replace(/\(\d+\.\d+\)$/, '').trim();
+                    return {
+                        slug: versionMatch[1],
+                        name: versionMatch[1],
+                        version: versionMatch[2],
                         description,
                     };
                 }
