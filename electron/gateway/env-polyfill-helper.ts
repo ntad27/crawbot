@@ -23,22 +23,30 @@ function buildPolyfillSource(envFilePath: string): string {
   // Use JSON.stringify to safely embed the path as a string literal
   const safePath = JSON.stringify(envFilePath);
   return `'use strict';
-if (!process.env || typeof process.env !== 'object') {
-  var envData = {};
-  try {
-    var fs = require('fs');
-    var raw = fs.readFileSync(${safePath}, 'utf-8');
-    var parsed = JSON.parse(raw);
-    for (var key in parsed) {
-      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
-        envData[key] = parsed[key];
-      }
+// Always restore env: Electron Helper sets process.env to empty {} (not null),
+// so we must populate it with the saved environment variables unconditionally.
+var envData = {};
+try {
+  var fs = require('fs');
+  var raw = fs.readFileSync(${safePath}, 'utf-8');
+  var parsed = JSON.parse(raw);
+  for (var key in parsed) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+      envData[key] = parsed[key];
     }
-    try { fs.unlinkSync(${safePath}); } catch (_e) {}
-  } catch (_err) {}
+  }
+  try { fs.unlinkSync(${safePath}); } catch (_e) {}
+} catch (_err) {}
+if (!process.env || typeof process.env !== 'object') {
   Object.defineProperty(process, 'env', {
     value: envData, writable: true, configurable: true, enumerable: true
   });
+} else {
+  for (var k in envData) {
+    if (Object.prototype.hasOwnProperty.call(envData, k)) {
+      process.env[k] = envData[k];
+    }
+  }
 }
 `;
 }
