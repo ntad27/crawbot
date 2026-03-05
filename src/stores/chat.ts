@@ -1108,6 +1108,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (pendingFinal) {
           const recentAssistant = [...filteredMessages].reverse().find((msg) => {
             if (msg.role !== 'assistant') return false;
+            // Skip intermediate tool-use messages (thinking + tool_use, no text).
+            // Only match the actual final response with text output, otherwise
+            // loadHistory would prematurely clear `sending` and kill streaming.
+            if (isToolOnlyMessage(msg)) return false;
             if (!hasNonToolAssistantContent(msg)) return false;
             if (lastUserMessageAt && msg.timestamp && msg.timestamp < lastUserMessageAt) return false;
             return true;
@@ -1150,6 +1154,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       messages: [...s.messages, userMsg],
       sending: true,
+      activeRunId: null,
       error: null,
       streamingText: '',
       streamingMessage: null,
@@ -1273,7 +1278,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   abortRun: async () => {
     const { currentSessionKey } = get();
-    set({ sending: false, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [] });
+    set({ sending: false, activeRunId: null, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [] });
     set({ streamingTools: [] });
 
     try {
@@ -1304,8 +1309,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!resolvedState && event.message && typeof event.message === 'object') {
       const msg = event.message as Record<string, unknown>;
       const stopReason = msg.stopReason ?? msg.stop_reason;
+      const role = typeof msg.role === 'string' ? msg.role : '';
       if (stopReason) {
         // Message has a stopReason → it's a final message
+        resolvedState = 'final';
+      } else if (isToolResultRole(role)) {
+        // Tool result messages are always complete → treat as final so the
+        // snapshot logic in the final handler can preserve intermediate turns.
         resolvedState = 'final';
       } else if (msg.role || msg.content) {
         // Message has role/content but no stopReason → treat as delta (streaming)

@@ -116,11 +116,11 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
                 return;
               }
 
-              // Otherwise, payload is the raw message — wrap it as a 'final' event
-              // so handleChatEvent can process it (this happens when the Gateway
-              // sends protocol events with the message directly as payload).
+              // Otherwise, payload is the raw message — let handleChatEvent infer
+              // the correct state (delta vs final) from the message content.
+              // Do NOT force 'final' here, as streaming deltas without a state
+              // field would be misclassified, breaking real-time streaming.
               const syntheticEvent: Record<string, unknown> = {
-                state: 'final',
                 message: payload,
                 runId: chatData.runId ?? payload.runId,
               };
