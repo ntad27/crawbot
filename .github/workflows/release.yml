@@ -12,6 +12,10 @@ on:
       version:
         description: 'Version to release (e.g., 1.0.0)'
         required: true
+      summary:
+        description: 'Release summary (optional, auto-generated from commits if empty)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -133,10 +137,12 @@ jobs:
   publish:
     needs: release
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -156,6 +162,96 @@ jobs:
           echo "Removing builder-debug.yml files to avoid duplicate asset upload conflicts..."
           find release-artifacts/ -name "builder-debug.yml" -delete -print || true
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the current tag
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          echo "Current tag: $CURRENT_TAG"
+
+          # Find the previous tag (most recent tag before current)
+          PREVIOUS_TAG=$(git tag --sort=-creatordate | grep -v "^${CURRENT_TAG}$" | head -1)
+          echo "Previous tag: $PREVIOUS_TAG"
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous tag found, using all commits"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges HEAD)
+          else
+            echo "Generating changelog from $PREVIOUS_TAG to $CURRENT_TAG"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges "${PREVIOUS_TAG}..${CURRENT_TAG}")
+          fi
+
+          echo "Changelog:"
+          echo "$CHANGELOG"
+
+          # Write changelog to file for use in release body
+          echo "$CHANGELOG" > /tmp/changelog.txt
+
+      - name: Build release body
+        run: |
+          SUMMARY="${{ github.event.inputs.summary }}"
+          TAG="${GITHUB_REF_NAME}"
+          CHANGELOG=$(cat /tmp/changelog.txt)
+
+          cat > /tmp/release-body.md << ENDOFBODY
+          ## CrawBot ${TAG}
+
+          CrawBot - Graphical AI Assistant based on OpenClaw
+
+          ENDOFBODY
+
+          # Add custom summary if provided
+          if [ -n "$SUMMARY" ]; then
+            cat >> /tmp/release-body.md << ENDOFSUMMARY
+          ### Summary
+
+          ${SUMMARY}
+
+          ENDOFSUMMARY
+          fi
+
+          # Add changelog
+          cat >> /tmp/release-body.md << ENDOFCHANGELOG
+          ### Changes since last release
+
+          ${CHANGELOG}
+
+          ### Downloads
+
+          Please select the appropriate installer for your operating system and architecture:
+
+          #### macOS
+          - **Apple Silicon (M1/M2/M3/M4)**: \`CrawBot-*-mac-arm64.dmg\`
+          - **Intel (x64)**: \`CrawBot-*-mac-x64.dmg\`
+
+          #### Windows
+          - **Installer (x64)**: \`CrawBot-*-win-x64.exe\`
+          - **Installer (ARM64)**: \`CrawBot-*-win-arm64.exe\`
+
+          #### Linux
+          - **AppImage (x64)**: \`CrawBot-*-linux-x86_64.AppImage\` (Universal format, recommended)
+          - **AppImage (ARM64)**: \`CrawBot-*-linux-arm64.AppImage\`
+          - **Debian/Ubuntu (x64)**: \`CrawBot-*-linux-amd64.deb\`
+          - **Debian/Ubuntu (ARM64)**: \`CrawBot-*-linux-arm64.deb\`
+          - **RPM (x64)**: \`CrawBot-*-linux-x86_64.rpm\`
+
+          ### Installation Notes
+
+          - **macOS**: On first launch, you may see "cannot verify developer". Go to System Preferences > Security & Privacy to allow the app to run
+          - **Windows**: SmartScreen may block the app. Click "More info" > "Run anyway" to proceed
+          - **Linux**: AppImage requires executable permission: \`chmod +x CrawBot-*.AppImage\`
+
+          ---
+
+          Found an issue? Please submit an [Issue](https://github.com/${{ github.repository }}/issues)
+          ENDOFCHANGELOG
+
+          # Remove leading whitespace from heredoc indentation
+          sed -i 's/^          //' /tmp/release-body.md
+
+          echo "=== Release body ==="
+          cat /tmp/release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -171,44 +267,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           make_latest: ${{ !(contains(github.ref, 'alpha') || contains(github.ref, 'beta')) }}
-          generate_release_notes: true
-          body: |
-            ## 🚀 CrawBot ${{ github.ref_name }}
-            
-            CrawBot - Graphical AI Assistant based on OpenClaw
-            
-            ### 📦 Downloads
-            
-            Please select the appropriate installer for your operating system and architecture:
-            
-            #### macOS
-            - **Apple Silicon (M1/M2/M3/M4)**: `CrawBot-*-mac-arm64.dmg`
-            - **Intel (x64)**: `CrawBot-*-mac-x64.dmg`
-            
-            #### Windows
-            - **Installer (x64)**: `CrawBot-*-win-x64.exe`
-            - **Installer (ARM64)**: `CrawBot-*-win-arm64.exe`
-            
-            #### Linux
-            - **AppImage (x64)**: `CrawBot-*-linux-x86_64.AppImage` (Universal format, recommended)
-            - **AppImage (ARM64)**: `CrawBot-*-linux-arm64.AppImage`
-            - **Debian/Ubuntu (x64)**: `CrawBot-*-linux-amd64.deb`
-            - **Debian/Ubuntu (ARM64)**: `CrawBot-*-linux-arm64.deb`
-            - **RPM (x64)**: `CrawBot-*-linux-x86_64.rpm`
-            
-            ### 📝 Release Notes
-            
-            See the auto-generated release notes below for detailed changes.
-            
-            ### ⚠️ Installation Notes
-            
-            - **macOS**: On first launch, you may see "cannot verify developer". Go to System Preferences → Security & Privacy to allow the app to run
-            - **Windows**: SmartScreen may block the app. Click "More info" → "Run anyway" to proceed
-            - **Linux**: AppImage requires executable permission: `chmod +x CrawBot-*.AppImage`
-            
-            ---
-            
-            💬 Found an issue? Please submit an [Issue](https://github.com/${{ github.repository }}/issues)
+          body_path: /tmp/release-body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
