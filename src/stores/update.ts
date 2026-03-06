@@ -8,7 +8,7 @@ import { useSettingsStore } from './settings';
 export interface UpdateInfo {
   version: string;
   releaseDate?: string;
-  releaseNotes?: string | null;
+  releaseNotes?: string | Array<{ version: string; note: string }> | null;
 }
 
 export interface ProgressInfo {
@@ -35,6 +35,7 @@ interface UpdateState {
   progress: ProgressInfo | null;
   error: string | null;
   isInitialized: boolean;
+  isInstalling: boolean;
 
   // Actions
   init: () => Promise<void>;
@@ -53,6 +54,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   progress: null,
   error: null,
   isInitialized: false,
+  isInstalling: false,
 
   init: async () => {
     if (get().isInitialized) return;
@@ -177,6 +179,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   installUpdate: () => {
+    set({ isInstalling: true });
     window.electron.ipcRenderer.invoke('update:install');
   },
 

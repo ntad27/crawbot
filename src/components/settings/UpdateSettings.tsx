@@ -2,8 +2,8 @@
  * Update Settings Component
  * Displays update status and allows manual update checking/installation
  */
-import { useEffect, useCallback } from 'react';
-import { Download, RefreshCw, Loader2, Rocket } from 'lucide-react';
+import { useEffect, useCallback, useMemo } from 'react';
+import { Download, RefreshCw, Loader2, Rocket, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useUpdateStore } from '@/stores/update';
@@ -26,6 +26,7 @@ export function UpdateSettings() {
     progress,
     error,
     isInitialized,
+    isInstalling,
     init,
     checkForUpdates,
     downloadUpdate,
@@ -42,6 +43,19 @@ export function UpdateSettings() {
     clearError();
     await checkForUpdates();
   }, [checkForUpdates, clearError]);
+
+  // Normalize release notes: electron-updater may return HTML string or array of {version, note}
+  const releaseNotesHtml = useMemo(() => {
+    const notes = updateInfo?.releaseNotes;
+    if (!notes) return null;
+    if (typeof notes === 'string') return notes;
+    if (Array.isArray(notes)) {
+      return (notes as Array<{ version: string; note: string }>)
+        .map((n) => n.note)
+        .join('');
+    }
+    return null;
+  }, [updateInfo?.releaseNotes]);
 
   const renderStatusIcon = () => {
     switch (status) {
@@ -103,9 +117,18 @@ export function UpdateSettings() {
         );
       case 'downloaded':
         return (
-          <Button onClick={installUpdate} size="sm" variant="default">
-            <Rocket className="h-4 w-4 mr-2" />
-            {t('updates.action.install')}
+          <Button onClick={installUpdate} size="sm" variant="default" disabled={isInstalling}>
+            {isInstalling ? (
+              <>
+                <CheckCircle className="h-4 w-4 mr-2" />
+                {t('updates.action.installing', 'Installing...')}
+              </>
+            ) : (
+              <>
+                <Rocket className="h-4 w-4 mr-2" />
+                {t('updates.action.install')}
+              </>
+            )}
           </Button>
         );
       case 'error':
@@ -178,10 +201,13 @@ export function UpdateSettings() {
               </p>
             )}
           </div>
-          {updateInfo.releaseNotes && (
-            <div className="text-sm text-muted-foreground prose prose-sm max-w-none">
+          {releaseNotesHtml && (
+            <div className="text-sm text-muted-foreground">
               <p className="font-medium text-foreground mb-1">{t('updates.whatsNew')}</p>
-              <p className="whitespace-pre-wrap">{updateInfo.releaseNotes}</p>
+              <div
+                className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-foreground prose-p:text-muted-foreground prose-li:text-muted-foreground prose-a:text-primary prose-strong:text-foreground"
+                dangerouslySetInnerHTML={{ __html: releaseNotesHtml }}
+              />
             </div>
           )}
         </div>

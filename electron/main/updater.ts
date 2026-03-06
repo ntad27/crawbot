@@ -199,7 +199,8 @@ export class AppUpdater extends EventEmitter {
  */
 export function registerUpdateHandlers(
   updater: AppUpdater,
-  mainWindow: BrowserWindow
+  mainWindow: BrowserWindow,
+  opts?: { onBeforeQuit?: () => void }
 ): void {
   updater.setMainWindow(mainWindow);
 
@@ -235,7 +236,12 @@ export function registerUpdateHandlers(
   });
 
   // Install update and restart
+  // Must set isQuitting BEFORE quitAndInstall() because autoUpdater closes
+  // all windows first (triggering the 'close' event) and THEN calls app.quit().
+  // Without this, the close handler sees isQuitting=false and hides the window
+  // instead of allowing it to close, which blocks the update installation.
   ipcMain.handle('update:install', () => {
+    opts?.onBeforeQuit?.();
     updater.quitAndInstall();
     return { success: true };
   });
