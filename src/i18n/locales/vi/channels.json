@@ -283,13 +283,18 @@
                 "botToken": {
                     "label": "Token Bot",
                     "placeholder": "12345689:abc-xyz"
+                },
+                "allowedUsers": {
+                    "label": "ID người dùng được phép",
+                    "placeholder": "Ví dụ: 123456789, 987654321",
+                    "description": "Kiểm soát ai có thể nhắn tin cho bot Zalo:\n• Nhập các ID người dùng cách nhau bằng dấu phẩy → chế độ allowlist (chỉ những người được liệt kê mới có thể chat)\n• Nhập * → chế độ open (ai cũng có thể chat)\n• Để trống → chế độ pairing (người dùng phải nhập mã ghép nối để kết nối)"
                 }
             },
             "instructions": [
                 "Tạo bot tại Zalo Bot Platform (bot.zaloplatforms.com)",
                 "Sao chép token bot từ trang quản lý",
                 "Dán token vào bên dưới",
-                "Khởi động lại gateway sau khi lưu"
+                "Cấu hình người dùng được phép hoặc để trống cho chế độ ghép nối"
             ]
         },
         "zalouser": {

@@ -13,7 +13,7 @@ const OPENCLAW_DIR = join(homedir(), '.openclaw');
 const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
 
 // Channels that are managed as plugins (config goes under plugins.entries, not channels)
-const PLUGIN_CHANNELS = ['whatsapp', 'zalouser'];
+const PLUGIN_CHANNELS = ['whatsapp', 'zalouser', 'zalo'];
 
 export interface ChannelConfigData {
     enabled?: boolean;
@@ -197,8 +197,8 @@ export function saveChannelConfig(
         }
     }
 
-    // Special handling for Telegram: convert allowedUsers string to dmPolicy + allowFrom
-    if (channelType === 'telegram' || channelType === 'zalouser') {
+    // Special handling for channels with allowedUsers → dmPolicy + allowFrom transform
+    if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -220,12 +220,6 @@ export function saveChannelConfig(
             transformedConfig.dmPolicy = 'allowlist';
             transformedConfig.allowFrom = users;
         }
-    }
-
-    // Special handling for Zalo (Bot): default to pairing DM policy
-    if (channelType === 'zalo') {
-        const existingConfig = currentConfig.channels[channelType] || {};
-        transformedConfig.dmPolicy = transformedConfig.dmPolicy ?? existingConfig.dmPolicy ?? 'pairing';
     }
 
     // Special handling for Feishu: default to open DM policy with wildcard allowlist
@@ -325,7 +319,7 @@ export function getChannelFormValues(channelType: string): Record<string, string
                 }
             }
         }
-    } else if (channelType === 'telegram' || channelType === 'zalouser') {
+    } else if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;
@@ -573,7 +567,7 @@ export function getChannelEnabledMap(): Record<string, Record<string, boolean>> 
                             const match = file.match(/^credentials(?:-(.+))?\.json$/);
                             if (match) {
                                 const acctId = match[1] ? decodeURIComponent(match[1]) : 'default';
-                                if (!result[channelType][acctId]) {
+                                if (result[channelType][acctId] === undefined) {
                                     result[channelType][acctId] = topEnabled;
                                 }
                             }
@@ -585,7 +579,7 @@ export function getChannelEnabledMap(): Record<string, Record<string, boolean>> 
                 if (bindings) {
                     for (const b of bindings) {
                         if (b.match?.channel === channelType && b.match?.accountId) {
-                            if (!result[channelType][b.match.accountId]) {
+                            if (result[channelType][b.match.accountId] === undefined) {
                                 result[channelType][b.match.accountId] = topEnabled;
                             }
                         }
@@ -634,7 +628,7 @@ export function getChannelEnabledMap(): Record<string, Record<string, boolean>> 
                 if (bindings) {
                     for (const b of bindings) {
                         if (b.match?.channel === channelType && b.match?.accountId) {
-                            if (!result[channelType][b.match.accountId]) {
+                            if (result[channelType][b.match.accountId] === undefined) {
                                 result[channelType][b.match.accountId] = enabled;
                             }
                         }
@@ -698,7 +692,7 @@ export function saveAccountConfig(
     // Apply the same transforms as saveChannelConfig for specific channel types
     let transformedConfig: ChannelConfigData = { ...config };
 
-    if (channelType === 'telegram' || channelType === 'zalouser') {
+    if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -882,7 +876,7 @@ export function getAccountFormValues(
                 }
             }
         }
-    } else if (channelType === 'telegram' || channelType === 'zalouser') {
+    } else if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;

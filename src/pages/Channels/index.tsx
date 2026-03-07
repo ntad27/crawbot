@@ -124,9 +124,23 @@ export function Channels() {
     setEditChannel(null);
   };
 
-  const handleChannelAdded = () => {
-    fetchChannels();
+  const handleChannelAdded = async (opts?: { restartGateway?: boolean }) => {
     handleDialogClose();
+    if (opts?.restartGateway) {
+      // Show restarting overlay, restart gateway, wait, then refresh
+      setRestarting(true);
+      try {
+        await window.electron.ipcRenderer.invoke('gateway:restart');
+      } catch {
+        // ignore
+      }
+      // Wait for Gateway to come back up
+      await new Promise((r) => setTimeout(r, 3000));
+      await fetchChannels();
+      setRestarting(false);
+    } else {
+      fetchChannels();
+    }
   };
 
   if (loading) {
@@ -507,7 +521,7 @@ interface AddChannelDialogProps {
   /** When set, the dialog opens in "edit" mode for this channel account. */
   editChannel?: Channel | null;
   onClose: () => void;
-  onChannelAdded: () => void;
+  onChannelAdded: (opts?: { restartGateway?: boolean }) => void;
 }
 
 function AddChannelDialog({
@@ -673,15 +687,8 @@ function AddChannelDialog({
     }
     await fetchBindings();
 
-    // Close dialog immediately after successful login
-    onChannelAdded();
-
-    // Restart gateway in the background so the channel connects
-    try {
-      await window.electron.ipcRenderer.invoke('gateway:restart');
-    } catch (restartError) {
-      console.warn('Gateway restart after QR login:', restartError);
-    }
+    // Close dialog and restart gateway with overlay
+    onChannelAdded({ restartGateway: true });
   }, [addChannel, setBinding, removeBinding, fetchBindings, onChannelAdded, t]);
 
   // Listen for WhatsApp QR events
@@ -912,17 +919,8 @@ function AddChannelDialog({
 
       toast.success(t('toast.channelSaved', { name: meta.name }));
 
-      // Step 4: Restart the Gateway so it picks up the new channel config
-      try {
-        await window.electron.ipcRenderer.invoke('gateway:restart');
-        toast.success(t('toast.channelConnecting', { name: meta.name }));
-      } catch (restartError) {
-        console.warn('Gateway restart after channel config:', restartError);
-        toast.info(t('toast.restartManual'));
-      }
-
-      // Close dialog — channel list will auto-refresh via gateway:channel-status event
-      onChannelAdded();
+      // Close dialog and restart gateway with overlay
+      onChannelAdded({ restartGateway: true });
     } catch (error) {
       toast.error(t('toast.configFailed', { error }));
       setConnecting(false);
@@ -965,10 +963,7 @@ function AddChannelDialog({
       }
       await fetchBindings();
       toast.success(t('toast.channelSaved', { name: meta.name }));
-      try {
-        await window.electron.ipcRenderer.invoke('gateway:restart');
-      } catch { /* ignore */ }
-      onChannelAdded();
+      onChannelAdded({ restartGateway: true });
     } catch (error) {
       toast.error(t('toast.configFailed', { error }));
     } finally {

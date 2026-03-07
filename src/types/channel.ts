@@ -458,6 +458,14 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
         required: true,
         envVar: 'ZALO_BOT_TOKEN',
       },
+      {
+        key: 'allowedUsers',
+        label: 'channels:meta.zalo.fields.allowedUsers.label',
+        type: 'text',
+        placeholder: 'channels:meta.zalo.fields.allowedUsers.placeholder',
+        description: 'channels:meta.zalo.fields.allowedUsers.description',
+        required: false,
+      },
     ],
     instructions: [
       'channels:meta.zalo.instructions.0',

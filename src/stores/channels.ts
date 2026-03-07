@@ -57,6 +57,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
             configured?: boolean;
             connected?: boolean;
             running?: boolean;
+            enabled?: boolean;
             lastError?: string;
             name?: string;
             linked?: boolean;
@@ -95,12 +96,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           // A channel type is usable if the top-level is configured OR any account is configured
           const anyAccountConfigured = accounts.some((a: { configured?: boolean }) => a.configured === true);
           if (!channelConfigured && !anyAccountConfigured) continue;
-          const summaryError =
+          const rawSummaryError =
             typeof (summary as { error?: string })?.error === 'string'
               ? (summary as { error?: string }).error
               : typeof (summary as { lastError?: string })?.lastError === 'string'
                 ? (summary as { lastError?: string }).lastError
                 : undefined;
+          // "disabled" is not a real error
+          const summaryError = rawSummaryError === 'disabled' ? undefined : rawSummaryError;
 
           // Create one Channel entry per account instead of collapsing to one per type
           if (accounts.length === 0) {
@@ -128,11 +131,22 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
             let status: Channel['status'] = 'disconnected';
             const acctConnected = account.connected === true || account.linked === true || hasRecentActivity(account);
             const acctRunning = account.running === true;
-            const acctError = (typeof account.lastError === 'string' && account.lastError) || undefined;
+            const acctEnabled = account.enabled !== false;
+            // "disabled" is not a real error — it's the gateway's way of reporting disabled accounts
+            const rawError = (typeof account.lastError === 'string' && account.lastError) || undefined;
+            const acctError = rawError === 'disabled' ? undefined : rawError;
+            // For polling-based channels (e.g. zalo), running may be false between poll cycles
+            // Treat as connected if configured, recently started, and no error
+            const recentlyStarted = typeof account.lastStartAt === 'number' && now - account.lastStartAt < RECENT_MS;
+            const acctConfiguredAndActive = account.configured === true && recentlyStarted && !acctError && acctEnabled;
 
-            if (acctConnected) {
+            if (!acctEnabled) {
+              status = 'disconnected';
+            } else if (acctConnected) {
               status = 'connected';
             } else if (acctRunning && !acctError) {
+              status = 'connected';
+            } else if (acctConfiguredAndActive) {
               status = 'connected';
             } else if (acctError || summaryError) {
               status = 'error';

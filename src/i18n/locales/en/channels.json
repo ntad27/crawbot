@@ -302,13 +302,18 @@
                 "botToken": {
                     "label": "Bot Token",
                     "placeholder": "12345689:abc-xyz"
+                },
+                "allowedUsers": {
+                    "label": "Allowed User IDs",
+                    "placeholder": "e.g. 123456789, 987654321",
+                    "description": "Controls who can DM your Zalo bot:\n• Enter comma-separated User IDs → allowlist mode (only listed users can chat)\n• Enter * → open mode (anyone can chat)\n• Leave blank → pairing mode (users must enter a pairing code to connect)"
                 }
             },
             "instructions": [
                 "Create a bot at Zalo Bot Platform (bot.zaloplatforms.com)",
                 "Copy the bot token from the dashboard",
                 "Paste the token below",
-                "Restart the gateway after saving"
+                "Configure allowed users or leave blank for pairing mode"
             ]
         },
         "zalouser": {
