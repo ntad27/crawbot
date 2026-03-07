@@ -78,7 +78,7 @@ export function ChatToolbar() {
 
   // Set of provider types the user has configured
   const configuredProviderTypes = useMemo(
-    () => new Set(configuredProviders.map((p) => p.type)),
+    () => new Set<string>(configuredProviders.map((p) => p.type)),
     [configuredProviders],
   );
 
