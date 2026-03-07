@@ -109,9 +109,16 @@ const electronAPI = {
         'binding:get',
         'binding:set',
         'binding:remove',
+        // Pairing
+        'pairing:list',
+        'pairing:approve',
+        'pairing:reject',
         // WhatsApp
         'channel:requestWhatsAppQr',
         'channel:cancelWhatsAppQr',
+        // Zalo Personal
+        'channel:requestZaloUserQr',
+        'channel:cancelZaloUserQr',
         // ClawHub
         'clawhub:search',
         'clawhub:install',
@@ -214,6 +221,9 @@ const electronAPI = {
         'channel:whatsapp-qr',
         'channel:whatsapp-success',
         'channel:whatsapp-error',
+        'channel:zalouser-qr',
+        'channel:zalouser-success',
+        'channel:zalouser-error',
         'gateway:exit',
         'gateway:error',
         'navigate',

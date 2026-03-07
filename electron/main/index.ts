@@ -11,7 +11,7 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { createTray } from './tray';
 import { createMenu } from './menu';
 
-import { appUpdater, registerUpdateHandlers } from './updater';
+import { getAppUpdater, registerUpdateHandlers } from './updater';
 import { logger } from '../utils/logger';
 import { warmupNetworkOptimization } from '../utils/uv-env';
 import { getSetting, setSetting } from '../utils/store';
@@ -275,7 +275,7 @@ async function initialize(): Promise<void> {
   registerIpcHandlers(gatewayManager, clawHubService, mainWindow);
 
   // Register update handlers
-  registerUpdateHandlers(appUpdater, mainWindow, {
+  registerUpdateHandlers(getAppUpdater(), mainWindow, {
     onBeforeQuit: () => { isQuitting = true; },
   });
 

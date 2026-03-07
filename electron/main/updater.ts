@@ -260,5 +260,11 @@ export function registerUpdateHandlers(
 
 }
 
-// Export singleton instance
-export const appUpdater = new AppUpdater();
+// Export lazy singleton – constructed on first access so Electron's `app` is ready
+let _appUpdater: AppUpdater | null = null;
+export function getAppUpdater(): AppUpdater {
+  if (!_appUpdater) _appUpdater = new AppUpdater();
+  return _appUpdater;
+}
+// Backwards-compat: keep named export for existing imports, but lazily via getter
+export { _appUpdater as appUpdater };

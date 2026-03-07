@@ -35,7 +35,8 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import type { CronJob, CronJobCreateInput, ScheduleType } from '@/types/cron';
-import { CHANNEL_ICONS } from '@/types/channel';
+import { ChannelIcon } from '@/components/ChannelIcon';
+import type { ChannelType } from '@/types/channel';
 import { useTranslation } from 'react-i18next';
 
 // Common cron schedule presets
@@ -303,7 +304,7 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
                     onClick={() => setChannelId(channel.id)}
                     className="justify-start"
                   >
-                    <span className="mr-2">{CHANNEL_ICONS[channel.type]}</span>
+                    <ChannelIcon type={channel.type as ChannelType} size="sm" className="mr-2" />
                     {channel.name}
                   </Button>
                 ))}
@@ -443,7 +444,7 @@ function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCard
         {/* Metadata */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
           <span className="flex items-center gap-1">
-            {CHANNEL_ICONS[job.target.channelType]}
+            <ChannelIcon type={job.target.channelType as ChannelType} size="sm" />
             {job.target.channelName}
           </span>
 

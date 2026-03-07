@@ -13,7 +13,7 @@ const OPENCLAW_DIR = join(homedir(), '.openclaw');
 const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
 
 // Channels that are managed as plugins (config goes under plugins.entries, not channels)
-const PLUGIN_CHANNELS = ['whatsapp'];
+const PLUGIN_CHANNELS = ['whatsapp', 'zalouser'];
 
 export interface ChannelConfigData {
     enabled?: boolean;
@@ -110,7 +110,9 @@ export function saveChannelConfig(
 ): void {
     const currentConfig = readOpenClawConfig();
 
-    // Plugin-based channels (e.g. WhatsApp) go under plugins.entries, not channels
+    // Plugin-based channels (e.g. WhatsApp, Zalo Personal) need both:
+    // 1. plugins.entries.<type>.enabled — enables the plugin
+    // 2. channels.<type>.enabled — tells the gateway to start the channel
     if (PLUGIN_CHANNELS.includes(channelType)) {
         if (!currentConfig.plugins) {
             currentConfig.plugins = {};
@@ -122,12 +124,26 @@ export function saveChannelConfig(
             ...currentConfig.plugins.entries[channelType],
             enabled: config.enabled ?? true,
         };
+
+        // Also create channels.<type> so the gateway recognizes the channel
+        if (!currentConfig.channels) {
+            currentConfig.channels = {};
+        }
+        if (!currentConfig.channels[channelType]) {
+            currentConfig.channels[channelType] = {};
+        }
+        const channelBlock = currentConfig.channels[channelType] as Record<string, unknown>;
+        channelBlock.enabled = config.enabled ?? true;
+        if (!channelBlock.dmPolicy) {
+            channelBlock.dmPolicy = 'pairing';
+        }
+
         ensureSessionDmScope(currentConfig);
         writeOpenClawConfig(currentConfig);
         logger.info('Plugin channel config saved', {
             channelType,
             configFile: CONFIG_FILE,
-            path: `plugins.entries.${channelType}`,
+            path: `plugins.entries.${channelType} + channels.${channelType}`,
         });
         console.log(`Saved plugin channel config for ${channelType}`);
         return;
@@ -182,7 +198,7 @@ export function saveChannelConfig(
     }
 
     // Special handling for Telegram: convert allowedUsers string to dmPolicy + allowFrom
-    if (channelType === 'telegram') {
+    if (channelType === 'telegram' || channelType === 'zalouser') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -204,6 +220,12 @@ export function saveChannelConfig(
             transformedConfig.dmPolicy = 'allowlist';
             transformedConfig.allowFrom = users;
         }
+    }
+
+    // Special handling for Zalo (Bot): default to pairing DM policy
+    if (channelType === 'zalo') {
+        const existingConfig = currentConfig.channels[channelType] || {};
+        transformedConfig.dmPolicy = transformedConfig.dmPolicy ?? existingConfig.dmPolicy ?? 'pairing';
     }
 
     // Special handling for Feishu: default to open DM policy with wildcard allowlist
@@ -303,7 +325,7 @@ export function getChannelFormValues(channelType: string): Record<string, string
                 }
             }
         }
-    } else if (channelType === 'telegram') {
+    } else if (channelType === 'telegram' || channelType === 'zalouser') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;
@@ -380,6 +402,19 @@ export function deleteChannelConfig(channelType: string): void {
             console.error('Failed to delete WhatsApp credentials:', error);
         }
     }
+
+    // Special handling for Zalo Personal credentials
+    if (channelType === 'zalouser') {
+        try {
+            const zalouserDir = join(homedir(), '.openclaw', 'credentials', 'zalouser');
+            if (existsSync(zalouserDir)) {
+                rmSync(zalouserDir, { recursive: true, force: true });
+                console.log('Deleted Zalo Personal credentials directory');
+            }
+        } catch (error) {
+            console.error('Failed to delete Zalo Personal credentials:', error);
+        }
+    }
 }
 
 /**
@@ -413,6 +448,32 @@ export function listConfiguredChannels(): string[] {
         }
     } catch {
         // Ignore errors checking whatsapp dir
+    }
+
+    // Check for Zalo Personal credentials directory
+    try {
+        const zalouserDir = join(homedir(), '.openclaw', 'credentials', 'zalouser');
+        if (existsSync(zalouserDir)) {
+            const entries = readdirSync(zalouserDir);
+            const hasCredentials = entries.some((entry: string) => entry.endsWith('.json'));
+            if (hasCredentials && !channels.includes('zalouser')) {
+                channels.push('zalouser');
+            }
+        }
+    } catch {
+        // Ignore errors checking zalouser dir
+    }
+
+    // Check for plugin-only channels enabled in plugins.entries
+    const pluginEntries = config.plugins?.entries as Record<string, Record<string, unknown>> | undefined;
+    if (pluginEntries) {
+        for (const channelType of PLUGIN_CHANNELS) {
+            if (channels.includes(channelType)) continue;
+            const entry = pluginEntries[channelType];
+            if (entry?.enabled === true) {
+                channels.push(channelType);
+            }
+        }
     }
 
     return channels;
@@ -476,32 +537,114 @@ export function getChannelEnabledMap(): Record<string, Record<string, boolean>> 
     const config = readOpenClawConfig();
     const result: Record<string, Record<string, boolean>> = {};
 
-    if (!config.channels) return result;
+    if (config.channels) {
+        for (const [channelType, channelBlock] of Object.entries(config.channels)) {
+            if (!channelBlock || typeof channelBlock !== 'object') continue;
+            const block = channelBlock as Record<string, unknown>;
+            result[channelType] = {};
 
-    for (const [channelType, channelBlock] of Object.entries(config.channels)) {
-        if (!channelBlock || typeof channelBlock !== 'object') continue;
-        const block = channelBlock as Record<string, unknown>;
-        result[channelType] = {};
+            // Top-level enabled (check both channels.<type>.enabled and plugins.entries.<type>.enabled)
+            let topEnabled = true;
+            if (typeof block.enabled === 'boolean') {
+                topEnabled = block.enabled;
+            }
+            if (PLUGIN_CHANNELS.includes(channelType)) {
+                const pluginEntry = (config.plugins?.entries as Record<string, Record<string, unknown>> | undefined)?.[channelType];
+                if (pluginEntry && typeof pluginEntry.enabled === 'boolean') {
+                    topEnabled = pluginEntry.enabled;
+                }
+            }
+            // Per-account enabled
+            const accounts = block.accounts as Record<string, Record<string, unknown>> | undefined;
+            if (accounts && typeof accounts === 'object') {
+                for (const [acctId, acctBlock] of Object.entries(accounts)) {
+                    if (!acctBlock || typeof acctBlock !== 'object') continue;
+                    result[channelType][acctId] = typeof acctBlock.enabled === 'boolean' ? acctBlock.enabled : true;
+                }
+            }
 
-        // Top-level enabled (check both channels.<type>.enabled and plugins.entries.<type>.enabled)
-        let topEnabled = true;
-        if (typeof block.enabled === 'boolean') {
-            topEnabled = block.enabled;
-        }
-        if (PLUGIN_CHANNELS.includes(channelType)) {
-            const pluginEntry = (config.plugins?.entries as Record<string, Record<string, unknown>> | undefined)?.[channelType];
-            if (pluginEntry && typeof pluginEntry.enabled === 'boolean') {
-                topEnabled = pluginEntry.enabled;
+            // For plugin channels, also discover accounts from credentials files and bindings
+            if (PLUGIN_CHANNELS.includes(channelType)) {
+                const credDir = join(homedir(), '.openclaw', 'credentials', channelType);
+                try {
+                    if (existsSync(credDir)) {
+                        for (const file of readdirSync(credDir)) {
+                            if (!file.endsWith('.json')) continue;
+                            const match = file.match(/^credentials(?:-(.+))?\.json$/);
+                            if (match) {
+                                const acctId = match[1] ? decodeURIComponent(match[1]) : 'default';
+                                if (!result[channelType][acctId]) {
+                                    result[channelType][acctId] = topEnabled;
+                                }
+                            }
+                        }
+                    }
+                } catch { /* ignore */ }
+
+                const bindings = config.bindings as Array<{ match?: { channel?: string; accountId?: string } }> | undefined;
+                if (bindings) {
+                    for (const b of bindings) {
+                        if (b.match?.channel === channelType && b.match?.accountId) {
+                            if (!result[channelType][b.match.accountId]) {
+                                result[channelType][b.match.accountId] = topEnabled;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Only add "default" entry if no named accounts exist
+            if (Object.keys(result[channelType]).length === 0) {
+                result[channelType]['default'] = topEnabled;
             }
         }
-        result[channelType]['default'] = topEnabled;
+    }
 
-        // Per-account enabled
-        const accounts = block.accounts as Record<string, Record<string, unknown>> | undefined;
-        if (accounts && typeof accounts === 'object') {
-            for (const [acctId, acctBlock] of Object.entries(accounts)) {
-                if (!acctBlock || typeof acctBlock !== 'object') continue;
-                result[channelType][acctId] = typeof acctBlock.enabled === 'boolean' ? acctBlock.enabled : true;
+    // Include plugin-only channels (e.g. whatsapp, zalouser) that exist
+    // under plugins.entries but not under channels
+    const pluginEntries = config.plugins?.entries as Record<string, Record<string, unknown>> | undefined;
+    if (pluginEntries) {
+        for (const channelType of PLUGIN_CHANNELS) {
+            if (result[channelType]) continue; // already handled above
+            const entry = pluginEntries[channelType];
+            if (entry && typeof entry === 'object') {
+                const enabled = typeof entry.enabled === 'boolean' ? entry.enabled : false;
+                result[channelType] = {};
+
+                // Discover account IDs from credentials files
+                const credDir = join(homedir(), '.openclaw', 'credentials', channelType);
+                try {
+                    if (existsSync(credDir)) {
+                        for (const file of readdirSync(credDir)) {
+                            if (!file.endsWith('.json')) continue;
+                            // credentials.json → default, credentials-<id>.json → <id>
+                            const match = file.match(/^credentials(?:-(.+))?\.json$/);
+                            if (match) {
+                                const acctId = match[1] ? decodeURIComponent(match[1]) : 'default';
+                                result[channelType][acctId] = enabled;
+                            }
+                        }
+                    }
+                } catch {
+                    // ignore credential dir read errors
+                }
+
+                // Also discover accounts from bindings
+                const bindings = config.bindings as Array<{ match?: { channel?: string; accountId?: string } }> | undefined;
+                if (bindings) {
+                    for (const b of bindings) {
+                        if (b.match?.channel === channelType && b.match?.accountId) {
+                            if (!result[channelType][b.match.accountId]) {
+                                result[channelType][b.match.accountId] = enabled;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: if no accounts discovered, add default
+                if (Object.keys(result[channelType]).length === 0) {
+                    result[channelType]['default'] = enabled;
+                }
             }
         }
     }
@@ -526,11 +669,12 @@ export function saveAccountConfig(
 
     const currentConfig = readOpenClawConfig();
 
-    // Plugin-only channels (e.g. WhatsApp) don't support sub-accounts via channels.*
+    // Ensure plugin channel has proper channels.<type> + plugins.entries setup
     if (PLUGIN_CHANNELS.includes(channelType)) {
-        logger.warn('Plugin channels do not support sub-accounts', { channelType, accountId });
-        saveChannelConfig(channelType, config);
-        return;
+        if (!currentConfig.plugins) currentConfig.plugins = {};
+        if (!currentConfig.plugins.entries) currentConfig.plugins.entries = {};
+        if (!currentConfig.plugins.entries[channelType]) currentConfig.plugins.entries[channelType] = {};
+        currentConfig.plugins.entries[channelType].enabled = true;
     }
 
     if (!currentConfig.channels) {
@@ -541,6 +685,11 @@ export function saveAccountConfig(
     }
 
     const channelBlock = currentConfig.channels[channelType] as Record<string, unknown>;
+    // Ensure channel-level enabled and dmPolicy for plugin channels
+    if (PLUGIN_CHANNELS.includes(channelType)) {
+        if (typeof channelBlock.enabled !== 'boolean') channelBlock.enabled = true;
+        if (!channelBlock.dmPolicy) channelBlock.dmPolicy = 'pairing';
+    }
     if (!channelBlock.accounts || typeof channelBlock.accounts !== 'object') {
         channelBlock.accounts = {};
     }
@@ -549,7 +698,7 @@ export function saveAccountConfig(
     // Apply the same transforms as saveChannelConfig for specific channel types
     let transformedConfig: ChannelConfigData = { ...config };
 
-    if (channelType === 'telegram') {
+    if (channelType === 'telegram' || channelType === 'zalouser') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -630,6 +779,16 @@ export function deleteAccountConfig(channelType: string, accountId: string): voi
         }
     }
 
+    // If no accounts remain, clean up the entire channel + plugin entry
+    const remainingAccounts = (channelBlock?.accounts as Record<string, unknown> | undefined);
+    const hasNoAccounts = !remainingAccounts || Object.keys(remainingAccounts).length === 0;
+    if (hasNoAccounts && channelBlock) {
+        delete currentConfig.channels![channelType];
+        if (currentConfig.plugins?.entries?.[channelType]) {
+            delete currentConfig.plugins.entries[channelType];
+        }
+    }
+
     // Also remove any matching binding
     if (currentConfig.bindings) {
         currentConfig.bindings = currentConfig.bindings.filter(
@@ -641,6 +800,51 @@ export function deleteAccountConfig(channelType: string, accountId: string): voi
     }
 
     writeOpenClawConfig(currentConfig);
+
+    // Delete credential files for this account
+    if (PLUGIN_CHANNELS.includes(channelType)) {
+        const credDir = join(homedir(), '.openclaw', 'credentials', channelType);
+        try {
+            // Delete account-specific credential file
+            const credFile = join(credDir, `credentials-${accountId}.json`);
+            if (existsSync(credFile)) {
+                rmSync(credFile, { force: true });
+            }
+            // Also try default credentials file name
+            const defaultCredFile = join(credDir, 'credentials.json');
+            if (existsSync(defaultCredFile)) {
+                // Only delete default cred file if this was the only account
+                if (hasNoAccounts) {
+                    rmSync(defaultCredFile, { force: true });
+                }
+            }
+            // If credential dir is now empty, remove it
+            if (existsSync(credDir) && readdirSync(credDir).length === 0) {
+                rmSync(credDir, { recursive: true, force: true });
+            }
+        } catch (error) {
+            console.error(`Failed to delete credentials for ${channelType}/${accountId}:`, error);
+        }
+
+        // Delete allowFrom files for this account
+        const pairingDir = join(homedir(), '.openclaw', 'credentials');
+        try {
+            const allowFromFile = join(pairingDir, `${channelType}-${accountId}-allowFrom.json`);
+            if (existsSync(allowFromFile)) {
+                rmSync(allowFromFile, { force: true });
+            }
+            // Also clean up legacy channel-level files if no accounts remain
+            if (hasNoAccounts) {
+                const legacyAllowFrom = join(pairingDir, `${channelType}-allowFrom.json`);
+                if (existsSync(legacyAllowFrom)) rmSync(legacyAllowFrom, { force: true });
+                const pairingFile = join(pairingDir, `${channelType}-pairing.json`);
+                if (existsSync(pairingFile)) rmSync(pairingFile, { force: true });
+            }
+        } catch (error) {
+            console.error(`Failed to delete pairing files for ${channelType}/${accountId}:`, error);
+        }
+    }
+
     logger.info('Account config deleted', { channelType, accountId });
 }
 
@@ -678,7 +882,7 @@ export function getAccountFormValues(
                 }
             }
         }
-    } else if (channelType === 'telegram') {
+    } else if (channelType === 'telegram' || channelType === 'zalouser') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;

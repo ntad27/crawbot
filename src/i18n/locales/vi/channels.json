@@ -16,6 +16,8 @@
     "toast": {
         "whatsappConnected": "Đã kết nối WhatsApp thành công",
         "whatsappFailed": "Kết nối WhatsApp thất bại: {{error}}",
+        "zalouserConnected": "Đã kết nối Zalo cá nhân thành công",
+        "zalouserFailed": "Kết nối Zalo cá nhân thất bại: {{error}}",
         "channelSaved": "Đã lưu kênh {{name}}",
         "channelConnecting": "Đang kết nối đến {{name}}...",
         "restartManual": "Vui lòng khởi động lại gateway thủ công",
@@ -49,6 +51,21 @@
         "updateAndReconnect": "Cập nhật & Kết nối lại",
         "saveAndConnect": "Lưu & Kết nối",
         "envVar": "Biến môi trường: {{var}}"
+    },
+    "pairing": {
+        "title": "Yêu cầu ghép nối",
+        "description": "Người dùng đang chờ ghép nối với kênh của bạn",
+        "empty": "Không có yêu cầu ghép nối nào",
+        "channel": "Kênh",
+        "code": "Mã",
+        "user": "Người dùng",
+        "account": "Tài khoản",
+        "requestedAt": "Thời gian",
+        "approve": "Chấp nhận",
+        "reject": "Từ chối",
+        "approved": "Đã chấp nhận ghép nối",
+        "rejected": "Đã từ chối ghép nối",
+        "error": "Không thể xử lý yêu cầu ghép nối"
     },
     "meta": {
         "telegram": {
@@ -257,6 +274,39 @@
                 "Truy cập Mattermost Integrations",
                 "Tạo Bot Account mới",
                 "Sao chép access token"
+            ]
+        },
+        "zalo": {
+            "description": "Kết nối bot Zalo Official Account qua Bot API",
+            "docsUrl": "https://docs.openclaw.ai/channels/zalo",
+            "fields": {
+                "botToken": {
+                    "label": "Token Bot",
+                    "placeholder": "12345689:abc-xyz"
+                }
+            },
+            "instructions": [
+                "Tạo bot tại Zalo Bot Platform (bot.zaloplatforms.com)",
+                "Sao chép token bot từ trang quản lý",
+                "Dán token vào bên dưới",
+                "Khởi động lại gateway sau khi lưu"
+            ]
+        },
+        "zalouser": {
+            "description": "Kết nối tài khoản Zalo cá nhân qua mã QR",
+            "docsUrl": "https://docs.openclaw.ai/channels/zalouser",
+            "fields": {
+                "allowedUsers": {
+                    "label": "ID người dùng được phép",
+                    "placeholder": "ví dụ: 123456789, 987654321",
+                    "description": "Kiểm soát ai có thể nhắn tin cho tài khoản Zalo:\n• Nhập danh sách ID cách nhau bằng dấu phẩy → chế độ danh sách cho phép\n• Nhập * → chế độ mở (ai cũng có thể nhắn)\n• Để trống → chế độ ghép nối (người dùng phải nhập mã ghép nối)"
+                }
+            },
+            "instructions": [
+                "Mở ứng dụng Zalo trên điện thoại",
+                "Nhấn 'Tạo mã QR' bên dưới",
+                "Quét mã QR bằng ứng dụng Zalo",
+                "Xác nhận đăng nhập trên điện thoại"
             ]
         }
     },

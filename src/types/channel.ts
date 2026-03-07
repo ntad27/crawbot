@@ -17,7 +17,9 @@ export type ChannelType =
   | 'line'
   | 'msteams'
   | 'googlechat'
-  | 'mattermost';
+  | 'mattermost'
+  | 'zalo'
+  | 'zalouser';
 
 /**
  * Channel connection status
@@ -89,6 +91,8 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
   msteams: '👔',
   googlechat: '💭',
   mattermost: '💠',
+  zalo: '💙',
+  zalouser: '💙',
 };
 
 /**
@@ -106,6 +110,8 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
   msteams: 'Microsoft Teams',
   googlechat: 'Google Chat',
   mattermost: 'Mattermost',
+  zalo: 'Zalo',
+  zalouser: 'Zalo Personal',
 };
 
 /**
@@ -436,6 +442,56 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
     ],
     isPlugin: true,
   },
+  zalo: {
+    id: 'zalo',
+    name: 'Zalo',
+    icon: '💙',
+    description: 'channels:meta.zalo.description',
+    connectionType: 'token',
+    docsUrl: 'channels:meta.zalo.docsUrl',
+    configFields: [
+      {
+        key: 'botToken',
+        label: 'channels:meta.zalo.fields.botToken.label',
+        type: 'password',
+        placeholder: 'channels:meta.zalo.fields.botToken.placeholder',
+        required: true,
+        envVar: 'ZALO_BOT_TOKEN',
+      },
+    ],
+    instructions: [
+      'channels:meta.zalo.instructions.0',
+      'channels:meta.zalo.instructions.1',
+      'channels:meta.zalo.instructions.2',
+      'channels:meta.zalo.instructions.3',
+    ],
+    isPlugin: true,
+  },
+  zalouser: {
+    id: 'zalouser',
+    name: 'Zalo Personal',
+    icon: '💙',
+    description: 'channels:meta.zalouser.description',
+    connectionType: 'qr',
+    docsUrl: 'channels:meta.zalouser.docsUrl',
+    configFields: [
+      {
+        key: 'allowedUsers',
+        label: 'channels:meta.zalouser.fields.allowedUsers.label',
+        type: 'text',
+        placeholder: 'channels:meta.zalouser.fields.allowedUsers.placeholder',
+        description: 'channels:meta.zalouser.fields.allowedUsers.description',
+        required: false,
+      },
+    ],
+    instructions: [
+      'channels:meta.zalouser.instructions.0',
+      'channels:meta.zalouser.instructions.1',
+      'channels:meta.zalouser.instructions.2',
+      'channels:meta.zalouser.instructions.3',
+    ],
+    isPlugin: true,
+  },
 };
 
 /**
@@ -454,7 +510,7 @@ export interface AgentBinding {
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['telegram', 'discord', 'whatsapp', 'feishu'];
+  return ['telegram', 'discord', 'whatsapp', 'feishu', 'zalo', 'zalouser'];
 }
 
 /**

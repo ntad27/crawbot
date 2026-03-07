@@ -8,45 +8,60 @@ import { getOpenClawDir, getOpenClawResolvedDir } from './paths';
 
 const require = createRequire(import.meta.url);
 
-// Resolve dependencies from OpenClaw package context (pnpm-safe)
-const openclawPath = getOpenClawDir();
-const openclawResolvedPath = getOpenClawResolvedDir();
-const openclawRequire = createRequire(join(openclawResolvedPath, 'package.json'));
+// Lazy-initialized dependencies (deferred until first use so Electron's `app` module is ready)
+let _openclawPath: string;
+let _openclawResolvedPath: string;
+let _openclawRequire: NodeRequire;
+let _makeWASocket: ReturnType<typeof require>;
+let _initAuth: ReturnType<typeof require>;
+let _DisconnectReason: ReturnType<typeof require>;
+let _fetchLatestBaileysVersion: ReturnType<typeof require>;
+let _QRCode: ReturnType<typeof require>;
+let _QRErrorCorrectLevel: ReturnType<typeof require>;
+let _baileysPath: string;
+let _depsInitialized = false;
+
+function ensureDeps() {
+    if (_depsInitialized) return;
+    _depsInitialized = true;
+
+    _openclawPath = getOpenClawDir();
+    _openclawResolvedPath = getOpenClawResolvedDir();
+    _openclawRequire = createRequire(join(_openclawResolvedPath, 'package.json'));
+
+    _baileysPath = dirname(resolveOpenClawPackageJson('@whiskeysockets/baileys'));
+    const qrcodeTerminalPath = dirname(resolveOpenClawPackageJson('qrcode-terminal'));
+
+    const baileys = require(_baileysPath);
+    _makeWASocket = baileys.default;
+    _initAuth = baileys.useMultiFileAuthState;
+    _DisconnectReason = baileys.DisconnectReason;
+    _fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+
+    _QRCode = require(join(qrcodeTerminalPath, 'vendor', 'QRCode', 'index.js'));
+    _QRErrorCorrectLevel = require(join(qrcodeTerminalPath, 'vendor', 'QRCode', 'QRErrorCorrectLevel.js'));
+}
 
 function resolveOpenClawPackageJson(packageName: string): string {
     const specifier = `${packageName}/package.json`;
     try {
-        return openclawRequire.resolve(specifier);
+        return _openclawRequire.resolve(specifier);
     } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         throw new Error(
             `Failed to resolve "${packageName}" from OpenClaw context. ` +
-            `openclawPath=${openclawPath}, resolvedPath=${openclawResolvedPath}. ${reason}`,
+            `openclawPath=${_openclawPath}, resolvedPath=${_openclawResolvedPath}. ${reason}`,
             { cause: err }
         );
     }
 }
 
-const baileysPath = dirname(resolveOpenClawPackageJson('@whiskeysockets/baileys'));
-const qrcodeTerminalPath = dirname(resolveOpenClawPackageJson('qrcode-terminal'));
-
-// Load Baileys dependencies dynamically
-const {
-    default: makeWASocket,
-    useMultiFileAuthState: initAuth, // Rename to avoid React hook linter error
-    DisconnectReason,
-    fetchLatestBaileysVersion
-} = require(baileysPath);
-
-// Load QRCode dependencies dynamically
-const QRCodeModule = require(join(qrcodeTerminalPath, 'vendor', 'QRCode', 'index.js'));
-const QRErrorCorrectLevelModule = require(join(qrcodeTerminalPath, 'vendor', 'QRCode', 'QRErrorCorrectLevel.js'));
-
 // Types from Baileys (approximate since we don't have types for dynamic require)
 interface BaileysError extends Error {
     output?: { statusCode?: number };
 }
-type BaileysSocket = ReturnType<typeof makeWASocket>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BaileysSocket = any;
 type ConnectionState = {
     connection: 'close' | 'open' | 'connecting';
     lastDisconnect?: {
@@ -57,11 +72,9 @@ type ConnectionState = {
 
 // --- QR Generation Logic (Adapted from OpenClaw) ---
 
-const QRCode = QRCodeModule;
-const QRErrorCorrectLevel = QRErrorCorrectLevelModule;
-
 function createQrMatrix(input: string) {
-    const qr = new QRCode(-1, QRErrorCorrectLevel.L);
+    ensureDeps();
+    const qr = new _QRCode(-1, _QRErrorCorrectLevel.L);
     qr.addData(input);
     qr.make();
     return qr;
@@ -245,7 +258,7 @@ export class WhatsAppLoginManager extends EventEmitter {
             let pino: (...args: unknown[]) => Record<string, unknown>;
             try {
                 // Try to resolve pino from baileys context since it's a dependency of baileys
-                const baileysRequire = createRequire(join(baileysPath, 'package.json'));
+                const baileysRequire = createRequire(join(_baileysPath, 'package.json'));
                 pino = baileysRequire('pino');
             } catch (e) {
                 console.warn('[WhatsAppLogin] Could not load pino from baileys, trying root', e);
@@ -266,15 +279,17 @@ export class WhatsAppLoginManager extends EventEmitter {
                 }
             }
 
+            ensureDeps();
+
             console.log('[WhatsAppLogin] Loading auth state...');
-            const { state, saveCreds } = await initAuth(authDir);
+            const { state, saveCreds } = await _initAuth(authDir);
 
             console.log('[WhatsAppLogin] Fetching latest version...');
-            const { version } = await fetchLatestBaileysVersion();
+            const { version } = await _fetchLatestBaileysVersion();
 
             console.log(`[WhatsAppLogin] Starting login for ${accountId}, version: ${version}`);
 
-            this.socket = makeWASocket({
+            this.socket = _makeWASocket({
                 version,
                 auth: state,
                 printQRInTerminal: false,
@@ -314,7 +329,7 @@ export class WhatsAppLoginManager extends EventEmitter {
                     if (connection === 'close') {
                         const error = lastDisconnect?.error as BaileysError | undefined;
                         const statusCode = error?.output?.statusCode;
-                        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+                        const isLoggedOut = statusCode === _DisconnectReason.loggedOut;
                         // Treat 401 as transient if we haven't exhausted retries (max 2 attempts)
                         // This handles the case where WhatsApp's session hasn't fully released
                         const shouldReconnect = !isLoggedOut || this.retryCount < 2;
@@ -337,7 +352,7 @@ export class WhatsAppLoginManager extends EventEmitter {
                         } else {
                             // Logged out or explicitly stopped
                             this.active = false;
-                            if (error?.output?.statusCode === DisconnectReason.loggedOut) {
+                            if (error?.output?.statusCode === _DisconnectReason.loggedOut) {
                                 try {
                                     rmSync(authDir, { recursive: true, force: true });
                                 } catch (err) {

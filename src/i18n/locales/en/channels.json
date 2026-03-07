@@ -20,6 +20,8 @@
     "toast": {
         "whatsappConnected": "WhatsApp connected successfully",
         "whatsappFailed": "WhatsApp connection failed: {{error}}",
+        "zalouserConnected": "Zalo Personal connected successfully",
+        "zalouserFailed": "Zalo Personal connection failed: {{error}}",
         "channelSaved": "Channel {{name}} saved",
         "channelConnecting": "Connecting to {{name}}...",
         "restartManual": "Please restart the gateway manually",
@@ -65,6 +67,21 @@
     },
     "disabled": "Disabled",
     "restarting": "Gateway restarting...",
+    "pairing": {
+        "title": "Pairing Requests",
+        "description": "Users waiting to pair with your channels",
+        "empty": "No pending pairing requests",
+        "channel": "Channel",
+        "code": "Code",
+        "user": "User",
+        "account": "Account",
+        "requestedAt": "Requested",
+        "approve": "Approve",
+        "reject": "Reject",
+        "approved": "Pairing approved",
+        "rejected": "Pairing rejected",
+        "error": "Failed to process pairing request"
+    },
     "account": {
         "default": "Default",
         "deleteConfirm": "Delete account \"{{name}}\"? This will also remove its agent binding."
@@ -276,6 +293,39 @@
                 "Go to Mattermost Integrations",
                 "Create a new Bot Account",
                 "Copy the access token"
+            ]
+        },
+        "zalo": {
+            "description": "Connect Zalo Official Account bot via Bot API",
+            "docsUrl": "https://docs.openclaw.ai/channels/zalo",
+            "fields": {
+                "botToken": {
+                    "label": "Bot Token",
+                    "placeholder": "12345689:abc-xyz"
+                }
+            },
+            "instructions": [
+                "Create a bot at Zalo Bot Platform (bot.zaloplatforms.com)",
+                "Copy the bot token from the dashboard",
+                "Paste the token below",
+                "Restart the gateway after saving"
+            ]
+        },
+        "zalouser": {
+            "description": "Connect Zalo personal account via QR code login",
+            "docsUrl": "https://docs.openclaw.ai/channels/zalouser",
+            "fields": {
+                "allowedUsers": {
+                    "label": "Allowed User IDs",
+                    "placeholder": "e.g. 123456789, 987654321",
+                    "description": "Controls who can DM your Zalo account:\n• Enter comma-separated User IDs → allowlist mode (only listed users can chat)\n• Enter * → open mode (anyone can chat)\n• Leave blank → pairing mode (users must enter a pairing code to connect)"
+                }
+            },
+            "instructions": [
+                "Open the Zalo app on your phone",
+                "Click 'Generate QR Code' below",
+                "Scan the QR code with your Zalo app",
+                "Confirm login on your phone"
             ]
         }
     },

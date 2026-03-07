@@ -43,6 +43,7 @@ import {
   type ChannelMeta,
   type ChannelConfigField,
 } from '@/types/channel';
+import { ChannelIcon } from '@/components/ChannelIcon';
 
 interface SetupStep {
   id: string;
@@ -1775,7 +1776,7 @@ function SetupChannelContent() {
                 onClick={() => setSelectedChannel(type)}
                 className="p-4 rounded-lg bg-muted/50 hover:bg-muted transition-all text-left"
               >
-                <span className="text-3xl">{channelMeta.icon}</span>
+                <ChannelIcon type={channelMeta.id} size="lg" />
                 <p className="font-medium mt-2">{channelMeta.name}</p>
                 <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
                   {t(channelMeta.description)}

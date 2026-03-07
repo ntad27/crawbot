@@ -9,6 +9,7 @@ interface AddChannelParams {
   type: ChannelType;
   name: string;
   token?: string;
+  accountId?: string;
 }
 
 interface ChannelsState {
@@ -59,6 +60,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
             lastError?: string;
             name?: string;
             linked?: boolean;
+            lastStartAt?: number | null;
             lastConnectedAt?: number | null;
             lastInboundAt?: number | null;
             lastOutboundAt?: number | null;
@@ -82,15 +84,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
         for (const channelId of channelOrder) {
           const summary = (data.channels as Record<string, unknown> | undefined)?.[channelId] as Record<string, unknown> | undefined;
-          const configured =
+          const channelConfigured =
             typeof summary?.configured === 'boolean'
               ? summary.configured
               : typeof (summary as { running?: boolean })?.running === 'boolean'
                 ? true
                 : false;
-          if (!configured) continue;
 
           const accounts = data.channelAccounts?.[channelId] || [];
+          // A channel type is usable if the top-level is configured OR any account is configured
+          const anyAccountConfigured = accounts.some((a: { configured?: boolean }) => a.configured === true);
+          if (!channelConfigured && !anyAccountConfigured) continue;
           const summaryError =
             typeof (summary as { error?: string })?.error === 'string'
               ? (summary as { error?: string }).error
@@ -113,6 +117,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           }
 
           for (const account of accounts) {
+            // Skip ghost accounts: not configured, never ran, no activity.
+            // These appear when stale bindings reference non-existent account IDs.
+            if (account.configured === false && account.running !== true &&
+                !account.lastStartAt && !account.lastInboundAt && !account.lastOutboundAt) {
+              continue;
+            }
+
             const acctId = account.accountId || 'default';
             let status: Channel['status'] = 'disconnected';
             const acctConnected = account.connected === true || account.linked === true || hasRecentActivity(account);
@@ -140,6 +151,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           }
         }
 
+        // Remove phantom "default" accounts for channel types that have named accounts.
+        // The gateway reports a "default" entry from the top-level channel config even when
+        // only named accounts (e.g. "annie2_bot") are configured under channels.<type>.accounts.
+        const typesWithNamedAccounts = new Set<string>();
+        for (const ch of channels) {
+          if (ch.accountId && ch.accountId !== 'default') {
+            typesWithNamedAccounts.add(ch.type);
+          }
+        }
+        for (let i = channels.length - 1; i >= 0; i--) {
+          if (channels[i].accountId === 'default' && typesWithNamedAccounts.has(channels[i].type)) {
+            channels.splice(i, 1);
+          }
+        }
+
         // Merge enabled status from config + add disabled accounts not reported by Gateway
         try {
           const enabledResult = await window.electron.ipcRenderer.invoke(
@@ -156,10 +182,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
                 ch.enabled = true;
               }
             }
-            // Add disabled accounts that the Gateway didn't report
+            // Add accounts from the enabled map that the Gateway didn't report.
+            // For channel types the gateway already knows about, only add disabled
+            // accounts (enabled ones should have been reported by the gateway).
+            // For channel types the gateway doesn't know about at all (e.g. plugin
+            // channels like zalouser), add all entries so they appear in the list.
             for (const [channelType, acctMap] of Object.entries(enabledResult.map)) {
+              const gatewayKnowsType = channels.some((c) => c.type === channelType);
               for (const [acctId, enabled] of Object.entries(acctMap)) {
-                if (enabled) continue; // only care about disabled ones
+                if (gatewayKnowsType && enabled) continue;
                 const exists = channels.some(
                   (c) => c.type === channelType && (c.accountId || 'default') === acctId
                 );
@@ -170,7 +201,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
                     name: acctId === 'default' ? channelType : `${channelType} (${acctId})`,
                     status: 'disconnected',
                     accountId: acctId,
-                    enabled: false,
+                    enabled,
                   });
                 }
               }
@@ -206,11 +237,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return result.result;
       } else {
         // If gateway is not available, create a local channel for now
+        const acctId = params.accountId || 'default';
         const newChannel: Channel = {
-          id: `local-${Date.now()}`,
+          id: `${params.type}-${acctId}`,
           type: params.type,
-          name: params.name,
+          name: acctId !== 'default' ? `${params.name} (${acctId})` : params.name,
           status: 'disconnected',
+          accountId: acctId,
         };
         set((state) => ({
           channels: [...state.channels, newChannel],
@@ -219,11 +252,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       }
     } catch {
       // Create local channel if gateway unavailable
+      const acctId = params.accountId || 'default';
       const newChannel: Channel = {
-        id: `local-${Date.now()}`,
+        id: `${params.type}-${acctId}`,
         type: params.type,
-        name: params.name,
+        name: acctId !== 'default' ? `${params.name} (${acctId})` : params.name,
         status: 'disconnected',
+        accountId: acctId,
       };
       set((state) => ({
         channels: [...state.channels, newChannel],

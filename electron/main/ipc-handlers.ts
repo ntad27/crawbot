@@ -94,6 +94,7 @@ import {
   getSessionDmScopeFromConfig,
 } from '../utils/agent-config';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
+import { zaloUserLoginManager } from '../utils/zalouser-login';
 import { exportConfigBundle, importConfigBundle, validateConfigBundle } from '../utils/config-bundle';
 import { getProviderConfig, getProviderDefaultModel } from '../utils/provider-registry';
 import AdmZip from 'adm-zip';
@@ -151,6 +152,9 @@ export function registerIpcHandlers(
 
   // WhatsApp handlers
   registerWhatsAppHandlers(mainWindow);
+
+  // Zalo Personal handlers
+  registerZaloUserHandlers(mainWindow);
 
   // Agent config handlers (direct file access)
   registerAgentHandlers();
@@ -1443,6 +1447,132 @@ function registerOpenClawHandlers(): void {
       return { success: false, error: String(error) };
     }
   });
+
+  // ── Channel Pairing ──
+
+  const PAIRING_DIR = join(homedir(), '.openclaw', 'credentials');
+  const PAIRING_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+  type PairingRequest = {
+    id: string;
+    code: string;
+    createdAt: string;
+    lastSeenAt: string;
+    meta?: Record<string, string>;
+  };
+
+  type PairingStore = { version: 1; requests: PairingRequest[] };
+  type AllowFromStore = { version: 1; allowFrom: string[] };
+
+  function pairingPath(channel: string): string {
+    return join(PAIRING_DIR, `${channel}-pairing.json`);
+  }
+
+  function allowFromPath(channel: string, accountId?: string): string {
+    const base = channel;
+    if (accountId && accountId !== 'default') {
+      return join(PAIRING_DIR, `${base}-${accountId}-allowFrom.json`);
+    }
+    return join(PAIRING_DIR, `${base}-allowFrom.json`);
+  }
+
+  function readPairingStore(channel: string): PairingStore {
+    const fp = pairingPath(channel);
+    try {
+      if (existsSync(fp)) {
+        return JSON.parse(readFileSync(fp, 'utf-8')) as PairingStore;
+      }
+    } catch { /* ignore */ }
+    return { version: 1, requests: [] };
+  }
+
+  function writePairingStore(channel: string, store: PairingStore): void {
+    const fp = pairingPath(channel);
+    if (!existsSync(PAIRING_DIR)) mkdirSync(PAIRING_DIR, { recursive: true });
+    writeFileSync(fp, JSON.stringify(store, null, 2), 'utf-8');
+  }
+
+  function readAllowFrom(channel: string, accountId?: string): string[] {
+    const fp = allowFromPath(channel, accountId);
+    try {
+      if (existsSync(fp)) {
+        const data = JSON.parse(readFileSync(fp, 'utf-8')) as AllowFromStore;
+        return Array.isArray(data.allowFrom) ? data.allowFrom : [];
+      }
+    } catch { /* ignore */ }
+    return [];
+  }
+
+  function writeAllowFrom(channel: string, accountId: string | undefined, entries: string[]): void {
+    const fp = allowFromPath(channel, accountId);
+    if (!existsSync(PAIRING_DIR)) mkdirSync(PAIRING_DIR, { recursive: true });
+    writeFileSync(fp, JSON.stringify({ version: 1, allowFrom: entries } satisfies AllowFromStore, null, 2), 'utf-8');
+  }
+
+  // List pending pairing requests across all channels
+  ipcMain.handle('pairing:list', async () => {
+    try {
+      const results: Array<PairingRequest & { channel: string }> = [];
+      const now = Date.now();
+      if (!existsSync(PAIRING_DIR)) return { success: true, requests: [] };
+      for (const file of readdirSync(PAIRING_DIR)) {
+        const match = file.match(/^(.+)-pairing\.json$/);
+        if (!match) continue;
+        const channel = match[1];
+        const store = readPairingStore(channel);
+        for (const req of store.requests) {
+          const createdAt = Date.parse(req.createdAt);
+          if (Number.isFinite(createdAt) && now - createdAt < PAIRING_TTL_MS) {
+            results.push({ ...req, channel });
+          }
+        }
+      }
+      results.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return { success: true, requests: results };
+    } catch (error) {
+      console.error('Failed to list pairing requests:', error);
+      return { success: false, error: String(error), requests: [] };
+    }
+  });
+
+  // Approve a pairing request by code
+  ipcMain.handle('pairing:approve', async (_, channel: string, code: string, accountId?: string) => {
+    try {
+      const store = readPairingStore(channel);
+      const upperCode = code.trim().toUpperCase();
+      const idx = store.requests.findIndex(r => r.code?.toUpperCase() === upperCode);
+      if (idx < 0) return { success: false, error: 'Request not found or expired' };
+      const entry = store.requests[idx];
+      store.requests.splice(idx, 1);
+      writePairingStore(channel, store);
+      // Add to allowFrom
+      const resolvedAccountId = entry.meta?.accountId || accountId;
+      const current = readAllowFrom(channel, resolvedAccountId);
+      if (!current.includes(entry.id)) {
+        writeAllowFrom(channel, resolvedAccountId, [...current, entry.id]);
+      }
+      return { success: true, approved: { id: entry.id, channel, code: entry.code } };
+    } catch (error) {
+      console.error('Failed to approve pairing:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Reject (remove) a pairing request by code
+  ipcMain.handle('pairing:reject', async (_, channel: string, code: string) => {
+    try {
+      const store = readPairingStore(channel);
+      const upperCode = code.trim().toUpperCase();
+      const idx = store.requests.findIndex(r => r.code?.toUpperCase() === upperCode);
+      if (idx < 0) return { success: false, error: 'Request not found or expired' };
+      store.requests.splice(idx, 1);
+      writePairingStore(channel, store);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to reject pairing:', error);
+      return { success: false, error: String(error) };
+    }
+  });
 }
 
 /**
@@ -1497,6 +1627,54 @@ function registerWhatsAppHandlers(mainWindow: BrowserWindow): void {
   });
 }
 
+/**
+ * Zalo Personal Login Handlers
+ */
+function registerZaloUserHandlers(mainWindow: BrowserWindow): void {
+  // Request Zalo Personal QR code
+  ipcMain.handle('channel:requestZaloUserQr', async (_, accountId: string) => {
+    try {
+      logger.info('channel:requestZaloUserQr', { accountId });
+      await zaloUserLoginManager.start(accountId);
+      return { success: true };
+    } catch (error) {
+      logger.error('channel:requestZaloUserQr failed', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Cancel Zalo Personal login
+  ipcMain.handle('channel:cancelZaloUserQr', async () => {
+    try {
+      await zaloUserLoginManager.stop();
+      return { success: true };
+    } catch (error) {
+      logger.error('channel:cancelZaloUserQr failed', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Forward events to renderer
+  zaloUserLoginManager.on('qr', (data) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('channel:zalouser-qr', data);
+    }
+  });
+
+  zaloUserLoginManager.on('success', (data) => {
+    if (!mainWindow.isDestroyed()) {
+      logger.info('zalouser:login-success', data);
+      mainWindow.webContents.send('channel:zalouser-success', data);
+    }
+  });
+
+  zaloUserLoginManager.on('error', (error) => {
+    if (!mainWindow.isDestroyed()) {
+      logger.error('zalouser:login-error', error);
+      mainWindow.webContents.send('channel:zalouser-error', error);
+    }
+  });
+}
 
 /**
  * Provider-related IPC handlers

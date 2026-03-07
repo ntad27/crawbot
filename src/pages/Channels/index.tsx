@@ -2,7 +2,7 @@
  * Channels Page
  * Manage messaging channel connections with configuration UI
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus,
   Radio,
@@ -36,7 +36,6 @@ import { useAgentsStore } from '@/stores/agents';
 import { StatusBadge, type Status } from '@/components/common/StatusBadge';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import {
-  CHANNEL_ICONS,
   CHANNEL_NAMES,
   CHANNEL_META,
   getPrimaryChannels,
@@ -46,6 +45,7 @@ import {
   type ChannelConfigField,
   type AgentBinding,
 } from '@/types/channel';
+import { ChannelIcon } from '@/components/ChannelIcon';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
@@ -61,12 +61,39 @@ export function Channels() {
   const [editChannel, setEditChannel] = useState<Channel | null>(null);
   const [restarting, setRestarting] = useState(false);
 
-  // Fetch channels and bindings on mount
+  // Pairing requests
+  type PairingRequest = {
+    id: string;
+    code: string;
+    createdAt: string;
+    lastSeenAt: string;
+    channel: string;
+    meta?: Record<string, string>;
+  };
+  const [pairingRequests, setPairingRequests] = useState<PairingRequest[]>([]);
+  const fetchPairingRequests = useCallback(async () => {
+    try {
+      const result = (await window.electron.ipcRenderer.invoke('pairing:list')) as {
+        success: boolean;
+        requests: PairingRequest[];
+      };
+      if (result.success) setPairingRequests(result.requests);
+    } catch { /* ignore */ }
+  }, []);
+
+  // Fetch channels, bindings, and pairing requests on mount
   useEffect(() => {
     fetchChannels();
     fetchBindings();
     fetchAgents();
-  }, [fetchChannels, fetchBindings, fetchAgents]);
+    fetchPairingRequests();
+  }, [fetchChannels, fetchBindings, fetchAgents, fetchPairingRequests]);
+
+  // Poll pairing requests every 10s
+  useEffect(() => {
+    const interval = setInterval(fetchPairingRequests, 10000);
+    return () => clearInterval(interval);
+  }, [fetchPairingRequests]);
 
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on('gateway:channel-status', () => {
@@ -258,6 +285,101 @@ export function Channels() {
         </Card>
       )}
 
+      {/* Pairing Requests */}
+      {pairingRequests.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              {t('pairing.title')}
+              <Badge variant="secondary">{pairingRequests.length}</Badge>
+            </CardTitle>
+            <CardDescription>{t('pairing.description')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {pairingRequests.map((req) => {
+                const displayName = req.meta?.name || req.meta?.firstName || req.meta?.username || req.id;
+                const channelName = CHANNEL_NAMES[req.channel as ChannelType] || req.channel;
+                const accountId = req.meta?.accountId || 'default';
+                const timeAgo = (() => {
+                  const diff = Date.now() - new Date(req.createdAt).getTime();
+                  const mins = Math.floor(diff / 60000);
+                  if (mins < 1) return 'just now';
+                  if (mins < 60) return `${mins}m ago`;
+                  return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+                })();
+                // Collect all meta fields except accountId (shown separately)
+                const extraMeta = req.meta
+                  ? Object.entries(req.meta).filter(([k]) => k !== 'accountId' && k !== 'name' && k !== 'firstName' && k !== 'username')
+                  : [];
+                return (
+                  <div
+                    key={`${req.channel}-${req.code}`}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-card gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <ChannelIcon type={req.channel as ChannelType} size="sm" />
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="font-medium text-sm">{displayName}</p>
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                          <span>{t('pairing.channel')}: <span className="font-medium text-foreground">{channelName}</span></span>
+                          <span>{t('pairing.account')}: <span className="font-medium text-foreground">{accountId}</span></span>
+                          <span>{t('pairing.user')} ID: <span className="font-mono text-foreground">{req.id}</span></span>
+                          {req.meta?.username && <span>@{req.meta.username}</span>}
+                          <span>{t('pairing.code')}: <span className="font-mono font-bold text-foreground">{req.code}</span></span>
+                          <span>{t('pairing.requestedAt')}: {timeAgo}</span>
+                          {extraMeta.map(([k, v]) => (
+                            <span key={k}>{k}: <span className="text-foreground">{v}</span></span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        onClick={async () => {
+                          const result = (await window.electron.ipcRenderer.invoke(
+                            'pairing:reject', req.channel, req.code
+                          )) as { success: boolean };
+                          if (result.success) {
+                            toast.success(t('pairing.rejected'));
+                            fetchPairingRequests();
+                          } else {
+                            toast.error(t('pairing.error'));
+                          }
+                        }}
+                      >
+                        <X className="h-3 w-3 mr-1" />
+                        {t('pairing.reject')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={async () => {
+                          const result = (await window.electron.ipcRenderer.invoke(
+                            'pairing:approve', req.channel, req.code, accountId
+                          )) as { success: boolean };
+                          if (result.success) {
+                            toast.success(t('pairing.approved'));
+                            fetchPairingRequests();
+                          } else {
+                            toast.error(t('pairing.error'));
+                          }
+                        }}
+                      >
+                        <Check className="h-3 w-3 mr-1" />
+                        {t('pairing.approve')}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Restarting overlay */}
       {restarting && (
         <div className="fixed inset-0 z-40 bg-black/30 flex items-center justify-center">
@@ -314,7 +436,7 @@ function ChannelCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{CHANNEL_ICONS[channel.type]}</span>
+            <ChannelIcon type={channel.type} size="md" />
             <div>
               <CardTitle className="text-base">{channel.name}</CardTitle>
               <CardDescription className="text-xs">
@@ -417,6 +539,15 @@ function AddChannelDialog({
   // Binding state
   const [bindingAgentId, setBindingAgentId] = useState('');
 
+  // Refs for mutable form values so QR login callbacks stay stable
+  // (prevents useEffect re-runs that cancel active QR sessions)
+  const accountIdRef = useRef(accountId);
+  accountIdRef.current = accountId;
+  const bindingAgentIdRef = useRef(bindingAgentId);
+  bindingAgentIdRef.current = bindingAgentId;
+  const isEditModeRef = useRef(isEditMode);
+  isEditModeRef.current = isEditMode;
+
   const meta: ChannelMeta | null = selectedType ? CHANNEL_META[selectedType] : null;
 
   // Load existing config when editing, or reset when adding new
@@ -425,6 +556,7 @@ function AddChannelDialog({
       setConfigValues({});
       if (!isEditMode) setAccountId('');
       window.electron.ipcRenderer.invoke('channel:cancelWhatsAppQr').catch(() => {});
+      window.electron.ipcRenderer.invoke('channel:cancelZaloUserQr').catch(() => {});
       return;
     }
 
@@ -487,7 +619,76 @@ function AddChannelDialog({
      
   }, [isEditMode, editChannel, selectedType, bindings]);
 
+  // Shared post-QR-login success handler for QR-based channels (WhatsApp, Zalo Personal)
+  // Uses refs for form values so the callback identity stays stable and
+  // useEffect doesn't re-run (which would cancel the active QR session).
+  const handleQrLoginSuccess = useCallback(async (channelType: 'whatsapp' | 'zalouser', eventAccountId?: string) => {
+    const toastKey = channelType === 'whatsapp' ? 'toast.whatsappConnected' : 'toast.zalouserConnected';
+    toast.success(t(toastKey));
+
+    const acctId = eventAccountId || accountIdRef.current.trim() || 'default';
+    const currentBindingAgentId = bindingAgentIdRef.current;
+    const currentIsEditMode = isEditModeRef.current;
+
+    // Save plugin config (top-level enabled + channels.<type>)
+    try {
+      const saveResult = (await window.electron.ipcRenderer.invoke(
+        'channel:saveConfig',
+        channelType,
+        { enabled: true }
+      )) as { success?: boolean; error?: string };
+      if (!saveResult?.success) {
+        console.error(`Failed to save ${channelType} config:`, saveResult?.error);
+      }
+    } catch (error) {
+      console.error(`Failed to save ${channelType} config:`, error);
+    }
+
+    // Save account-level config (channels.<type>.accounts.<accountId>)
+    try {
+      await window.electron.ipcRenderer.invoke(
+        'channel:saveAccountConfig',
+        channelType,
+        acctId,
+        { enabled: true }
+      );
+    } catch (error) {
+      console.error(`Failed to save ${channelType} account config:`, error);
+    }
+
+    // In add mode, register a local channel entry so it shows up immediately
+    if (!currentIsEditMode) {
+      await addChannel({
+        type: channelType,
+        name: CHANNEL_NAMES[channelType],
+        accountId: acctId,
+      });
+    }
+
+    // Save or remove agent binding
+    if (currentBindingAgentId) {
+      await setBinding(currentBindingAgentId, channelType, acctId === 'default' ? undefined : acctId);
+    } else if (currentIsEditMode) {
+      await removeBinding(channelType, acctId === 'default' ? undefined : acctId);
+    }
+    await fetchBindings();
+
+    // Close dialog immediately after successful login
+    onChannelAdded();
+
+    // Restart gateway in the background so the channel connects
+    try {
+      await window.electron.ipcRenderer.invoke('gateway:restart');
+    } catch (restartError) {
+      console.warn('Gateway restart after QR login:', restartError);
+    }
+  }, [addChannel, setBinding, removeBinding, fetchBindings, onChannelAdded, t]);
+
   // Listen for WhatsApp QR events
+  // Use ref to avoid useEffect re-running (and canceling QR session) when callback identity changes
+  const handleQrLoginSuccessRefWa = useRef(handleQrLoginSuccess);
+  handleQrLoginSuccessRefWa.current = handleQrLoginSuccess;
+
   useEffect(() => {
     if (selectedType !== 'whatsapp') return;
 
@@ -498,31 +699,7 @@ function AddChannelDialog({
 
     const onSuccess = async (...args: unknown[]) => {
       const data = args[0] as { accountId?: string } | undefined;
-      toast.success(t('toast.whatsappConnected'));
-      const _accountId = data?.accountId || 'default';
-      try {
-        const saveResult = (await window.electron.ipcRenderer.invoke(
-          'channel:saveConfig',
-          'whatsapp',
-          { enabled: true }
-        )) as { success?: boolean; error?: string };
-        if (!saveResult?.success) {
-          console.error('Failed to save WhatsApp config:', saveResult?.error);
-        } else {
-          console.info('Saved WhatsApp config for account:', _accountId);
-        }
-      } catch (error) {
-        console.error('Failed to save WhatsApp config:', error);
-      }
-      // Register the channel locally so it shows up immediately
-      addChannel({
-        type: 'whatsapp',
-        name: 'WhatsApp',
-      }).then(() => {
-        // Restart gateway to pick up the new session
-        window.electron.ipcRenderer.invoke('gateway:restart').catch(console.error);
-        onChannelAdded();
-      });
+      await handleQrLoginSuccessRefWa.current('whatsapp', data?.accountId);
     };
 
     const onError = (...args: unknown[]) => {
@@ -547,10 +724,54 @@ function AddChannelDialog({
       if (typeof removeQrListener === 'function') removeQrListener();
       if (typeof removeSuccessListener === 'function') removeSuccessListener();
       if (typeof removeErrorListener === 'function') removeErrorListener();
-      // Cancel when unmounting or switching types
       window.electron.ipcRenderer.invoke('channel:cancelWhatsAppQr').catch(() => {});
     };
-  }, [selectedType, addChannel, onChannelAdded, t]);
+  }, [selectedType, t]);
+
+  // Listen for Zalo Personal QR events
+  // Use ref to avoid useEffect re-running (and canceling QR session) when callback identity changes
+  const handleQrLoginSuccessRef = useRef(handleQrLoginSuccess);
+  handleQrLoginSuccessRef.current = handleQrLoginSuccess;
+
+  useEffect(() => {
+    if (selectedType !== 'zalouser') return;
+
+    const onQr = (...args: unknown[]) => {
+      const data = args[0] as { qr: string };
+      const qrData = data.qr;
+      setQrCode(qrData.startsWith('data:') ? qrData : `data:image/png;base64,${qrData}`);
+    };
+
+    const onSuccess = async (...args: unknown[]) => {
+      const data = args[0] as { accountId?: string } | undefined;
+      await handleQrLoginSuccessRef.current('zalouser', data?.accountId);
+    };
+
+    const onError = (...args: unknown[]) => {
+      const err = args[0] as string;
+      console.error('Zalo Personal Login Error:', err);
+      toast.error(t('toast.zalouserFailed', { error: err }));
+      setQrCode(null);
+      setConnecting(false);
+    };
+
+    const removeQrListener = window.electron.ipcRenderer.on('channel:zalouser-qr', onQr);
+    const removeSuccessListener = window.electron.ipcRenderer.on(
+      'channel:zalouser-success',
+      onSuccess
+    );
+    const removeErrorListener = window.electron.ipcRenderer.on(
+      'channel:zalouser-error',
+      onError
+    );
+
+    return () => {
+      if (typeof removeQrListener === 'function') removeQrListener();
+      if (typeof removeSuccessListener === 'function') removeSuccessListener();
+      if (typeof removeErrorListener === 'function') removeErrorListener();
+      window.electron.ipcRenderer.invoke('channel:cancelZaloUserQr').catch(() => {});
+    };
+  }, [selectedType, t]);
 
   const handleValidate = async () => {
     if (!selectedType) return;
@@ -605,7 +826,11 @@ function AddChannelDialog({
       // For QR-based channels, request QR code
       if (meta.connectionType === 'qr') {
         const qrAccountId = accountId.trim() || 'default';
-        await window.electron.ipcRenderer.invoke('channel:requestWhatsAppQr', qrAccountId);
+        if (selectedType === 'zalouser') {
+          await window.electron.ipcRenderer.invoke('channel:requestZaloUserQr', qrAccountId);
+        } else {
+          await window.electron.ipcRenderer.invoke('channel:requestWhatsAppQr', qrAccountId);
+        }
         // The QR code will be set via event listener
         return;
       }
@@ -720,6 +945,37 @@ function AddChannelDialog({
     }
   };
 
+  // Save QR channel config (allowedUsers, binding) without triggering QR login
+  const handleSaveQrConfig = async () => {
+    if (!selectedType || !meta) return;
+    setConnecting(true);
+    try {
+      const acct = accountId.trim() || 'default';
+      const config: Record<string, unknown> = { ...configValues, enabled: true };
+      await window.electron.ipcRenderer.invoke(
+        'channel:saveAccountConfig',
+        selectedType,
+        acct,
+        config
+      );
+      if (bindingAgentId) {
+        await setBinding(bindingAgentId, selectedType, acct === 'default' ? undefined : acct);
+      } else if (isEditMode) {
+        await removeBinding(selectedType, acct === 'default' ? undefined : acct);
+      }
+      await fetchBindings();
+      toast.success(t('toast.channelSaved', { name: meta.name }));
+      try {
+        await window.electron.ipcRenderer.invoke('gateway:restart');
+      } catch { /* ignore */ }
+      onChannelAdded();
+    } catch (error) {
+      toast.error(t('toast.configFailed', { error }));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   const isFormValid = () => {
     if (!meta) return false;
 
@@ -773,7 +1029,7 @@ function AddChannelDialog({
                     onClick={() => onSelectType(type)}
                     className="p-4 rounded-lg border hover:bg-accent transition-colors text-left"
                   >
-                    <span className="text-3xl">{channelMeta.icon}</span>
+                    <ChannelIcon type={channelMeta.id} size="lg" />
                     <p className="font-medium mt-2">{channelMeta.name}</p>
                     <p className="text-xs text-muted-foreground mt-1">
                       {channelMeta.connectionType === 'qr' ? t('dialog.qrCode') : t('dialog.token')}
@@ -967,7 +1223,22 @@ function AddChannelDialog({
                       )}
                     </Button>
                   )}
-                  <Button onClick={handleConnect} disabled={connecting || !isFormValid()}>
+                  {/* Save button for QR channels with config fields (e.g. allowedUsers) */}
+                  {meta?.connectionType === 'qr' && meta.configFields.length > 0 && isEditMode && (
+                    <Button onClick={handleSaveQrConfig} disabled={connecting}>
+                      {connecting ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4 mr-2" />
+                      )}
+                      {t('dialog.updateAndReconnect')}
+                    </Button>
+                  )}
+                  <Button
+                    variant={meta?.connectionType === 'qr' && meta.configFields.length > 0 && isEditMode ? 'secondary' : 'default'}
+                    onClick={handleConnect}
+                    disabled={connecting || !isFormValid()}
+                  >
                     {connecting ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
