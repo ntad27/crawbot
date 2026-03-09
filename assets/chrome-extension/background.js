@@ -55,6 +55,9 @@ const reattachPending = new Set()
 const attachingTabs = new Set()
 /** @type {Set<string>} targetIds announced to current relay connection — prevents duplicates */
 const announcedTargetIds = new Set()
+// Auto-detach is disabled — Playwright maintains long-lived CDP sessions and
+// detaching mid-session corrupts its internal state (stuck responses → timeouts).
+// Users can manually detach via the extension icon click.
 
 /** @type {number|null} */
 let activeTabId = null
@@ -403,11 +406,16 @@ async function ensureDebuggerAttached(tabId) {
   const existing = tabs.get(tabId)
   if (existing?.state === 'connected') return existing
   if (existing?.state === 'connecting') {
-    // Another attach in progress — wait for it
-    await new Promise((r) => setTimeout(r, 2000))
-    const check = tabs.get(tabId)
-    if (check?.state === 'connected') return check
-    throw new Error('Debugger attach in progress')
+    // Another attach in progress — wait for it (poll until done or timeout)
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 250))
+      const check = tabs.get(tabId)
+      if (check?.state === 'connected') return check
+      if (check?.state !== 'connecting') break
+    }
+    const final = tabs.get(tabId)
+    if (final?.state === 'connected') return final
+    throw new Error('Debugger attach timed out')
   }
 
   // Mark as connecting to prevent concurrent attaches
@@ -422,6 +430,30 @@ async function ensureDebuggerAttached(tabId) {
     if (existing) tabs.set(tabId, { ...existing, state: /** @type {const} */ ('announced') })
     throw err
   }
+
+  // Enable CDP domains so commands work immediately after attach
+  // This must happen BEFORE we mark as 'connected' and release attachingTabs
+  for (const domain of CDP_DOMAINS_TO_ENABLE) {
+    try {
+      await chrome.debugger.sendCommand(debuggee, `${domain}.enable`)
+    } catch (err) {
+      console.warn(`Tab ${tabId}: ${domain}.enable failed:`, err?.message || err)
+    }
+  }
+
+  // Settle delay — Chrome needs time to initialize CDP session, populate frame tree,
+  // and send execution context events after domain enables. Playwright processes these
+  // asynchronously via relay, so we need enough time for the full round-trip.
+  await new Promise((r) => setTimeout(r, 500))
+
+  // Verify debugger is responsive with a probe command
+  try {
+    await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: '1', returnByValue: true })
+  } catch (err) {
+    console.warn(`Tab ${tabId}: post-attach probe failed, extra settle:`, err?.message || err)
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
   attachingTabs.delete(tabId)
 
   // Keep sessionId but get real Chrome targetId if we don't have one yet
@@ -443,7 +475,7 @@ async function ensureDebuggerAttached(tabId) {
 
   setBadge(tabId, 'on')
   await persistState()
-  console.log(`Debugger silently attached to tab ${tabId}`)
+  console.log(`Debugger attached to tab ${tabId} (domains enabled, ready for CDP)`)
   return tabs.get(tabId)
 }
 
@@ -589,8 +621,9 @@ async function handleForwardCdpCommand(msg) {
 
   if (!tabId) throw new Error(`No tab available for ${method}`)
 
-  // Ensure debugger is attached (should already be from eager attach in announceTab)
+  // Attach debugger (or reuse existing connection)
   await ensureDebuggerAttached(tabId)
+
 
   const debuggee = { tabId }
 
@@ -707,7 +740,7 @@ chrome.tabs.onRemoved.addListener((tabId) => void whenReady(() => {
   void persistState()
 }))
 
-// Announce new tabs (no debugger)
+// Announce new tabs (no debugger — init commands get mock responses)
 chrome.tabs.onCreated.addListener((tab) => void whenReady(async () => {
   if (!tab.id || !relayWs || relayWs.readyState !== WebSocket.OPEN) return
   await new Promise((r) => setTimeout(r, 500))
