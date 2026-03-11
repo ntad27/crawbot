@@ -21,8 +21,7 @@
     "license": "MIT",
     "private": true,
     "scripts": {
-        "postinstall": "node scripts/patch-relay-dedup.mjs",
-                "init": "pnpm install && pnpm run uv:download",
+        "init": "pnpm install && pnpm run uv:download",
         "dev": "vite",
         "build": "vite build && zx scripts/bundle-openclaw.mjs && electron-builder",
         "build:vite": "vite build",

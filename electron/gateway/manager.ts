@@ -582,13 +582,20 @@ export class GatewayManager extends EventEmitter {
     // which makes the Electron binary behave as plain Node.js.
     // In development, use system 'node'.
     const gatewayArgs = ['gateway', '--port', String(this.status.port), '--token', gatewayToken, '--allow-unconfigured'];
-    
+
+    // Runtime in-memory patches for OpenClaw (no node_modules modifications).
+    // Single preload handles: relay dedup, browser timeout, retry hint.
+    const patchPreload = app.isPackaged
+      ? path.join(process.resourcesPath, 'openclaw-patches-preload.cjs')
+      : path.join(__dirname, '..', '..', 'electron', 'gateway', 'openclaw-patches-preload.cjs');
+    const preloadArgs = existsSync(patchPreload) ? ['--require', patchPreload] : [];
+
     if (app.isPackaged) {
       // Production: use Electron binary as Node.js via ELECTRON_RUN_AS_NODE
       // On macOS, use the Electron Helper binary to avoid extra dock icons
       if (existsSync(entryScript)) {
         command = getNodeExecutablePath();
-        args = [entryScript, ...gatewayArgs];
+        args = [...preloadArgs, entryScript, ...gatewayArgs];
         mode = 'packaged';
       } else {
         const errMsg = `OpenClaw entry script not found at: ${entryScript}`;
@@ -598,7 +605,7 @@ export class GatewayManager extends EventEmitter {
     } else if (isOpenClawBuilt() && existsSync(entryScript)) {
       // Development with built package: use system node
       command = 'node';
-      args = [entryScript, ...gatewayArgs];
+      args = [...preloadArgs, entryScript, ...gatewayArgs];
       mode = 'dev-built';
     } else {
       // Development without build: use pnpm dev
@@ -684,6 +691,14 @@ export class GatewayManager extends EventEmitter {
         OPENCLAW_SKIP_CHANNELS: '',
         CLAWDBOT_SKIP_CHANNELS: '',
       };
+
+      // In dev-pnpm mode, inject preload patches via NODE_OPTIONS
+      // (can't use --require args with pnpm command, so use env var)
+      if (mode === 'dev-pnpm' && preloadArgs.length > 0) {
+        const existing = spawnEnv['NODE_OPTIONS'] ?? '';
+        const requireFlags = preloadArgs.join(' ');
+        spawnEnv['NODE_OPTIONS'] = `${existing} ${requireFlags}`.trim();
+      }
 
       // Critical: In packaged mode, make Electron binary act as Node.js
       if (app.isPackaged) {
