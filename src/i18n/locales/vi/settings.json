@@ -205,5 +205,27 @@
         "version": "Phiên bản {{version}}",
         "docs": "Trang web",
         "github": "GitHub"
+    },
+    "apiServer": {
+        "title": "Máy chủ API",
+        "description": "Máy chủ HTTP cục bộ để nhận webhook và truy cập REST API cho các tác vụ định kỳ",
+        "enable": "Bật máy chủ API",
+        "enableDesc": "Khởi động máy chủ HTTP cục bộ chấp nhận webhook trigger và REST API requests",
+        "port": "Cổng",
+        "bindAddress": "Địa chỉ bind",
+        "bindDesc": "Mặc định 127.0.0.1 (chỉ localhost). Thay đổi sẽ mở API cho các host khác.",
+        "bindWarning": "Cảnh báo: bind vào địa chỉ không phải localhost có thể mở API cho các host khác trong mạng.",
+        "save": "Lưu & Khởi động lại",
+        "saved": "Đã lưu cài đặt máy chủ API",
+        "apiKey": "Khóa API",
+        "apiKeyDesc": "Bao gồm khóa này trong header X-API-Key cho REST API requests (/api/tasks, /api/health)",
+        "apiKeyNote": "Giữ bí mật khóa này. Nó cho phép truy cập đầy đủ vào tác vụ định kỳ qua REST API.",
+        "regenerateKey": "Tạo lại",
+        "regenerateKeyConfirm": "Tạo lại khóa API sẽ làm mất hiệu lực mọi tích hợp hiện tại. Tiếp tục?",
+        "keyRegenerated": "Đã tạo lại khóa API",
+        "keyCopied": "Đã sao chép khóa API",
+        "copyFailed": "Không thể sao chép",
+        "statusRunning": "Máy chủ đang chạy trên cổng {{port}}",
+        "statusStopped": "Máy chủ đã dừng"
     }
 }

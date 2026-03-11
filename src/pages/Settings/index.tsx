@@ -19,6 +19,10 @@ import {
   Globe,
   FolderOpen,
   CheckCircle2,
+  Server,
+  Eye,
+  EyeOff,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,6 +36,7 @@ import { toast } from 'sonner';
 import { useSettingsStore } from '@/stores/settings';
 import { useGatewayStore } from '@/stores/gateway';
 import { useUpdateStore } from '@/stores/update';
+import { useWebhookStore } from '@/stores/webhook';
 import { ProvidersSettings } from '@/components/settings/ProvidersSettings';
 import { UpdateSettings } from '@/components/settings/UpdateSettings';
 import { useTranslation } from 'react-i18next';
@@ -76,6 +81,9 @@ export function Settings() {
   const [openclawCliError, setOpenclawCliError] = useState<string | null>(null);
   const [installingCli, setInstallingCli] = useState(false);
 
+  const { serverConfig, fetchServerConfig, updateServerConfig, getApiKey, regenerateApiKey } =
+    useWebhookStore();
+
   const isMac = window.electron.platform === 'darwin';
   const isWindows = window.electron.platform === 'win32';
   const isLinux = window.electron.platform === 'linux';
@@ -92,6 +100,65 @@ export function Settings() {
     path: string;
     chromeFound: boolean;
   } | null>(null);
+
+  // API Server state
+  const [apiKey, setApiKey] = useState('');
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [apiServerPort, setApiServerPort] = useState(18790);
+  const [apiServerBind, setApiServerBind] = useState('127.0.0.1');
+  const [apiServerEnabled, setApiServerEnabled] = useState(false);
+  const [apiServerUpdating, setApiServerUpdating] = useState(false);
+
+  // Load API server config on mount
+  useEffect(() => {
+    fetchServerConfig();
+    getApiKey().then(setApiKey).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync local form state when serverConfig loads
+  useEffect(() => {
+    if (serverConfig) {
+      setApiServerPort(serverConfig.port);
+      setApiServerBind(serverConfig.bindAddress);
+      setApiServerEnabled(serverConfig.enabled);
+    }
+  }, [serverConfig]);
+
+  const handleApiServerSave = async () => {
+    setApiServerUpdating(true);
+    try {
+      await updateServerConfig({
+        port: apiServerPort,
+        bindAddress: apiServerBind,
+        enabled: apiServerEnabled,
+      });
+      toast.success(t('apiServer.saved'));
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setApiServerUpdating(false);
+    }
+  };
+
+  const handleRegenerateApiKey = async () => {
+    if (!confirm(t('apiServer.regenerateKeyConfirm'))) return;
+    try {
+      const newKey = await regenerateApiKey();
+      setApiKey(newKey);
+      toast.success(t('apiServer.keyRegenerated'));
+    } catch (err) {
+      toast.error(String(err));
+    }
+  };
+
+  const handleCopyApiKey = async () => {
+    try {
+      await navigator.clipboard.writeText(apiKey);
+      toast.success(t('apiServer.keyCopied'));
+    } catch {
+      toast.error(t('apiServer.copyFailed'));
+    }
+  };
 
   const handleShowLogs = async () => {
     try {
@@ -905,6 +972,119 @@ export function Settings() {
           </CardContent>
         </Card>
       )}
+
+      {/* API Server */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Server className="h-5 w-5 text-primary" />
+            <div>
+              <CardTitle>{t('apiServer.title')}</CardTitle>
+              <CardDescription className="mt-1">{t('apiServer.description')}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Enable toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t('apiServer.enable')}</Label>
+              <p className="text-sm text-muted-foreground">{t('apiServer.enableDesc')}</p>
+            </div>
+            <Switch
+              checked={apiServerEnabled}
+              onCheckedChange={(v) => setApiServerEnabled(v)}
+            />
+          </div>
+
+          <Separator />
+
+          {/* Port */}
+          <div className="space-y-2">
+            <Label>{t('apiServer.port')}</Label>
+            <Input
+              type="number"
+              min={1024}
+              max={65535}
+              value={apiServerPort}
+              onChange={(e) => setApiServerPort(parseInt(e.target.value, 10) || 18790)}
+              className="w-40"
+            />
+          </div>
+
+          {/* Bind address */}
+          <div className="space-y-2">
+            <Label>{t('apiServer.bindAddress')}</Label>
+            <Input
+              value={apiServerBind}
+              onChange={(e) => setApiServerBind(e.target.value)}
+              className="w-60 font-mono"
+              placeholder="127.0.0.1"
+            />
+            {apiServerBind && apiServerBind !== '127.0.0.1' && (
+              <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-4 w-4" />
+                {t('apiServer.bindWarning')}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">{t('apiServer.bindDesc')}</p>
+          </div>
+
+          {/* Save button */}
+          <Button onClick={handleApiServerSave} disabled={apiServerUpdating} variant="outline">
+            {apiServerUpdating ? (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+            )}
+            {t('apiServer.save')}
+          </Button>
+
+          <Separator />
+
+          {/* API Key */}
+          <div className="space-y-2">
+            <Label>{t('apiServer.apiKey')}</Label>
+            <p className="text-sm text-muted-foreground">{t('apiServer.apiKeyDesc')}</p>
+            <div className="flex items-center gap-2">
+              <Input
+                readOnly
+                value={apiKeyVisible ? apiKey : '•'.repeat(Math.min(apiKey.length, 32))}
+                className="font-mono flex-1"
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setApiKeyVisible((v) => !v)}
+              >
+                {apiKeyVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+              <Button variant="outline" size="icon" onClick={handleCopyApiKey} disabled={!apiKey}>
+                <Copy className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleRegenerateApiKey}>
+                <Key className="h-4 w-4 mr-2" />
+                {t('apiServer.regenerateKey')}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('apiServer.apiKeyNote')}</p>
+          </div>
+
+          {/* Status */}
+          {serverConfig && (
+            <div className="flex items-center gap-2 text-sm">
+              <div
+                className={`h-2 w-2 rounded-full ${apiServerEnabled ? 'bg-green-500' : 'bg-muted-foreground'}`}
+              />
+              <span className="text-muted-foreground">
+                {apiServerEnabled
+                  ? t('apiServer.statusRunning', { port: serverConfig.port })
+                  : t('apiServer.statusStopped')}
+              </span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* About */}
       <Card>

@@ -205,5 +205,27 @@
         "version": "Version {{version}}",
         "docs": "Website",
         "github": "GitHub"
+    },
+    "apiServer": {
+        "title": "API Server",
+        "description": "Local HTTP server for webhook ingestion and REST API access to scheduled tasks",
+        "enable": "Enable API Server",
+        "enableDesc": "Start a local HTTP server that accepts webhook triggers and REST API requests",
+        "port": "Port",
+        "bindAddress": "Bind Address",
+        "bindDesc": "Default 127.0.0.1 (localhost only). Changing this exposes the server to other hosts.",
+        "bindWarning": "Warning: binding to a non-localhost address may expose the API to other hosts on your network.",
+        "save": "Save & Restart",
+        "saved": "API server settings saved",
+        "apiKey": "API Key",
+        "apiKeyDesc": "Include this key in the X-API-Key header for REST API requests (/api/tasks, /api/health)",
+        "apiKeyNote": "Keep this key secret. It grants full access to your scheduled tasks via the REST API.",
+        "regenerateKey": "Regenerate",
+        "regenerateKeyConfirm": "Regenerating the API key will invalidate any existing integrations. Continue?",
+        "keyRegenerated": "API key regenerated",
+        "keyCopied": "API key copied",
+        "copyFailed": "Failed to copy",
+        "statusRunning": "Server running on port {{port}}",
+        "statusStopped": "Server stopped"
     }
 }

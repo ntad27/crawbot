@@ -218,6 +218,17 @@ const electronAPI = {
         'extension:install',
         'extension:status',
         'extension:openDir',
+        // Webhook / HTTP API
+        'webhook:list',
+        'webhook:create',
+        'webhook:delete',
+        'webhook:regenerate-secret',
+        'webhook:toggle',
+        'webhook:logs',
+        'webhook:server-config',
+        'webhook:update-server-config',
+        'webhook:api-key',
+        'webhook:regenerate-api-key',
       ];
 
       if (validChannels.includes(channel)) {

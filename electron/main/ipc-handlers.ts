@@ -107,6 +107,9 @@ import type { EventTriggerCreateInput, EventTriggerUpdateInput } from '../automa
 import { workflowStore } from '../automation/workflow-store';
 import { workflowExecutor } from '../automation/workflow-executor';
 import type { WorkflowCreateInput, WorkflowUpdateInput } from '../automation/workflow-types';
+import { webhookStore } from '../automation/webhook-store';
+import { httpServer } from '../automation/http-server';
+import type { HttpServerConfig } from '../automation/webhook-types';
 
 /**
  * Register all IPC handlers
@@ -187,6 +190,9 @@ export function registerIpcHandlers(
 
   // Workflow / task chaining handlers
   registerWorkflowHandlers(gatewayManager);
+
+  // Webhook / HTTP API handlers
+  registerWebhookHandlers(gatewayManager);
 }
 
 /**
@@ -3601,5 +3607,55 @@ function registerWorkflowHandlers(gatewayManager: GatewayManager): void {
 
   ipcMain.handle('workflow:instances', async (_, workflowId?: string) => {
     return workflowStore.listInstances(workflowId);
+  });
+}
+
+/**
+ * Webhook / HTTP API IPC handlers
+ */
+function registerWebhookHandlers(gatewayManager: GatewayManager): void {
+  // Start the HTTP server (enabled flag controls actual listening)
+  httpServer.start(gatewayManager).catch((err) => {
+    console.error('[webhook] Failed to start HTTP server:', err);
+  });
+
+  ipcMain.handle('webhook:list', async () => {
+    return webhookStore.listWebhooks();
+  });
+
+  ipcMain.handle('webhook:create', async (_, jobId: string, rateLimit?: number) => {
+    return webhookStore.createWebhook(jobId, rateLimit);
+  });
+
+  ipcMain.handle('webhook:delete', async (_, id: string) => {
+    return webhookStore.deleteWebhook(id);
+  });
+
+  ipcMain.handle('webhook:regenerate-secret', async (_, id: string) => {
+    return webhookStore.regenerateSecret(id);
+  });
+
+  ipcMain.handle('webhook:toggle', async (_, id: string, enabled: boolean) => {
+    return webhookStore.toggleWebhook(id, enabled);
+  });
+
+  ipcMain.handle('webhook:logs', async (_, webhookId: string, limit?: number) => {
+    return webhookStore.getLogs(webhookId, limit);
+  });
+
+  ipcMain.handle('webhook:server-config', async () => {
+    return httpServer.getConfig();
+  });
+
+  ipcMain.handle('webhook:update-server-config', async (_, config: Partial<HttpServerConfig>) => {
+    return httpServer.updateConfig(config);
+  });
+
+  ipcMain.handle('webhook:api-key', async () => {
+    return httpServer.getApiKey();
+  });
+
+  ipcMain.handle('webhook:regenerate-api-key', async () => {
+    return httpServer.regenerateApiKey();
   });
 }

@@ -24,6 +24,7 @@ import {
   ChevronUp,
   Zap,
   Repeat,
+  Webhook,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -44,6 +45,7 @@ import { ChannelIcon } from '@/components/ChannelIcon';
 import type { ChannelType } from '@/types/channel';
 import { useTranslation } from 'react-i18next';
 import { TriggerConfig } from '@/components/automation/TriggerConfig';
+import { WebhookConfig } from '@/components/automation/WebhookConfig';
 import { useAutomationStore } from '@/stores/automation';
 import type { EventTriggerCreateInput } from '@/types/automation';
 
@@ -721,9 +723,10 @@ interface CronJobCardProps {
   onEdit: () => void;
   onDelete: () => void;
   onTrigger: () => Promise<void>;
+  onWebhook: () => void;
 }
 
-function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCardProps) {
+function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger, onWebhook }: CronJobCardProps) {
   const { t } = useTranslation('cron');
   const [triggering, setTriggering] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -888,6 +891,10 @@ function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCard
             )}
             <span className="ml-1">{t('card.runNow')}</span>
           </Button>
+          <Button variant="ghost" size="sm" onClick={onWebhook}>
+            <Webhook className="h-4 w-4" />
+            <span className="ml-1">{t('webhook.buttonLabel')}</span>
+          </Button>
           <Button variant="ghost" size="sm" onClick={onEdit}>
             <Edit className="h-4 w-4" />
             <span className="ml-1">Edit</span>
@@ -910,6 +917,7 @@ export function Cron() {
   const gatewayStatus = useGatewayStore((state) => state.status);
   const [showDialog, setShowDialog] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | undefined>();
+  const [webhookJobId, setWebhookJobId] = useState<string | undefined>();
 
   const isGatewayRunning = gatewayStatus.state === 'running';
 
@@ -1104,6 +1112,7 @@ export function Cron() {
               }}
               onDelete={() => handleDelete(job.id)}
               onTrigger={() => triggerJob(job.id)}
+              onWebhook={() => setWebhookJobId(job.id)}
             />
           ))}
         </div>
@@ -1119,6 +1128,14 @@ export function Cron() {
           }}
           onSave={handleSave}
           onSaveTrigger={handleSaveTrigger}
+        />
+      )}
+
+      {/* Webhook Config Dialog */}
+      {webhookJobId && (
+        <WebhookConfig
+          jobId={webhookJobId}
+          onClose={() => setWebhookJobId(undefined)}
         />
       )}
     </div>
