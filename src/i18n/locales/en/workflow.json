@@ -89,6 +89,27 @@
     "error": "Error",
     "retries": "Retries"
   },
+  "visual": {
+    "start": "Start",
+    "end": "End",
+    "nodeTask": "Task",
+    "nodeCondition": "Condition",
+    "nodeParallel": "Parallel",
+    "nodeWait": "Wait",
+    "palette": "Nodes",
+    "properties": "Properties",
+    "selectNode": "Select a node to edit its properties",
+    "autoLayout": "Auto Layout",
+    "validate": "Validate",
+    "export": "Export JSON",
+    "import": "Import JSON",
+    "importError": "Invalid workflow JSON",
+    "validationPassed": "Workflow is valid",
+    "validationFailed": "Workflow has errors",
+    "joinAll": "Join: ALL",
+    "joinAny": "Join: ANY",
+    "viewGraph": "View Graph"
+  },
   "toast": {
     "created": "Workflow created",
     "updated": "Workflow updated",

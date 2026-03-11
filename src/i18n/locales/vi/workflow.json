@@ -89,6 +89,27 @@
     "error": "Lỗi",
     "retries": "Số lần thử lại"
   },
+  "visual": {
+    "start": "Bắt đầu",
+    "end": "Kết thúc",
+    "nodeTask": "Tác vụ",
+    "nodeCondition": "Điều kiện",
+    "nodeParallel": "Song song",
+    "nodeWait": "Chờ",
+    "palette": "Nút",
+    "properties": "Thuộc tính",
+    "selectNode": "Chọn một nút để chỉnh sửa thuộc tính",
+    "autoLayout": "Tự động bố cục",
+    "validate": "Kiểm tra",
+    "export": "Xuất JSON",
+    "import": "Nhập JSON",
+    "importError": "JSON quy trình không hợp lệ",
+    "validationPassed": "Quy trình hợp lệ",
+    "validationFailed": "Quy trình có lỗi",
+    "joinAll": "Kết hợp: TẤT CẢ",
+    "joinAny": "Kết hợp: BẤT KỲ",
+    "viewGraph": "Xem đồ thị"
+  },
   "toast": {
     "created": "Đã tạo quy trình",
     "updated": "Đã cập nhật quy trình",

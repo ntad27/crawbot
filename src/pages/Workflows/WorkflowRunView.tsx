@@ -2,7 +2,7 @@
  * WorkflowRunView
  * Timeline/list view of a workflow's run instances and their step states
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -12,6 +12,7 @@ import {
   SkipForward,
   Loader2,
   Circle,
+  GitBranch,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -20,6 +21,7 @@ import { useWorkflowStore } from '@/stores/workflow';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import type { WorkflowStatus, StepStatus, WorkflowInstance, Workflow } from '@/types/workflow';
+import { VisualEditor } from '@/components/workflow/VisualEditor';
 
 function statusColor(status: WorkflowStatus | StepStatus): string {
   switch (status) {
@@ -178,6 +180,8 @@ export function WorkflowRunView() {
   const fetchInstances = useWorkflowStore((s) => s.fetchInstances);
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows);
 
+  const [visualInstance, setVisualInstance] = useState<WorkflowInstance | null>(null);
+
   const workflow = workflows.find((w) => w.id === id);
   const workflowInstances = id ? (instances[id] ?? []) : [];
 
@@ -194,6 +198,18 @@ export function WorkflowRunView() {
           {t('title')}
         </Button>
         <p className="mt-4 text-muted-foreground">Workflow not found.</p>
+      </div>
+    );
+  }
+
+  if (visualInstance) {
+    return (
+      <div className="fixed inset-0 z-50 bg-background flex flex-col">
+        <VisualEditor
+          workflow={workflow}
+          instance={visualInstance}
+          onCancel={() => setVisualInstance(null)}
+        />
       </div>
     );
   }
@@ -216,7 +232,19 @@ export function WorkflowRunView() {
           <p className="text-center text-muted-foreground mt-12">{t('runView.noRuns')}</p>
         ) : (
           workflowInstances.map((instance) => (
-            <InstanceCard key={instance.id} instance={instance} workflow={workflow} />
+            <div key={instance.id}>
+              <div className="flex justify-end mb-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setVisualInstance(instance)}
+                >
+                  <GitBranch className="h-3.5 w-3.5 mr-1.5" />
+                  {t('visual.viewGraph')}
+                </Button>
+              </div>
+              <InstanceCard instance={instance} workflow={workflow} />
+            </div>
           ))
         )}
       </div>

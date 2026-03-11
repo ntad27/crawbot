@@ -25,6 +25,7 @@ export interface WorkflowStep {
   onError: 'retry' | 'skip' | 'fail' | 'compensate';
   retryPolicy?: { maxRetries: number; backoffMs: number };
   compensateJobId?: string;
+  position?: { x: number; y: number };
 }
 
 export interface WorkflowEdge {
