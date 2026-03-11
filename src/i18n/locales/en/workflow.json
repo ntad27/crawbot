@@ -1,0 +1,106 @@
+{
+  "title": "Workflows",
+  "subtitle": "Chain tasks into automated multi-step workflows",
+  "newWorkflow": "New Workflow",
+  "refresh": "Refresh",
+  "steps": "steps",
+  "lastRun": "Last run",
+  "never": "Never",
+  "empty": {
+    "title": "No workflows",
+    "description": "Create workflows to chain multiple tasks together into automated sequences.",
+    "create": "Create Your First Workflow"
+  },
+  "card": {
+    "run": "Run",
+    "edit": "Edit",
+    "delete": "Delete",
+    "viewRuns": "View Runs",
+    "deleteConfirm": "Are you sure you want to delete this workflow?"
+  },
+  "errorStrategy": {
+    "label": "Error Strategy",
+    "failFast": "Fail Fast",
+    "continue": "Continue",
+    "saga": "Saga (compensate)"
+  },
+  "stepType": {
+    "label": "Step Type",
+    "task": "Task",
+    "condition": "Condition",
+    "parallel": "Parallel",
+    "wait": "Wait"
+  },
+  "status": {
+    "pending": "Pending",
+    "running": "Running",
+    "paused": "Paused",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "skipped": "Skipped"
+  },
+  "onError": {
+    "label": "On Error",
+    "retry": "Retry",
+    "skip": "Skip",
+    "fail": "Fail",
+    "compensate": "Compensate"
+  },
+  "editor": {
+    "createTitle": "Create Workflow",
+    "editTitle": "Edit Workflow",
+    "name": "Name",
+    "namePlaceholder": "e.g., Data processing pipeline",
+    "description": "Description",
+    "descriptionPlaceholder": "Optional description",
+    "enableImmediately": "Enable immediately",
+    "steps": "Steps",
+    "addStep": "Add Step",
+    "noSteps": "No steps yet. Add a step to get started.",
+    "stepLabel": "Step Label",
+    "stepLabelPlaceholder": "e.g., Fetch data",
+    "selectStepType": "Select step type",
+    "taskJob": "Task (Cron Job)",
+    "taskJobPlaceholder": "Select a cron job",
+    "conditionExpr": "Condition Expression",
+    "conditionExprPlaceholder": "e.g., output.count > 0",
+    "conditionExprHelp": "Supported: ==, !=, >, <, >=, <=, &&, ||, dot notation",
+    "parallelJoin": "Join Mode",
+    "parallelJoinAll": "All (wait for all steps)",
+    "parallelJoinAny": "Any (first to complete)",
+    "waitDelay": "Delay (seconds)",
+    "retryPolicy": "Retry Policy",
+    "maxRetries": "Max Retries",
+    "backoffMs": "Backoff (ms)",
+    "compensateJob": "Compensate Job",
+    "compensateJobPlaceholder": "Job to run on compensation",
+    "save": "Save Workflow",
+    "cancel": "Cancel"
+  },
+  "runView": {
+    "title": "Workflow Runs",
+    "instance": "Run",
+    "started": "Started",
+    "duration": "Duration",
+    "noRuns": "No runs yet",
+    "stepTimeline": "Step Timeline",
+    "output": "Output",
+    "error": "Error",
+    "retries": "Retries"
+  },
+  "toast": {
+    "created": "Workflow created",
+    "updated": "Workflow updated",
+    "deleted": "Workflow deleted",
+    "enabled": "Workflow enabled",
+    "disabled": "Workflow disabled",
+    "started": "Workflow started",
+    "cancelled": "Workflow cancelled",
+    "failedCreate": "Failed to create workflow",
+    "failedUpdate": "Failed to update workflow",
+    "failedDelete": "Failed to delete workflow",
+    "failedStart": "Failed to start workflow",
+    "nameRequired": "Please enter a workflow name"
+  }
+}

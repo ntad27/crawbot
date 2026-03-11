@@ -17,6 +17,8 @@ import { Agents } from './pages/Agents';
 import { Cron } from './pages/Cron';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
+import { Workflows } from './pages/Workflows';
+import { WorkflowRunView } from './pages/Workflows/WorkflowRunView';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 
@@ -160,6 +162,8 @@ function App() {
             <Route path="/skills" element={<Skills />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/cron" element={<Cron />} />
+            <Route path="/workflows" element={<Workflows />} />
+            <Route path="/workflows/:id/runs" element={<WorkflowRunView />} />
             <Route path="/settings/*" element={<Settings />} />
           </Route>
         </Routes>

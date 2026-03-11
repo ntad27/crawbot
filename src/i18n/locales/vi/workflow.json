@@ -1,0 +1,106 @@
+{
+  "title": "Quy trình",
+  "subtitle": "Kết nối các tác vụ thành quy trình tự động nhiều bước",
+  "newWorkflow": "Quy trình mới",
+  "refresh": "Làm mới",
+  "steps": "bước",
+  "lastRun": "Lần chạy cuối",
+  "never": "Chưa chạy",
+  "empty": {
+    "title": "Chưa có quy trình",
+    "description": "Tạo quy trình để kết nối nhiều tác vụ thành chuỗi tự động.",
+    "create": "Tạo quy trình đầu tiên"
+  },
+  "card": {
+    "run": "Chạy",
+    "edit": "Sửa",
+    "delete": "Xóa",
+    "viewRuns": "Xem lịch sử",
+    "deleteConfirm": "Bạn có chắc muốn xóa quy trình này?"
+  },
+  "errorStrategy": {
+    "label": "Chiến lược lỗi",
+    "failFast": "Dừng ngay",
+    "continue": "Tiếp tục",
+    "saga": "Saga (bồi hoàn)"
+  },
+  "stepType": {
+    "label": "Loại bước",
+    "task": "Tác vụ",
+    "condition": "Điều kiện",
+    "parallel": "Song song",
+    "wait": "Chờ"
+  },
+  "status": {
+    "pending": "Chờ",
+    "running": "Đang chạy",
+    "paused": "Tạm dừng",
+    "completed": "Hoàn thành",
+    "failed": "Thất bại",
+    "cancelled": "Đã hủy",
+    "skipped": "Bỏ qua"
+  },
+  "onError": {
+    "label": "Khi lỗi",
+    "retry": "Thử lại",
+    "skip": "Bỏ qua",
+    "fail": "Thất bại",
+    "compensate": "Bồi hoàn"
+  },
+  "editor": {
+    "createTitle": "Tạo quy trình",
+    "editTitle": "Sửa quy trình",
+    "name": "Tên",
+    "namePlaceholder": "vd: Quy trình xử lý dữ liệu",
+    "description": "Mô tả",
+    "descriptionPlaceholder": "Mô tả tùy chọn",
+    "enableImmediately": "Kích hoạt ngay",
+    "steps": "Các bước",
+    "addStep": "Thêm bước",
+    "noSteps": "Chưa có bước nào. Hãy thêm bước để bắt đầu.",
+    "stepLabel": "Nhãn bước",
+    "stepLabelPlaceholder": "vd: Lấy dữ liệu",
+    "selectStepType": "Chọn loại bước",
+    "taskJob": "Tác vụ (Cron Job)",
+    "taskJobPlaceholder": "Chọn cron job",
+    "conditionExpr": "Biểu thức điều kiện",
+    "conditionExprPlaceholder": "vd: output.count > 0",
+    "conditionExprHelp": "Hỗ trợ: ==, !=, >, <, >=, <=, &&, ||, ký hiệu chấm",
+    "parallelJoin": "Chế độ kết hợp",
+    "parallelJoinAll": "Tất cả (chờ tất cả bước)",
+    "parallelJoinAny": "Bất kỳ (bước nào xong trước)",
+    "waitDelay": "Thời gian chờ (giây)",
+    "retryPolicy": "Chính sách thử lại",
+    "maxRetries": "Số lần thử tối đa",
+    "backoffMs": "Thời gian chờ (ms)",
+    "compensateJob": "Job bồi hoàn",
+    "compensateJobPlaceholder": "Job để chạy khi bồi hoàn",
+    "save": "Lưu quy trình",
+    "cancel": "Hủy"
+  },
+  "runView": {
+    "title": "Lịch sử chạy",
+    "instance": "Lần chạy",
+    "started": "Bắt đầu",
+    "duration": "Thời gian",
+    "noRuns": "Chưa có lần chạy nào",
+    "stepTimeline": "Dòng thời gian bước",
+    "output": "Kết quả",
+    "error": "Lỗi",
+    "retries": "Số lần thử lại"
+  },
+  "toast": {
+    "created": "Đã tạo quy trình",
+    "updated": "Đã cập nhật quy trình",
+    "deleted": "Đã xóa quy trình",
+    "enabled": "Đã bật quy trình",
+    "disabled": "Đã tắt quy trình",
+    "started": "Đã khởi chạy quy trình",
+    "cancelled": "Đã hủy quy trình",
+    "failedCreate": "Không thể tạo quy trình",
+    "failedUpdate": "Không thể cập nhật quy trình",
+    "failedDelete": "Không thể xóa quy trình",
+    "failedStart": "Không thể khởi chạy quy trình",
+    "nameRequired": "Vui lòng nhập tên quy trình"
+  }
+}

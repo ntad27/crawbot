@@ -11,6 +11,7 @@ import enSkills from './locales/en/skills.json';
 import enCron from './locales/en/cron.json';
 import enAgents from './locales/en/agents.json';
 import enSetup from './locales/en/setup.json';
+import enWorkflow from './locales/en/workflow.json';
 
 // VI
 import viCommon from './locales/vi/common.json';
@@ -22,6 +23,7 @@ import viSkills from './locales/vi/skills.json';
 import viCron from './locales/vi/cron.json';
 import viAgents from './locales/vi/agents.json';
 import viSetup from './locales/vi/setup.json';
+import viWorkflow from './locales/vi/workflow.json';
 
 export const SUPPORTED_LANGUAGES = [
     { code: 'en', label: 'English' },
@@ -41,6 +43,7 @@ const resources = {
         cron: enCron,
         agents: enAgents,
         setup: enSetup,
+        workflow: enWorkflow,
     },
     vi: {
         common: viCommon,
@@ -52,6 +55,7 @@ const resources = {
         cron: viCron,
         agents: viAgents,
         setup: viSetup,
+        workflow: viWorkflow,
     },
 };
 
@@ -62,7 +66,7 @@ i18n
         lng: 'en', // will be overridden by settings store
         fallbackLng: 'en',
         defaultNS: 'common',
-        ns: ['common', 'settings', 'dashboard', 'chat', 'channels', 'skills', 'cron', 'agents', 'setup'],
+        ns: ['common', 'settings', 'dashboard', 'chat', 'channels', 'skills', 'cron', 'agents', 'setup', 'workflow'],
         interpolation: {
             escapeValue: false, // React already escapes
         },

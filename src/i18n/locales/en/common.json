@@ -2,6 +2,7 @@
     "sidebar": {
         "chat": "Chat",
         "cronTasks": "Cron Tasks",
+        "workflows": "Workflows",
         "skills": "Skills",
         "agents": "Agents",
         "channels": "Channels",

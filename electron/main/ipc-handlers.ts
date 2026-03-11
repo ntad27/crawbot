@@ -104,6 +104,9 @@ import * as tar from 'tar';
 import { triggerManager } from '../automation/trigger-manager';
 import { automationEventBus } from '../automation/event-bus';
 import type { EventTriggerCreateInput, EventTriggerUpdateInput } from '../automation/types';
+import { workflowStore } from '../automation/workflow-store';
+import { workflowExecutor } from '../automation/workflow-executor';
+import type { WorkflowCreateInput, WorkflowUpdateInput } from '../automation/workflow-types';
 
 /**
  * Register all IPC handlers
@@ -181,6 +184,9 @@ export function registerIpcHandlers(
 
   // Automation / event trigger handlers
   registerAutomationHandlers(gatewayManager);
+
+  // Workflow / task chaining handlers
+  registerWorkflowHandlers(gatewayManager);
 }
 
 /**
@@ -3528,5 +3534,72 @@ function registerAutomationHandlers(gatewayManager: GatewayManager): void {
 
   ipcMain.handle('automation:toggle-trigger', async (_, id: string, enabled: boolean) => {
     return triggerManager.toggleTrigger(id, enabled);
+  });
+}
+
+/**
+ * Workflow / task chaining IPC handlers
+ */
+function registerWorkflowHandlers(gatewayManager: GatewayManager): void {
+  // Initialize executor with gateway manager access
+  workflowExecutor.init(gatewayManager);
+
+  ipcMain.handle('workflow:list', async () => {
+    return workflowStore.listWorkflows();
+  });
+
+  ipcMain.handle('workflow:create', async (_, input: WorkflowCreateInput) => {
+    const now = new Date().toISOString();
+    const workflow = {
+      id: crypto.randomUUID(),
+      name: input.name,
+      description: input.description,
+      enabled: input.enabled ?? true,
+      steps: input.steps ?? [],
+      edges: input.edges ?? [],
+      errorStrategy: input.errorStrategy ?? 'fail-fast',
+      createdAt: now,
+      updatedAt: now,
+    };
+    await workflowStore.saveWorkflow(workflow);
+    return workflow;
+  });
+
+  ipcMain.handle('workflow:update', async (_, id: string, input: WorkflowUpdateInput) => {
+    const existing = await workflowStore.getWorkflow(id);
+    if (!existing) throw new Error(`Workflow ${id} not found`);
+
+    const updated = {
+      ...existing,
+      ...input,
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+    await workflowStore.saveWorkflow(updated);
+    return updated;
+  });
+
+  ipcMain.handle('workflow:delete', async (_, id: string) => {
+    await workflowStore.deleteWorkflow(id);
+  });
+
+  ipcMain.handle('workflow:toggle', async (_, id: string, enabled: boolean) => {
+    const existing = await workflowStore.getWorkflow(id);
+    if (!existing) throw new Error(`Workflow ${id} not found`);
+    const updated = { ...existing, enabled, updatedAt: new Date().toISOString() };
+    await workflowStore.saveWorkflow(updated);
+    return updated;
+  });
+
+  ipcMain.handle('workflow:start', async (_, id: string) => {
+    return workflowExecutor.startWorkflow(id);
+  });
+
+  ipcMain.handle('workflow:cancel', async (_, instanceId: string) => {
+    return workflowExecutor.cancelWorkflow(instanceId);
+  });
+
+  ipcMain.handle('workflow:instances', async (_, workflowId?: string) => {
+    return workflowStore.listInstances(workflowId);
   });
 }

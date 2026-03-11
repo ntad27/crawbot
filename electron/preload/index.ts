@@ -97,6 +97,15 @@ const electronAPI = {
         'automation:update-trigger',
         'automation:delete-trigger',
         'automation:toggle-trigger',
+        // Workflows / Task Chaining
+        'workflow:list',
+        'workflow:create',
+        'workflow:update',
+        'workflow:delete',
+        'workflow:toggle',
+        'workflow:start',
+        'workflow:cancel',
+        'workflow:instances',
         // Channel Config
         'channel:saveConfig',
         'channel:getConfig',
