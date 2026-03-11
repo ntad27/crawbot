@@ -19,7 +19,10 @@
         "runNow": "Chạy ngay",
         "deleteConfirm": "Bạn có chắc muốn xóa tác vụ này?",
         "last": "Lần trước",
-        "next": "Lần tiếp"
+        "next": "Lần tiếp",
+        "history": "Lịch sử",
+        "oneShot": "Một lần",
+        "highPriority": "Ưu tiên cao"
     },
     "dialog": {
         "createTitle": "Tạo tác vụ",
@@ -40,7 +43,29 @@
         "discordChannelIdDesc": "Nhấp chuột phải kênh Discord → Sao chép ID Kênh",
         "enableImmediately": "Bật ngay",
         "enableImmediatelyDesc": "Bắt đầu chạy tác vụ sau khi tạo",
-        "saveChanges": "Lưu thay đổi"
+        "saveChanges": "Lưu thay đổi",
+        "advanced": "Tùy chọn nâng cao",
+        "timezone": "Múi giờ",
+        "timezonePlaceholder": "Chọn múi giờ...",
+        "timezoneDesc": "Chạy tác vụ theo múi giờ này",
+        "priority": "Độ ưu tiên",
+        "priorityHigh": "Cao (chạy ngay)",
+        "priorityNormal": "Bình thường (chu kỳ tiếp)",
+        "oneShot": "Tác vụ một lần",
+        "oneShotDesc": "Xóa tác vụ sau lần chạy thành công đầu tiên"
+    },
+    "history": {
+        "title": "Lịch sử thực thi",
+        "time": "Thời gian",
+        "status": "Trạng thái",
+        "duration": "Thời lượng",
+        "model": "Mô hình",
+        "tokens": "Token",
+        "error": "Lỗi",
+        "noRuns": "Chưa có lần chạy nào",
+        "statusOk": "Thành công",
+        "statusError": "Lỗi",
+        "statusSkipped": "Bỏ qua"
     },
     "presets": {
         "everyMinute": "Mỗi phút",

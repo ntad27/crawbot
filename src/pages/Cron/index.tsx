@@ -2,7 +2,7 @@
  * Cron Page
  * Manage scheduled tasks
  */
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Plus,
   Clock,
@@ -20,6 +20,10 @@ import {
   Loader2,
   Timer,
   History,
+  ChevronDown,
+  ChevronUp,
+  Zap,
+  Repeat,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,13 +32,14 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Select } from '@/components/ui/select';
 import { useCronStore } from '@/stores/cron';
 import { useChannelsStore } from '@/stores/channels';
 import { useGatewayStore } from '@/stores/gateway';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import type { CronJob, CronJobCreateInput, ScheduleType } from '@/types/cron';
+import type { CronJob, CronJobCreateInput, CronRunLogEntry, ScheduleType } from '@/types/cron';
 import { ChannelIcon } from '@/components/ChannelIcon';
 import type { ChannelType } from '@/types/channel';
 import { useTranslation } from 'react-i18next';
@@ -61,7 +66,8 @@ function parseCronSchedule(schedule: unknown): string {
   if (schedule && typeof schedule === 'object') {
     const s = schedule as { kind?: string; expr?: string; tz?: string; everyMs?: number; at?: string };
     if (s.kind === 'cron' && typeof s.expr === 'string') {
-      return parseCronExpr(s.expr);
+      const label = parseCronExpr(s.expr);
+      return s.tz ? `${label} (${s.tz})` : label;
     }
     if (s.kind === 'every' && typeof s.everyMs === 'number') {
       const ms = s.everyMs;
@@ -115,6 +121,227 @@ function parseCronExpr(cron: string): string {
   return cron;
 }
 
+// Format duration from ms to human-readable (e.g. "1.2s")
+function formatDuration(ms?: number): string {
+  if (ms === undefined || ms === null) return '-';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Format token usage
+function formatTokens(usage?: { inputTokens?: number; outputTokens?: number }): string {
+  if (!usage) return '-';
+  const inp = usage.inputTokens ?? 0;
+  const out = usage.outputTokens ?? 0;
+  if (!inp && !out) return '-';
+  return `${inp} in / ${out} out`;
+}
+
+// Get all IANA timezone names grouped by region
+function getTimezoneGroups(): Record<string, string[]> {
+  try {
+    const zones = Intl.supportedValuesOf('timeZone');
+    const groups: Record<string, string[]> = {};
+    for (const tz of zones) {
+      const region = tz.includes('/') ? tz.split('/')[0] : 'Other';
+      if (!groups[region]) groups[region] = [];
+      groups[region].push(tz);
+    }
+    return groups;
+  } catch {
+    return {};
+  }
+}
+
+// Execution History Panel
+interface ExecutionHistoryPanelProps {
+  job: CronJob;
+}
+
+function ExecutionHistoryPanel({ job }: ExecutionHistoryPanelProps) {
+  const { t } = useTranslation('cron');
+  const { runs, fetchRuns } = useCronStore();
+  const [loading, setLoading] = useState(true);
+
+  const jobRuns: CronRunLogEntry[] = runs[job.id] ?? [];
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRuns(job.id).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [job.id, fetchRuns]);
+
+  const statusBadgeVariant = (status: CronRunLogEntry['status']) => {
+    if (status === 'ok') return 'success' as const;
+    if (status === 'error') return 'destructive' as const;
+    return 'secondary' as const;
+  };
+
+  const statusLabel = (status: CronRunLogEntry['status']) => {
+    if (status === 'ok') return t('history.statusOk');
+    if (status === 'error') return t('history.statusError');
+    return t('history.statusSkipped');
+  };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-4">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (jobRuns.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground py-2 text-center">{t('history.noRuns')}</p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b text-muted-foreground text-xs">
+            <th className="text-left pb-2 pr-4 font-medium">{t('history.time')}</th>
+            <th className="text-left pb-2 pr-4 font-medium">{t('history.status')}</th>
+            <th className="text-left pb-2 pr-4 font-medium">{t('history.duration')}</th>
+            <th className="text-left pb-2 pr-4 font-medium">{t('history.model')}</th>
+            <th className="text-left pb-2 font-medium">{t('history.tokens')}</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {jobRuns.map((run) => (
+            <tr key={run.ts} className="hover:bg-muted/30">
+              <td className="py-2 pr-4 text-muted-foreground whitespace-nowrap">
+                {new Date(run.ts).toLocaleString()}
+              </td>
+              <td className="py-2 pr-4">
+                <div className="flex flex-col gap-1">
+                  <Badge variant={statusBadgeVariant(run.status)} className="w-fit text-xs">
+                    {statusLabel(run.status)}
+                  </Badge>
+                  {run.error && (
+                    <span className="text-xs text-red-500 line-clamp-1">{run.error}</span>
+                  )}
+                </div>
+              </td>
+              <td className="py-2 pr-4 text-muted-foreground">{formatDuration(run.durationMs)}</td>
+              <td className="py-2 pr-4 text-muted-foreground">{run.model ?? '-'}</td>
+              <td className="py-2 text-muted-foreground">{formatTokens(run.usage)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Timezone Picker — searchable select with region grouping
+interface TimezonePickerProps {
+  value: string;
+  onChange: (tz: string) => void;
+  placeholder: string;
+}
+
+function TimezonePicker({ value, onChange, placeholder }: TimezonePickerProps) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const timezoneGroups = useMemo(() => getTimezoneGroups(), []);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return timezoneGroups;
+    const q = search.toLowerCase();
+    const result: Record<string, string[]> = {};
+    for (const [region, zones] of Object.entries(timezoneGroups)) {
+      const matched = zones.filter((z) => z.toLowerCase().includes(q));
+      if (matched.length > 0) result[region] = matched;
+    }
+    return result;
+  }, [timezoneGroups, search]);
+
+  const displayValue = value || placeholder;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm',
+          'focus:outline-none focus:ring-1 focus:ring-ring',
+          !value && 'text-muted-foreground',
+        )}
+      >
+        <span className="truncate">{displayValue}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md">
+          <div className="p-2 border-b">
+            <Input
+              autoFocus
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 text-sm"
+            />
+          </div>
+          {value && (
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-sm text-muted-foreground hover:bg-accent"
+              onClick={() => {
+                onChange('');
+                setSearch('');
+                setOpen(false);
+              }}
+            >
+              Clear selection
+            </button>
+          )}
+          <div className="max-h-60 overflow-y-auto">
+            {Object.entries(filtered).map(([region, zones]) => (
+              <div key={region}>
+                <p className="px-3 py-1 text-xs font-semibold text-muted-foreground bg-muted/50 sticky top-0">
+                  {region}
+                </p>
+                {zones.map((tz) => (
+                  <button
+                    key={tz}
+                    type="button"
+                    className={cn(
+                      'w-full px-3 py-1.5 text-left text-sm hover:bg-accent',
+                      tz === value && 'bg-accent font-medium',
+                    )}
+                    onClick={() => {
+                      onChange(tz);
+                      setSearch('');
+                      setOpen(false);
+                    }}
+                  >
+                    {tz}
+                  </button>
+                ))}
+              </div>
+            ))}
+            {Object.keys(filtered).length === 0 && (
+              <p className="px-3 py-3 text-sm text-muted-foreground text-center">No results</p>
+            )}
+          </div>
+        </div>
+      )}
+      {open && (
+        <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+      )}
+    </div>
+  );
+}
+
 // Create/Edit Task Dialog
 interface TaskDialogProps {
   job?: CronJob;
@@ -126,6 +353,7 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
   const { t } = useTranslation('cron');
   const { channels } = useChannelsStore();
   const [saving, setSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [name, setName] = useState(job?.name || '');
   const [message, setMessage] = useState(job?.message || '');
@@ -145,6 +373,11 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
   const [channelId, setChannelId] = useState(job?.target.channelId || '');
   const [discordChannelId, setDiscordChannelId] = useState('');
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
+
+  // Advanced fields
+  const [tz, setTz] = useState(job?.tz ?? '');
+  const [wakeMode, setWakeMode] = useState<'now' | 'next-heartbeat'>(job?.wakeMode ?? 'next-heartbeat');
+  const [deleteAfterRun, setDeleteAfterRun] = useState(job?.deleteAfterRun ?? false);
 
   const selectedChannel = channels.find((c) => c.id === channelId);
   const isDiscord = selectedChannel?.type === 'discord';
@@ -181,21 +414,20 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
         ? discordChannelId.trim()
         : '';
 
-      await onSave(
-        // ... (args omitted from replacement content, ensuring they match target if not changed, but here I am replacing the block)
-        // Wait, I should not replace the whole onSave call if I don't need to.
-        // Let's target the toast.
-        {
-          name: name.trim(),
-          message: message.trim(),
-          schedule: finalSchedule,
-          target: {
-            channelType: selectedChannel!.type,
-            channelId: actualChannelId,
-            channelName: selectedChannel!.name,
-          },
-          enabled,
-        });
+      await onSave({
+        name: name.trim(),
+        message: message.trim(),
+        schedule: finalSchedule,
+        target: {
+          channelType: selectedChannel!.type,
+          channelId: actualChannelId,
+          channelName: selectedChannel!.name,
+        },
+        enabled,
+        tz: tz || undefined,
+        wakeMode,
+        deleteAfterRun: deleteAfterRun || undefined,
+      });
       onClose();
       toast.success(job ? t('toast.updated') : t('toast.created'));
     } catch (err) {
@@ -326,6 +558,7 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
               </p>
             </div>
           )}
+
           {/* Enabled */}
           <div className="flex items-center justify-between">
             <div>
@@ -335,6 +568,57 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
               </p>
             </div>
             <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </div>
+
+          {/* Advanced Options (collapsible) */}
+          <div className="border rounded-lg">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 rounded-lg transition-colors"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              <span>{t('dialog.advanced')}</span>
+              {showAdvanced ? (
+                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              )}
+            </button>
+            {showAdvanced && (
+              <div className="px-4 pb-4 space-y-4 border-t pt-4">
+                {/* Timezone */}
+                <div className="space-y-2">
+                  <Label>{t('dialog.timezone')}</Label>
+                  <TimezonePicker
+                    value={tz}
+                    onChange={setTz}
+                    placeholder={t('dialog.timezonePlaceholder')}
+                  />
+                  <p className="text-xs text-muted-foreground">{t('dialog.timezoneDesc')}</p>
+                </div>
+
+                {/* Priority */}
+                <div className="space-y-2">
+                  <Label>{t('dialog.priority')}</Label>
+                  <Select
+                    value={wakeMode}
+                    onChange={(e) => setWakeMode(e.target.value as 'now' | 'next-heartbeat')}
+                  >
+                    <option value="now">{t('dialog.priorityHigh')}</option>
+                    <option value="next-heartbeat">{t('dialog.priorityNormal')}</option>
+                  </Select>
+                </div>
+
+                {/* One-shot */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>{t('dialog.oneShot')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('dialog.oneShotDesc')}</p>
+                  </div>
+                  <Switch checked={deleteAfterRun} onCheckedChange={setDeleteAfterRun} />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Actions */}
@@ -374,6 +658,7 @@ interface CronJobCardProps {
 function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCardProps) {
   const { t } = useTranslation('cron');
   const [triggering, setTriggering] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const handleTrigger = async () => {
     setTriggering(true);
@@ -393,6 +678,15 @@ function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCard
       onDelete();
     }
   };
+
+  // Extract tz from schedule object if not directly on job
+  const scheduleTz = (() => {
+    if (job.tz) return job.tz;
+    if (job.schedule && typeof job.schedule === 'object' && 'tz' in job.schedule) {
+      return (job.schedule as { tz?: string }).tz;
+    }
+    return undefined;
+  })();
 
   return (
     <Card className={cn(
@@ -414,10 +708,29 @@ function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCard
               )} />
             </div>
             <div>
-              <CardTitle className="text-lg">{job.name}</CardTitle>
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-lg">{job.name}</CardTitle>
+                {job.deleteAfterRun && (
+                  <Badge variant="outline" className="text-xs">
+                    <Repeat className="h-3 w-3 mr-1" />
+                    {t('card.oneShot')}
+                  </Badge>
+                )}
+                {job.wakeMode === 'now' && (
+                  <Badge variant="outline" className="text-xs text-amber-600 border-amber-400">
+                    <Zap className="h-3 w-3 mr-1" />
+                    {t('card.highPriority')}
+                  </Badge>
+                )}
+              </div>
               <CardDescription className="flex items-center gap-2">
                 <Timer className="h-3 w-3" />
                 {parseCronSchedule(job.schedule)}
+                {scheduleTz && (
+                  <Badge variant="secondary" className="text-xs font-normal">
+                    {scheduleTz}
+                  </Badge>
+                )}
               </CardDescription>
             </div>
           </div>
@@ -476,8 +789,24 @@ function CronJobCard({ job, onToggle, onEdit, onDelete, onTrigger }: CronJobCard
           </div>
         )}
 
+        {/* Execution History Panel */}
+        {showHistory && (
+          <div className="border rounded-lg p-3">
+            <p className="text-sm font-medium mb-3">{t('history.title')}</p>
+            <ExecutionHistoryPanel job={job} />
+          </div>
+        )}
+
         {/* Actions */}
         <div className="flex justify-end gap-1 pt-2 border-t">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowHistory(!showHistory)}
+          >
+            <History className="h-4 w-4" />
+            <span className="ml-1">{t('card.history')}</span>
+          </Button>
           <Button
             variant="ghost"
             size="sm"

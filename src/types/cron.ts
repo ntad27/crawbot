@@ -47,6 +47,11 @@ export interface CronJob {
   updatedAt: string;
   lastRun?: CronJobLastRun;
   nextRun?: string;
+  tz?: string;
+  description?: string;
+  wakeMode?: 'now' | 'next-heartbeat';
+  deleteAfterRun?: boolean;
+  staggerMs?: number;
 }
 
 /**
@@ -58,6 +63,9 @@ export interface CronJobCreateInput {
   schedule: string;
   target: CronJobTarget;
   enabled?: boolean;
+  tz?: string;
+  wakeMode?: 'now' | 'next-heartbeat';
+  deleteAfterRun?: boolean;
 }
 
 /**
@@ -69,6 +77,25 @@ export interface CronJobUpdateInput {
   schedule?: string;
   target?: CronJobTarget;
   enabled?: boolean;
+  tz?: string;
+  wakeMode?: 'now' | 'next-heartbeat';
+  deleteAfterRun?: boolean;
+}
+
+/**
+ * Execution history log entry for a cron job run
+ */
+export interface CronRunLogEntry {
+  ts: number;
+  jobId: string;
+  status: 'ok' | 'error' | 'skipped';
+  error?: string;
+  summary?: string;
+  durationMs?: number;
+  model?: string;
+  provider?: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  jobName?: string;
 }
 
 /**

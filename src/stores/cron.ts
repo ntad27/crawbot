@@ -3,13 +3,14 @@
  * Manages scheduled task state
  */
 import { create } from 'zustand';
-import type { CronJob, CronJobCreateInput, CronJobUpdateInput } from '../types/cron';
+import type { CronJob, CronJobCreateInput, CronJobUpdateInput, CronRunLogEntry } from '../types/cron';
 
 interface CronState {
   jobs: CronJob[];
   loading: boolean;
   error: string | null;
-  
+  runs: Record<string, CronRunLogEntry[]>;
+
   // Actions
   fetchJobs: () => Promise<void>;
   createJob: (input: CronJobCreateInput) => Promise<CronJob>;
@@ -18,12 +19,14 @@ interface CronState {
   toggleJob: (id: string, enabled: boolean) => Promise<void>;
   triggerJob: (id: string) => Promise<void>;
   setJobs: (jobs: CronJob[]) => void;
+  fetchRuns: (jobId: string) => Promise<void>;
 }
 
 export const useCronStore = create<CronState>((set) => ({
   jobs: [],
   loading: false,
   error: null,
+  runs: {},
   
   fetchJobs: async () => {
     set({ loading: true, error: null });
@@ -105,4 +108,15 @@ export const useCronStore = create<CronState>((set) => ({
   },
   
   setJobs: (jobs) => set({ jobs }),
+
+  fetchRuns: async (jobId) => {
+    try {
+      const result = await window.electron.ipcRenderer.invoke('cron:runs', jobId, 20, 0) as { runs?: CronRunLogEntry[] };
+      set((state) => ({
+        runs: { ...state.runs, [jobId]: result?.runs ?? [] },
+      }));
+    } catch (error) {
+      console.error('Failed to fetch cron runs:', error);
+    }
+  },
 }));

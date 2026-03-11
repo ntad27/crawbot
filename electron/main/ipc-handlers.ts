@@ -691,7 +691,10 @@ interface GatewayCronJob {
   enabled: boolean;
   createdAtMs: number;
   updatedAtMs: number;
-  schedule: { kind: string; expr?: string; everyMs?: number; at?: string; tz?: string };
+  wakeMode?: 'now' | 'next-heartbeat';
+  deleteAfterRun?: boolean;
+  failureAlert?: { cooldownMs?: number; destination?: string };
+  schedule: { kind: string; expr?: string; everyMs?: number; at?: string; tz?: string; staggerMs?: number };
   payload: { kind: string; message?: string; text?: string };
   delivery?: { mode: string; channel?: string; to?: string };
   state: {
@@ -744,6 +747,11 @@ function transformCronJob(job: GatewayCronJob) {
     updatedAt: new Date(job.updatedAtMs).toISOString(),
     lastRun,
     nextRun,
+    tz: job.schedule?.tz,
+    wakeMode: job.wakeMode,
+    deleteAfterRun: job.deleteAfterRun,
+    staggerMs: job.schedule?.staggerMs,
+    description: job.description,
   };
 }
 
@@ -776,6 +784,9 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
     schedule: string;
     target: { channelType: string; channelId: string; channelName: string };
     enabled?: boolean;
+    tz?: string;
+    wakeMode?: 'now' | 'next-heartbeat';
+    deleteAfterRun?: boolean;
   }) => {
     try {
       // Transform frontend input to Gateway cron.add format
@@ -787,10 +798,11 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
 
       const gatewayInput = {
         name: input.name,
-        schedule: { kind: 'cron', expr: input.schedule },
+        schedule: { kind: 'cron', expr: input.schedule, tz: input.tz },
         payload: { kind: 'agentTurn', message: input.message },
         enabled: input.enabled ?? true,
-        wakeMode: 'next-heartbeat',
+        wakeMode: input.wakeMode ?? 'next-heartbeat',
+        deleteAfterRun: input.deleteAfterRun,
         sessionTarget: 'isolated',
         delivery: {
           mode: 'announce',
@@ -816,13 +828,19 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
       // Transform schedule string to CronSchedule object if present
       const patch = { ...input };
       if (typeof patch.schedule === 'string') {
-        patch.schedule = { kind: 'cron', expr: patch.schedule };
+        const scheduleObj: Record<string, unknown> = { kind: 'cron', expr: patch.schedule };
+        if (patch.tz !== undefined) {
+          scheduleObj.tz = patch.tz;
+        }
+        patch.schedule = scheduleObj;
+        delete patch.tz;
       }
       // Transform message to payload format if present
       if (typeof patch.message === 'string') {
         patch.payload = { kind: 'agentTurn', message: patch.message };
         delete patch.message;
       }
+      // wakeMode and deleteAfterRun are passed through as-is from input
       const result = await gatewayManager.rpc('cron.update', { id, patch });
       return result;
     } catch (error) {
@@ -860,6 +878,17 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
       return result;
     } catch (error) {
       console.error('Failed to trigger cron job:', error);
+      throw error;
+    }
+  });
+
+  // Fetch execution history for a cron job
+  ipcMain.handle('cron:runs', async (_, jobId: string, limit?: number, offset?: number) => {
+    try {
+      const result = await gatewayManager.rpc('cron.runs', { jobId, limit: limit ?? 20, offset: offset ?? 0 });
+      return result;
+    } catch (error) {
+      console.error('Failed to fetch cron runs:', error);
       throw error;
     }
   });

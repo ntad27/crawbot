@@ -90,6 +90,7 @@ const electronAPI = {
         'cron:delete',
         'cron:toggle',
         'cron:trigger',
+        'cron:runs',
         // Channel Config
         'channel:saveConfig',
         'channel:getConfig',

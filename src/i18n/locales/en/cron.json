@@ -19,7 +19,10 @@
         "runNow": "Run Now",
         "deleteConfirm": "Are you sure you want to delete this task?",
         "last": "Last",
-        "next": "Next"
+        "next": "Next",
+        "history": "History",
+        "oneShot": "One-shot",
+        "highPriority": "High Priority"
     },
     "dialog": {
         "createTitle": "Create Task",
@@ -40,7 +43,29 @@
         "discordChannelIdDesc": "Right-click the Discord channel → Copy Channel ID",
         "enableImmediately": "Enable immediately",
         "enableImmediatelyDesc": "Start running this task after creation",
-        "saveChanges": "Save Changes"
+        "saveChanges": "Save Changes",
+        "advanced": "Advanced Options",
+        "timezone": "Timezone",
+        "timezonePlaceholder": "Select timezone...",
+        "timezoneDesc": "Schedule runs in this timezone",
+        "priority": "Priority",
+        "priorityHigh": "High (immediate)",
+        "priorityNormal": "Normal (next heartbeat)",
+        "oneShot": "One-shot task",
+        "oneShotDesc": "Delete task after first successful run"
+    },
+    "history": {
+        "title": "Execution History",
+        "time": "Time",
+        "status": "Status",
+        "duration": "Duration",
+        "model": "Model",
+        "tokens": "Tokens",
+        "error": "Error",
+        "noRuns": "No executions yet",
+        "statusOk": "Success",
+        "statusError": "Error",
+        "statusSkipped": "Skipped"
     },
     "presets": {
         "everyMinute": "Every minute",
