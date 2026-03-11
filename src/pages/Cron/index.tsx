@@ -43,6 +43,9 @@ import type { CronJob, CronJobCreateInput, CronRunLogEntry, ScheduleType } from 
 import { ChannelIcon } from '@/components/ChannelIcon';
 import type { ChannelType } from '@/types/channel';
 import { useTranslation } from 'react-i18next';
+import { TriggerConfig } from '@/components/automation/TriggerConfig';
+import { useAutomationStore } from '@/stores/automation';
+import type { EventTriggerCreateInput } from '@/types/automation';
 
 // Common cron schedule presets
 const schedulePresets: { label: string; value: string; type: ScheduleType }[] = [
@@ -347,13 +350,17 @@ interface TaskDialogProps {
   job?: CronJob;
   onClose: () => void;
   onSave: (input: CronJobCreateInput) => Promise<void>;
+  onSaveTrigger?: (input: EventTriggerCreateInput) => Promise<void>;
 }
 
-function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
+function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
   const { t } = useTranslation('cron');
   const { channels } = useChannelsStore();
+  const { jobs: allJobs } = useCronStore();
   const [saving, setSaving] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [triggerType, setTriggerType] = useState<'schedule' | 'event'>('schedule');
+  const [triggerInput, setTriggerInput] = useState<EventTriggerCreateInput | null>(null);
 
   const [name, setName] = useState(job?.name || '');
   const [message, setMessage] = useState(job?.message || '');
@@ -383,6 +390,26 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
   const isDiscord = selectedChannel?.type === 'discord';
 
   const handleSubmit = async () => {
+    // Event trigger path
+    if (triggerType === 'event') {
+      if (!triggerInput || !triggerInput.jobId) {
+        toast.error(t('toast.nameRequired'));
+        return;
+      }
+      if (!onSaveTrigger) return;
+      setSaving(true);
+      try {
+        await onSaveTrigger(triggerInput);
+        onClose();
+        toast.success(t('toast.created'));
+      } catch (err) {
+        toast.error(String(err));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     if (!name.trim()) {
       toast.error(t('toast.nameRequired'));
       return;
@@ -450,7 +477,46 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Name */}
+          {/* Trigger type selector — only shown when creating */}
+          {!job && (
+            <div className="space-y-2">
+              <Label>{t('trigger.type')}</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={triggerType === 'schedule' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setTriggerType('schedule')}
+                  className="flex-1"
+                >
+                  <Clock className="h-4 w-4 mr-2" />
+                  {t('trigger.schedule')}
+                </Button>
+                <Button
+                  type="button"
+                  variant={triggerType === 'event' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setTriggerType('event')}
+                  className="flex-1"
+                >
+                  <Zap className="h-4 w-4 mr-2" />
+                  {t('trigger.event')}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Event Trigger Config */}
+          {triggerType === 'event' && !job && (
+            <TriggerConfig
+              jobs={allJobs}
+              onChange={setTriggerInput}
+            />
+          )}
+
+          {/* Name + schedule fields — only shown for schedule jobs */}
+          {(triggerType === 'schedule' || !!job) && (
+          <>
           <div className="space-y-2">
             <Label htmlFor="name">{t('dialog.taskName')}</Label>
             <Input
@@ -620,6 +686,8 @@ function TaskDialog({ job, onClose, onSave }: TaskDialogProps) {
               </div>
             )}
           </div>
+          </>
+          )}
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-4 border-t">
@@ -838,6 +906,7 @@ export function Cron() {
   const { t } = useTranslation('cron');
   const { jobs, loading, error, fetchJobs, createJob, updateJob, toggleJob, deleteJob, triggerJob } = useCronStore();
   const { fetchChannels } = useChannelsStore();
+  const { createTrigger } = useAutomationStore();
   const gatewayStatus = useGatewayStore((state) => state.status);
   const [showDialog, setShowDialog] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | undefined>();
@@ -864,6 +933,10 @@ export function Cron() {
       await createJob(input);
     }
   }, [editingJob, createJob, updateJob]);
+
+  const handleSaveTrigger = useCallback(async (input: EventTriggerCreateInput) => {
+    await createTrigger(input);
+  }, [createTrigger]);
 
   const handleToggle = useCallback(async (id: string, enabled: boolean) => {
     try {
@@ -1045,6 +1118,7 @@ export function Cron() {
             setEditingJob(undefined);
           }}
           onSave={handleSave}
+          onSaveTrigger={handleSaveTrigger}
         />
       )}
     </div>

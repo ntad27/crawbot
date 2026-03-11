@@ -101,6 +101,9 @@ import { getProviderConfig, getProviderDefaultModel } from '../utils/provider-re
 import { installExtension, getExtensionStatus, updateExtensionConfig, getExtensionInstallDir } from '../utils/browser-extension';
 import AdmZip from 'adm-zip';
 import * as tar from 'tar';
+import { triggerManager } from '../automation/trigger-manager';
+import { automationEventBus } from '../automation/event-bus';
+import type { EventTriggerCreateInput, EventTriggerUpdateInput } from '../automation/types';
 
 /**
  * Register all IPC handlers
@@ -175,6 +178,9 @@ export function registerIpcHandlers(
 
   // Browser extension handlers
   registerBrowserExtensionHandlers(gatewayManager);
+
+  // Automation / event trigger handlers
+  registerAutomationHandlers(gatewayManager);
 }
 
 /**
@@ -1195,6 +1201,8 @@ function registerGatewayHandlers(
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('gateway:notification', notification);
     }
+    // Forward to automation event bus for event-driven triggers
+    automationEventBus.emitGatewayNotification({ notification });
   });
 
   gatewayManager.on('channel:status', (data) => {
@@ -3490,5 +3498,35 @@ function registerBrowserExtensionHandlers(gatewayManager: GatewayManager): void 
         updateExtensionConfig(token, port);
       }).catch(() => { /* ignore */ });
     }
+  });
+}
+
+/**
+ * Automation / event trigger IPC handlers
+ */
+function registerAutomationHandlers(gatewayManager: GatewayManager): void {
+  // Initialize trigger manager with gateway manager access
+  triggerManager.init(gatewayManager).catch((err) => {
+    console.error('[automation] Failed to init trigger manager:', err);
+  });
+
+  ipcMain.handle('automation:list-triggers', async () => {
+    return triggerManager.listTriggers();
+  });
+
+  ipcMain.handle('automation:create-trigger', async (_, input: EventTriggerCreateInput) => {
+    return triggerManager.createTrigger(input);
+  });
+
+  ipcMain.handle('automation:update-trigger', async (_, id: string, input: EventTriggerUpdateInput) => {
+    return triggerManager.updateTrigger(id, input);
+  });
+
+  ipcMain.handle('automation:delete-trigger', async (_, id: string) => {
+    return triggerManager.deleteTrigger(id);
+  });
+
+  ipcMain.handle('automation:toggle-trigger', async (_, id: string, enabled: boolean) => {
+    return triggerManager.toggleTrigger(id, enabled);
   });
 }

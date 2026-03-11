@@ -91,5 +91,41 @@
         "channelRequired": "Please select a channel",
         "discordIdRequired": "Please enter a Discord Channel ID",
         "scheduleRequired": "Please select or enter a schedule"
+    },
+    "trigger": {
+        "type": "Trigger Type",
+        "schedule": "Schedule",
+        "event": "Event Trigger",
+        "source": "Event Source",
+        "sourceGateway": "Gateway Event",
+        "sourceFile": "File Change",
+        "sourceJobCompletion": "Job Completion",
+        "debounce": "Debounce",
+        "debounceSeconds": "seconds",
+        "debounceOff": "Off",
+        "listening": "Listening",
+        "badge": "Event",
+        "create": "Create Trigger",
+        "edit": "Edit Trigger",
+        "delete": "Delete Trigger",
+        "enabled": "Enabled",
+        "filter": {
+            "eventType": "Event Type",
+            "channelId": "Channel ID",
+            "channelIdPlaceholder": "Filter by channel ID (optional)",
+            "pattern": "Message Pattern (regex)",
+            "patternPlaceholder": "e.g., urgent|error",
+            "filePath": "File / Directory Path",
+            "filePathPlaceholder": "~/Documents/watch-folder",
+            "filePathDesc": "Absolute path under your home directory",
+            "watchedJob": "Watch Job",
+            "anyJob": "Any job",
+            "statusMatch": "Status",
+            "statusAny": "Any",
+            "statusOk": "Success",
+            "statusError": "Error",
+            "linkedJob": "Execute Job",
+            "linkedJobDesc": "The scheduled job to run when the event fires"
+        }
     }
 }

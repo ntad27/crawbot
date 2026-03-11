@@ -91,5 +91,41 @@
         "channelRequired": "Vui lòng chọn kênh",
         "discordIdRequired": "Vui lòng nhập ID Kênh Discord",
         "scheduleRequired": "Vui lòng chọn hoặc nhập lịch trình"
+    },
+    "trigger": {
+        "type": "Loại kích hoạt",
+        "schedule": "Lịch trình",
+        "event": "Kích hoạt theo sự kiện",
+        "source": "Nguồn sự kiện",
+        "sourceGateway": "Sự kiện Gateway",
+        "sourceFile": "Thay đổi tệp",
+        "sourceJobCompletion": "Hoàn thành tác vụ",
+        "debounce": "Trì hoãn",
+        "debounceSeconds": "giây",
+        "debounceOff": "Tắt",
+        "listening": "Đang lắng nghe",
+        "badge": "Sự kiện",
+        "create": "Tạo trigger",
+        "edit": "Sửa trigger",
+        "delete": "Xóa trigger",
+        "enabled": "Bật",
+        "filter": {
+            "eventType": "Loại sự kiện",
+            "channelId": "ID Kênh",
+            "channelIdPlaceholder": "Lọc theo ID kênh (tùy chọn)",
+            "pattern": "Mẫu tin nhắn (regex)",
+            "patternPlaceholder": "Ví dụ: khẩn cấp|lỗi",
+            "filePath": "Đường dẫn tệp / thư mục",
+            "filePathPlaceholder": "~/Documents/thu-muc-theo-doi",
+            "filePathDesc": "Đường dẫn tuyệt đối trong thư mục home",
+            "watchedJob": "Theo dõi tác vụ",
+            "anyJob": "Bất kỳ tác vụ",
+            "statusMatch": "Trạng thái",
+            "statusAny": "Bất kỳ",
+            "statusOk": "Thành công",
+            "statusError": "Lỗi",
+            "linkedJob": "Thực thi tác vụ",
+            "linkedJobDesc": "Tác vụ được chạy khi sự kiện xảy ra"
+        }
     }
 }

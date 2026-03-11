@@ -91,6 +91,12 @@ const electronAPI = {
         'cron:toggle',
         'cron:trigger',
         'cron:runs',
+        // Automation / Event Triggers
+        'automation:list-triggers',
+        'automation:create-trigger',
+        'automation:update-trigger',
+        'automation:delete-trigger',
+        'automation:toggle-trigger',
         // Channel Config
         'channel:saveConfig',
         'channel:getConfig',
