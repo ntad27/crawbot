@@ -30,7 +30,7 @@ async function getStore() {
 
 // ---- HMAC verification -------------------------------------------------------
 
-function verifyWebhookSignature(
+export function verifyWebhookSignature(
   secret: string,
   body: string,
   signature: string,
