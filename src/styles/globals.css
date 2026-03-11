@@ -149,6 +149,14 @@
   background: hsl(var(--muted));
 }
 
+/* Dark mode native form controls */
+.dark select,
+.dark select option,
+.dark select optgroup {
+  background-color: hsl(217.2 32.6% 12%);
+  color: hsl(210 40% 98%);
+}
+
 /* Typing indicator animation */
 @keyframes bounce {
   0%, 60%, 100% {
