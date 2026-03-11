@@ -261,11 +261,11 @@ function OfficeErrorFallback({ filePath, error }: { filePath: string; error: str
   const openFileExternal = useFileBrowserStore((s) => s.openFileExternal);
   const fileName = getFileName(filePath);
   const typeLabel = getFileTypeLabel(filePath);
-  const Icon = getOfficeIcon(filePath);
+  const officeIconElement = React.createElement(getOfficeIcon(filePath), { className: 'h-16 w-16 text-muted-foreground/30' });
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6">
-      <Icon className="h-16 w-16 text-muted-foreground/30" />
+      {officeIconElement}
       <p className="text-sm font-medium text-foreground">{fileName}</p>
       <p className="text-xs text-muted-foreground">{typeLabel}</p>
       <p className="text-xs text-muted-foreground/70 max-w-[250px] text-center">{error}</p>
@@ -322,7 +322,8 @@ export function FileViewer() {
 
   const fileName = getFileName(selectedFile);
   const typeLabel = getFileTypeLabel(selectedFile);
-  const Icon = fileViewMode === 'office' ? getOfficeIcon(selectedFile) : getFileIcon(fileViewMode);
+
+  const iconComponent = fileViewMode === 'office' ? getOfficeIcon(selectedFile) : getFileIcon(fileViewMode);
 
   if (fileLoading) {
     return (
@@ -330,7 +331,7 @@ export function FileViewer() {
         <ViewerTabBar
           fileName={fileName}
           typeLabel={typeLabel}
-          Icon={Icon}
+          Icon={iconComponent}
           fileSize={fileSize}
           onClose={closeFile}
           onOpenExternal={() => openFileExternal()}
@@ -347,7 +348,7 @@ export function FileViewer() {
       <ViewerTabBar
         fileName={fileName}
         typeLabel={typeLabel}
-        Icon={Icon}
+        Icon={iconComponent}
         fileSize={fileSize}
         onClose={closeFile}
         onOpenExternal={() => openFileExternal()}
@@ -370,7 +371,7 @@ export function FileViewer() {
       {/* Fallback: data failed to load for media types */}
       {fileViewMode !== 'office' && !fileUrl && !fileLoading && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-muted-foreground">
-          <Icon className="h-12 w-12 opacity-30" />
+          {React.createElement(iconComponent, { className: 'h-12 w-12 opacity-30' })}
           <p className="text-xs">Failed to load preview</p>
           <Button
             variant="outline"

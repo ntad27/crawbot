@@ -2,7 +2,7 @@
  * Build Tools Detection & Installation
  * Checks and installs C/C++ build tools (needed for native Node.js modules).
  */
-import { spawn } from 'child_process';
+import { spawn, spawnSync as nodeSpawnSync } from 'child_process';
 import { logger } from './logger';
 
 const IS_WIN = process.platform === 'win32';
@@ -190,7 +190,7 @@ function installLinux(): Promise<BuildToolsInstallResult> {
 /** Check if a command exists synchronously */
 function spawnSync(cmd: string, args: string[]): boolean {
   try {
-    const child = require('child_process').spawnSync(cmd, args, { stdio: 'ignore' });
+    const child = nodeSpawnSync(cmd, args, { stdio: 'ignore' });
     return child.status === 0;
   } catch {
     return false;

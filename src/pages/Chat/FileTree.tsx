@@ -46,7 +46,7 @@ interface FileClipboard {
 
 /* ── Helpers ── */
 
-const ipc = (window as any).electron.ipcRenderer;
+const ipc = window.electron.ipcRenderer;
 
 const menuItemClass =
   'flex w-full items-center rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground';

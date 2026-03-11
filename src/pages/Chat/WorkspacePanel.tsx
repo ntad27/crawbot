@@ -7,7 +7,7 @@
  * Switches between FileEditor (for text files) and FileViewer (for images,
  * PDF, audio, video, office documents) based on the detected file view mode.
  */
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { useFileBrowserStore } from '@/stores/file-browser';
 import { Button } from '@/components/ui/button';
@@ -35,30 +35,32 @@ export function WorkspacePanel() {
   const startXRef = useRef(0);
   const startValueRef = useRef(0);
 
-  // Shared mousemove / mouseup handlers
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!draggingRef.current) return;
-    e.preventDefault();
-    const dx = e.clientX - startXRef.current;
+  // Shared drag handlers — stored in refs to avoid circular dependency and render-time ref access
+  const handlersRef = useRef({ move: (_e: MouseEvent) => {}, up: () => {} });
 
-    if (draggingRef.current === 'panel') {
-      // Dragging left edge: moving left increases width
-      const next = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startValueRef.current - dx));
-      setPanelWidth(next);
-    } else {
-      // Dragging split: moving right increases tree width
-      const proposed = Math.max(MIN_TREE_WIDTH, startValueRef.current + dx);
-      setTreeWidth(Math.min(proposed, MAX_PANEL_WIDTH - MIN_EDITOR_WIDTH));
-    }
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      e.preventDefault();
+      const dx = e.clientX - startXRef.current;
+
+      if (draggingRef.current === 'panel') {
+        const next = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startValueRef.current - dx));
+        setPanelWidth(next);
+      } else {
+        const proposed = Math.max(MIN_TREE_WIDTH, startValueRef.current + dx);
+        setTreeWidth(Math.min(proposed, MAX_PANEL_WIDTH - MIN_EDITOR_WIDTH));
+      }
+    };
+    const up = () => {
+      draggingRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', handlersRef.current.move);
+      document.removeEventListener('mouseup', handlersRef.current.up);
+    };
+    handlersRef.current = { move, up };
   }, [setPanelWidth, setTreeWidth]);
-
-  const handleMouseUp = useCallback(() => {
-    draggingRef.current = null;
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleMouseUp);
-  }, [handleMouseMove]);
 
   const startDrag = useCallback(
     (type: 'panel' | 'split', e: React.MouseEvent) => {
@@ -70,14 +72,14 @@ export function WorkspacePanel() {
       startValueRef.current = type === 'panel' ? actualPanelWidth : treeWidth;
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
+      document.addEventListener('mousemove', handlersRef.current.move);
+      document.addEventListener('mouseup', handlersRef.current.up);
     },
-    [panelWidth, treeWidth, handleMouseMove, handleMouseUp],
+    [panelWidth, treeWidth],
   );
 
-  // Clamp tree width to panel width (use actual width when in 50% mode)
-  const actualPanelWidth = panelWidth || (panelRef.current?.offsetWidth ?? 600);
+  // Clamp tree width to panel width (use default 600 for 50% mode)
+  const actualPanelWidth = panelWidth || 600;
   const effectiveTreeWidth = Math.min(treeWidth, actualPanelWidth - MIN_EDITOR_WIDTH);
 
   // Determine which content panel to render

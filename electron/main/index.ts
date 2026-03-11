@@ -2,7 +2,7 @@
  * Electron Main Process Entry
  * Manages window creation, system tray, and IPC handlers
  */
-import { app, BrowserWindow, clipboard, Menu, nativeImage, net, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, Menu, nativeImage, net, protocol, session } from 'electron';
 import { join } from 'path';
 import { pathToFileURL } from 'node:url';
 import { statSync, createReadStream } from 'node:fs';

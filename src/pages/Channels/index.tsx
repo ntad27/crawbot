@@ -81,18 +81,19 @@ export function Channels() {
     } catch { /* ignore */ }
   }, []);
 
-  // Fetch channels, bindings, and pairing requests on mount
+  // Fetch channels, bindings, and agents on mount
   useEffect(() => {
     fetchChannels();
     fetchBindings();
     fetchAgents();
-    fetchPairingRequests();
-  }, [fetchChannels, fetchBindings, fetchAgents, fetchPairingRequests]);
+  }, [fetchChannels, fetchBindings, fetchAgents]);
 
-  // Poll pairing requests every 10s
+  // Poll pairing requests every 10s (also fetches on mount via initial interval tick)
   useEffect(() => {
+    // Immediate fetch on mount + recurring poll
+    const id = setTimeout(fetchPairingRequests, 0);
     const interval = setInterval(fetchPairingRequests, 10000);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(id); clearInterval(interval); };
   }, [fetchPairingRequests]);
 
   useEffect(() => {
@@ -492,7 +493,6 @@ function ChannelCard({
           <p className="text-xs text-destructive mb-3">{channel.error}</p>
         )}
         {/* Stop propagation so interactive elements don't trigger onEdit */}
-        {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
         <div className="flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
           <Switch
             checked={isEnabled}

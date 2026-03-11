@@ -67,6 +67,16 @@ function ModelIdComboInput({
     [allModels, providerType],
   );
 
+  // For built-in providers, use a proper <select> dropdown
+  // Ensure the current value is always in the list
+  const options = useMemo(() => {
+    const result = providerModels.map((m) => ({ id: m.id, name: m.name || m.id }));
+    if (value && !result.some((m) => m.id === value)) {
+      result.unshift({ id: value, name: value });
+    }
+    return result;
+  }, [providerModels, value]);
+
   // For freeform providers (ollama, custom) keep the text input + datalist
   if (typeInfo?.showModelId) {
     const datalistId = `model-list-${providerType}`;
@@ -92,16 +102,6 @@ function ModelIdComboInput({
       </>
     );
   }
-
-  // For built-in providers, use a proper <select> dropdown
-  // Ensure the current value is always in the list
-  const options = useMemo(() => {
-    const result = providerModels.map((m) => ({ id: m.id, name: m.name || m.id }));
-    if (value && !result.some((m) => m.id === value)) {
-      result.unshift({ id: value, name: value });
-    }
-    return result;
-  }, [providerModels, value]);
 
   return (
     <select

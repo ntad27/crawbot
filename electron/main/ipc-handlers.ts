@@ -495,7 +495,7 @@ function registerAgentHandlers(): void {
   // Watch a directory for changes and send notifications to the renderer.
   // Uses fs.watch with recursive option (works on macOS, Windows; Linux falls back gracefully).
   let activeWatcher: FSWatcher | null = null;
-  let watchedPath: string | null = null;
+  let _watchedPath: string | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   ipcMain.handle('file:watch', async (_, dirPath: string) => {
@@ -503,7 +503,7 @@ function registerAgentHandlers(): void {
     if (activeWatcher) {
       activeWatcher.close();
       activeWatcher = null;
-      watchedPath = null;
+      _watchedPath = null;
     }
 
     try {
@@ -521,10 +521,10 @@ function registerAgentHandlers(): void {
       activeWatcher.on('error', () => {
         activeWatcher?.close();
         activeWatcher = null;
-        watchedPath = null;
+        _watchedPath = null;
       });
 
-      watchedPath = dirPath;
+      _watchedPath = dirPath;
       return { success: true };
     } catch (error) {
       console.error('Failed to watch directory:', error);
@@ -536,7 +536,7 @@ function registerAgentHandlers(): void {
     if (activeWatcher) {
       activeWatcher.close();
       activeWatcher = null;
-      watchedPath = null;
+      _watchedPath = null;
     }
     if (debounceTimer) {
       clearTimeout(debounceTimer);
