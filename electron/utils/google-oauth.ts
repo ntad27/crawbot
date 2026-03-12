@@ -17,8 +17,6 @@ import { openExternalInDefaultProfile } from './open-external';
 import { logger } from './logger';
 
 // ── OAuth constants (same as openclaw/extensions/google-gemini-cli-auth) ──
-const CLIENT_ID_KEYS = ['OPENCLAW_GEMINI_OAUTH_CLIENT_ID', 'GEMINI_CLI_OAUTH_CLIENT_ID'];
-const CLIENT_SECRET_KEYS = ['OPENCLAW_GEMINI_OAUTH_CLIENT_SECRET', 'GEMINI_CLI_OAUTH_CLIENT_SECRET'];
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json';
@@ -36,14 +34,6 @@ const TIER_LEGACY = 'legacy-tier';
 const TIER_STANDARD = 'standard-tier';
 
 // ── Credential resolution ──
-
-function resolveEnv(keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = process.env[key]?.trim();
-    if (value) return value;
-  }
-  return undefined;
-}
 
 function getExtraMacOsSearchDirs(): string[] {
   if (process.platform !== 'darwin') return [];
@@ -195,14 +185,7 @@ function extractGeminiCliCredentials(): { clientId: string; clientSecret: string
 }
 
 function resolveOAuthClientConfig(): { clientId: string; clientSecret?: string } {
-  const envClientId = resolveEnv(CLIENT_ID_KEYS);
-  const envClientSecret = resolveEnv(CLIENT_SECRET_KEYS);
-  if (envClientId) {
-    logger.info('Using Google OAuth credentials from environment variables');
-    return { clientId: envClientId, clientSecret: envClientSecret };
-  }
-
-  logger.info('No OAuth env vars found, attempting to extract from Gemini CLI installation...');
+  logger.info('Extracting Google OAuth credentials from Gemini CLI installation...');
   const extracted = extractGeminiCliCredentials();
   if (extracted) {
     logger.info('Successfully extracted Google OAuth credentials from Gemini CLI');
@@ -216,8 +199,7 @@ function resolveOAuthClientConfig(): { clientId: string; clientSecret?: string }
   );
   throw new Error(
     'Google OAuth credentials not found. Install Gemini CLI ' +
-    '(npm install -g @google/gemini-cli) or set GEMINI_CLI_OAUTH_CLIENT_ID ' +
-    'and GEMINI_CLI_OAUTH_CLIENT_SECRET environment variables.'
+    '(npm install -g @google/gemini-cli) to enable Google OAuth authentication.'
   );
 }
 
