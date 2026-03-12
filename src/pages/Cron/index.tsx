@@ -380,7 +380,7 @@ function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
   const [customSchedule, setCustomSchedule] = useState('');
   const [useCustom, setUseCustom] = useState(false);
   const [channelId, setChannelId] = useState(job?.target.channelId || '');
-  const [discordChannelId, setDiscordChannelId] = useState('');
+  const [recipientId, setRecipientId] = useState(job?.target.recipientId || '');
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
 
   // Advanced fields
@@ -390,6 +390,7 @@ function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
 
   const selectedChannel = channels.find((c) => c.id === channelId);
   const isDiscord = selectedChannel?.type === 'discord';
+  const needsRecipient = selectedChannel && !isDiscord;
 
   const handleSubmit = async () => {
     // Event trigger path
@@ -424,9 +425,13 @@ function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
       toast.error(t('toast.channelRequired'));
       return;
     }
-    // Validate Discord channel ID when Discord is selected
-    if (selectedChannel?.type === 'discord' && !discordChannelId.trim()) {
+    // Validate recipient ID when a channel is selected
+    if (isDiscord && !recipientId.trim()) {
       toast.error(t('toast.discordIdRequired'));
+      return;
+    }
+    if (needsRecipient && !recipientId.trim()) {
+      toast.error(t('toast.recipientRequired'));
       return;
     }
 
@@ -438,18 +443,13 @@ function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
 
     setSaving(true);
     try {
-      // For Discord, use the manually entered channel ID; for others, use empty
-      const actualChannelId = selectedChannel!.type === 'discord'
-        ? discordChannelId.trim()
-        : '';
-
       await onSave({
         name: name.trim(),
         message: message.trim(),
         schedule: finalSchedule,
         target: {
           channelType: selectedChannel!.type,
-          channelId: actualChannelId,
+          channelId: recipientId.trim(),
           channelName: selectedChannel!.name,
         },
         enabled,
@@ -612,17 +612,17 @@ function TaskDialog({ job, onClose, onSave, onSaveTrigger }: TaskDialogProps) {
             )}
           </div>
 
-          {/* Discord Channel ID - only shown when Discord is selected */}
-          {isDiscord && (
+          {/* Recipient ID - shown when any channel is selected */}
+          {selectedChannel && (
             <div className="space-y-2">
-              <Label>{t('dialog.discordChannelId')}</Label>
+              <Label>{t(`dialog.recipientId.${selectedChannel.type}`, t('dialog.recipientId.default'))}</Label>
               <Input
-                value={discordChannelId}
-                onChange={(e) => setDiscordChannelId(e.target.value)}
-                placeholder={t('dialog.discordChannelIdPlaceholder')}
+                value={recipientId}
+                onChange={(e) => setRecipientId(e.target.value)}
+                placeholder={t(`dialog.recipientPlaceholder.${selectedChannel.type}`, t('dialog.recipientPlaceholder.default'))}
               />
               <p className="text-xs text-muted-foreground">
-                {t('dialog.discordChannelIdDesc')}
+                {t(`dialog.recipientDesc.${selectedChannel.type}`, t('dialog.recipientDesc.default'))}
               </p>
             </div>
           )}
@@ -921,13 +921,34 @@ export function Cron() {
 
   const isGatewayRunning = gatewayStatus.state === 'running';
 
-  // Fetch jobs and channels on mount
+  // Fetch jobs and channels on mount + poll every 30s for external changes
   useEffect(() => {
-    if (isGatewayRunning) {
-      fetchJobs();
-      fetchChannels();
-    }
+    if (!isGatewayRunning) return;
+
+    fetchJobs();
+    fetchChannels();
+
+    const interval = setInterval(fetchJobs, 30000);
+    return () => clearInterval(interval);
   }, [fetchJobs, fetchChannels, isGatewayRunning]);
+
+  // Listen for gateway notifications that may indicate cron changes
+  useEffect(() => {
+    const unsubscribe = window.electron.ipcRenderer.on('gateway:notification', (_event: unknown, data: unknown) => {
+      const notification = data as { method?: string };
+      if (notification?.method && (
+        notification.method.startsWith('cron.') ||
+        notification.method.startsWith('scheduler.')
+      )) {
+        fetchJobs();
+      }
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [fetchJobs]);
 
   // Statistics
   const activeJobs = jobs.filter((j) => j.enabled);

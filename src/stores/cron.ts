@@ -29,8 +29,11 @@ export const useCronStore = create<CronState>((set) => ({
   runs: {},
   
   fetchJobs: async () => {
-    set({ loading: true, error: null });
-    
+    const isInitialLoad = useCronStore.getState().jobs.length === 0;
+    if (isInitialLoad) {
+      set({ loading: true, error: null });
+    }
+
     try {
       const result = await window.electron.ipcRenderer.invoke('cron:list') as CronJob[];
       set({ jobs: result, loading: false });
