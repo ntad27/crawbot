@@ -737,6 +737,7 @@ function transformCronJob(job: GatewayCronJob) {
     channelType,
     channelId: channelType,
     channelName: channelType,
+    recipientId: job.delivery?.to || '',
   };
 
   // Build lastRun from state
@@ -808,24 +809,26 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
   }) => {
     try {
       // Transform frontend input to Gateway cron.add format
-      // For Discord, the recipient must be prefixed with "channel:" or "user:"
+      // Discord/Slack/Mattermost targets use "channel:<id>" prefix
       const recipientId = input.target.channelId;
-      const deliveryTo = input.target.channelType === 'discord' && recipientId
+      const needsChannelPrefix = ['discord', 'slack', 'mattermost'].includes(input.target.channelType);
+      const deliveryTo = needsChannelPrefix && recipientId
         ? `channel:${recipientId}`
         : recipientId;
 
       const gatewayInput = {
         name: input.name,
-        schedule: { kind: 'cron', expr: input.schedule, tz: input.tz },
+        schedule: { kind: 'cron', expr: input.schedule, tz: input.tz, staggerMs: 0 },
         payload: { kind: 'agentTurn', message: input.message },
         enabled: input.enabled ?? true,
-        wakeMode: input.wakeMode ?? 'next-heartbeat',
+        wakeMode: input.wakeMode ?? 'now',
         deleteAfterRun: input.deleteAfterRun,
         sessionTarget: 'isolated',
         delivery: {
           mode: 'announce',
           channel: input.target.channelType,
           to: deliveryTo,
+          bestEffort: true,
         },
       };
       const result = await gatewayManager.rpc('cron.add', gatewayInput);
@@ -892,7 +895,7 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
   // Trigger a cron job manually
   ipcMain.handle('cron:trigger', async (_, id: string) => {
     try {
-      const result = await gatewayManager.rpc('cron.run', { id, mode: 'force' });
+      const result = await gatewayManager.rpc('cron.run', { jobId: id, mode: 'force' });
       return result;
     } catch (error) {
       console.error('Failed to trigger cron job:', error);
@@ -1083,6 +1086,19 @@ function registerGatewayHandlers(
   ipcMain.handle('gateway:rpc', async (_, method: string, params?: unknown, timeoutMs?: number) => {
     try {
       const result = await gatewayManager.rpc(method, params, timeoutMs);
+
+      // Filter models.list to only include user-configured providers
+      if (method === 'models.list' && result && typeof result === 'object') {
+        const data = result as { models?: Array<{ provider: string }> };
+        if (Array.isArray(data.models)) {
+          const configured = await getAllProviders();
+          const configuredTypes = new Set(configured.map((p) => p.type));
+          if (configuredTypes.size > 0) {
+            data.models = data.models.filter((m) => configuredTypes.has(m.provider));
+          }
+        }
+      }
+
       return { success: true, result };
     } catch (error) {
       return { success: false, error: String(error) };

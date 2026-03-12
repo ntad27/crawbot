@@ -5,6 +5,7 @@
  */
 import { create } from 'zustand';
 import { useGatewayStore } from './gateway';
+import { useProviderStore } from './providers';
 
 export interface ModelCatalogEntry {
   id: string;
@@ -42,7 +43,14 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
       ) as { success: boolean; result?: { models?: ModelCatalogEntry[] }; error?: string };
 
       if (result.success && result.result?.models) {
-        set({ models: result.result.models, loading: false });
+        // Filter to only show models from user-configured providers
+        const configuredTypes = new Set<string>(
+          useProviderStore.getState().providers.map((p) => p.type),
+        );
+        const filtered = configuredTypes.size > 0
+          ? result.result.models.filter((m) => configuredTypes.has(m.provider))
+          : result.result.models;
+        set({ models: filtered, loading: false });
       } else {
         set({ models: [], loading: false, error: result.error || 'No models returned' });
       }
@@ -75,11 +83,20 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
 }));
 
 // Auto-fetch models when gateway transitions to 'running'
+// Ensures providers are loaded first so the filter works correctly.
+async function fetchModelsAfterProviders() {
+  const providerStore = useProviderStore.getState();
+  if (providerStore.providers.length === 0) {
+    await providerStore.fetchProviders();
+  }
+  await useModelsStore.getState().fetchModels();
+}
+
 let _prevGatewayState: string | undefined;
 useGatewayStore.subscribe((state) => {
   const currentState = state.status.state;
   if (currentState === 'running' && _prevGatewayState !== 'running') {
-    useModelsStore.getState().fetchModels();
+    fetchModelsAfterProviders();
   }
   _prevGatewayState = currentState;
 });
@@ -89,5 +106,18 @@ useGatewayStore.subscribe((state) => {
 const initialState = useGatewayStore.getState().status.state;
 if (initialState === 'running') {
   _prevGatewayState = 'running';
-  useModelsStore.getState().fetchModels();
+  fetchModelsAfterProviders();
 }
+
+// Re-fetch models when providers change so the filter stays in sync
+let _prevProviderCount: number | undefined;
+useProviderStore.subscribe((state) => {
+  const count = state.providers.length;
+  if (_prevProviderCount !== undefined && count !== _prevProviderCount) {
+    const gwState = useGatewayStore.getState().status.state;
+    if (gwState === 'running') {
+      useModelsStore.getState().fetchModels();
+    }
+  }
+  _prevProviderCount = count;
+});

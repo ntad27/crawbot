@@ -1135,6 +1135,59 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed && (!attachments || attachments.length === 0)) return;
 
+    // Intercept /models command — render locally with filtered provider data
+    if (/^\/models?\b/.test(trimmed)) {
+      const arg = trimmed.replace(/^\/models?\s*/, '').trim();
+      const { useModelsStore } = await import('./models');
+      const { useProviderStore } = await import('./providers');
+
+      // Ensure providers and models are loaded
+      const providerStore = useProviderStore.getState();
+      if (providerStore.providers.length === 0) await providerStore.fetchProviders();
+      const modelStore = useModelsStore.getState();
+      if (modelStore.models.length === 0) await modelStore.fetchModels();
+
+      const allModels = useModelsStore.getState().models;
+
+      let responseText: string;
+      if (arg) {
+        // /models <provider> — show models for that provider
+        const filtered = allModels.filter((m) => m.provider === arg);
+        if (filtered.length === 0) {
+          responseText = `No models found for provider "${arg}".`;
+        } else {
+          responseText = `Models for **${arg}** (${filtered.length}):\n` +
+            filtered.map((m) => `  ${m.id} — ${m.name || m.id}`).join('\n');
+        }
+      } else {
+        // /models — show provider summary
+        const groups: Record<string, number> = {};
+        for (const m of allModels) {
+          groups[m.provider] = (groups[m.provider] || 0) + 1;
+        }
+        const lines = Object.entries(groups)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([provider, count]) => `  ${provider} (${count})`);
+        responseText = `Providers:\n${lines.join('\n')}\n\nUse: /models <provider> Switch: /model <provider/model>`;
+      }
+
+      // Add user message + local assistant response
+      const userMsg: RawMessage = {
+        role: 'user',
+        content: trimmed,
+        timestamp: Date.now() / 1000,
+        id: crypto.randomUUID(),
+      };
+      const assistantMsg: RawMessage = {
+        role: 'assistant',
+        content: responseText,
+        timestamp: Date.now() / 1000 + 0.001,
+        id: crypto.randomUUID(),
+      };
+      set((s) => ({ messages: [...s.messages, userMsg, assistantMsg] }));
+      return;
+    }
+
     const { currentSessionKey } = get();
 
     // Add user message optimistically (with local file metadata for UI display)
