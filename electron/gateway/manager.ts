@@ -700,18 +700,22 @@ export class GatewayManager extends EventEmitter {
         spawnEnv['NODE_OPTIONS'] = `${existing} ${requireFlags}`.trim();
       }
 
-      // Critical: In packaged mode, make Electron binary act as Node.js
-      if (app.isPackaged) {
-        spawnEnv['ELECTRON_RUN_AS_NODE'] = '1';
-        // Prevent OpenClaw entry.ts from respawning itself (which would create
-        // another child process and a second "exec" dock icon on macOS)
-        spawnEnv['OPENCLAW_NO_RESPAWN'] = '1';
-        // Pre-set the NODE_OPTIONS that entry.ts would have added via respawn
+      // Prevent OpenClaw entry.ts from respawning itself — preserves our --require
+      // preload and avoids extra child processes.
+      spawnEnv['OPENCLAW_NO_RESPAWN'] = '1';
+
+      // Since we skip respawn, pre-set the NODE_OPTIONS that entry.ts would have added
+      {
         const existingNodeOpts = spawnEnv['NODE_OPTIONS'] ?? '';
         if (!existingNodeOpts.includes('--disable-warning=ExperimentalWarning') &&
             !existingNodeOpts.includes('--no-warnings')) {
           spawnEnv['NODE_OPTIONS'] = `${existingNodeOpts} --disable-warning=ExperimentalWarning`.trim();
         }
+      }
+
+      // Critical: In packaged mode, make Electron binary act as Node.js
+      if (app.isPackaged) {
+        spawnEnv['ELECTRON_RUN_AS_NODE'] = '1';
 
         // On macOS packaged, the Electron Helper binary disables process.env
         // (node_main.cc:148). Use --require to inject a polyfill that restores it

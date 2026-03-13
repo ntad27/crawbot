@@ -14,13 +14,10 @@ const BADGE = {
   ready: { text: '○', color: '#6B7280' },
 }
 
-const CDP_DOMAINS_TO_ENABLE = [
-  'Page', 'Runtime', 'DOM', 'Network', 'Input',
-  'Emulation', 'Overlay', 'Log',
-  // NOTE: Target domain intentionally excluded — we manage target announcements
-  // with synthetic UUIDs. Enabling Target causes Chrome to fire Target.attachedToTarget
-  // for child targets (iframes), which would create ghost targets in the relay.
-]
+// CDP domains are NOT pre-enabled by the extension — Playwright enables them
+// itself during CRPage init. Pre-enabling would consume Chrome's one-shot init
+// events while the attachingTabs guard suppresses forwarding, leaving Playwright's
+// CRPage in a broken state (no frame tree, no execution contexts).
 
 /** @type {WebSocket|null} */
 let relayWs = null
@@ -55,9 +52,15 @@ const reattachPending = new Set()
 const attachingTabs = new Set()
 /** @type {Set<string>} targetIds announced to current relay connection — prevents duplicates */
 const announcedTargetIds = new Set()
-// Auto-detach is disabled — Playwright maintains long-lived CDP sessions and
-// detaching mid-session corrupts its internal state (stuck responses → timeouts).
-// Users can manually detach via the extension icon click.
+// Idle auto-detach: detach debugger after IDLE_DETACH_MS of no CDP commands.
+// This removes the yellow bar when the agent is done using the browser.
+// Re-attach happens transparently when the next CDP command arrives.
+const IDLE_DETACH_MS = 120_000 // 120 seconds — LLM takes 30-60s to think between actions
+/** @type {Map<number, ReturnType<typeof setTimeout>>} */
+const idleDetachTimers = new Map()
+/** @type {Set<number>} Tabs where user explicitly dismissed the debugger bar.
+ * Re-attachment is blocked until a NEW agent CDP command targets this tab. */
+const userDismissedTabs = new Set()
 
 /** @type {number|null} */
 let activeTabId = null
@@ -110,7 +113,7 @@ function startAutoDiscovery() {
     if (token && relayWs?.readyState === WebSocket.OPEN) return
     if (!token) {
       const discovered = await autoDiscoverToken()
-      if (discovered) { try { await ensureRelayConnection() } catch { /* */ } }
+      if (discovered) { try { await ensureRelayConnection(); await announceAllTabs() } catch { /* */ } }
     }
   }, AUTO_DISCOVER_INTERVAL_MS)
 }
@@ -348,56 +351,77 @@ async function announceTab(tabId) {
   const sessionId = `cb-tab-${sid}`
   const isActive = tabId === activeTabId
 
-  // Get real Chrome targetId via chrome.debugger.getTargets() — NO debugger attach needed!
-  const realTargetId = await getRealTargetId(tabId)
+  // Use a STABLE UUID as targetId — never changes for the tab's lifetime.
+  // Chrome's real target IDs change on navigation, causing "tab not found" errors
+  // when the agent caches old IDs. The frame ID rewriting mechanism handles any
+  // mismatch between our stable UUID and Chrome's changing frame/target IDs.
+  const stableTargetId = generateUUID()
 
-  const entry = { state: /** @type {const} */ ('announced'), sessionId, targetId: realTargetId, attachOrder: sid }
+  const entry = { state: /** @type {const} */ ('announced'), sessionId, targetId: stableTargetId, attachOrder: sid }
   tabs.set(tabId, entry)
   tabBySession.set(sessionId, tabId)
 
   const title = isActive ? `[ACTIVE] ${tabInfo.title || ''}` : (tabInfo.title || '')
-  announceTargetToRelay(sessionId, realTargetId, undefined, { title, url: tabInfo.url || '' })
+  announceTargetToRelay(sessionId, stableTargetId, undefined, { title, url: tabInfo.url || '' })
 
   setBadge(tabId, 'ready')
   await persistState()
-  console.log(`Tab ${tabId} announced (targetId: ${realTargetId}, no debugger)`)
+  console.log(`Tab ${tabId} announced (targetId: ${stableTargetId}, stable UUID)`)
   return entry
 }
 
 async function announceAllTabs() {
   if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
 
-  // First re-announce already-tracked tabs — refresh targetIds (no debugger attach)
+  // Re-announce already-tracked tabs with STABLE targetIds (no refresh).
+  // Also clean up stale entries (tabs closed while service worker was suspended).
+  const stale = []
   for (const [tabId, tab] of tabs.entries()) {
     if (tab.sessionId && tab.targetId) {
-      // Refresh real targetId (may have changed after navigation)
-      const freshId = await getRealTargetId(tabId, tab.targetId)
-      if (freshId !== tab.targetId) {
-        tabs.set(tabId, { ...tab, targetId: freshId })
-      }
-
-      // Re-announce — dedup prevents duplicates on same connection
-      const currentTab = tabs.get(tabId)
       try {
         const tabInfo = await chrome.tabs.get(tabId)
+
+        // Re-announce with same stable UUID — dedup prevents duplicates
         const isActive = tabId === activeTabId
-        const oldTargetId = tab.targetId !== freshId ? tab.targetId : undefined
         const title = isActive ? `[ACTIVE] ${tabInfo.title || ''}` : tabInfo.title || ''
-        announceTargetToRelay(tab.sessionId, freshId, oldTargetId, { title, url: tabInfo.url || '' })
-        setBadge(tabId, currentTab?.state === 'connected' ? 'on' : 'ready')
-      } catch { /* tab gone */ }
+        announceTargetToRelay(tab.sessionId, tab.targetId, undefined, { title, url: tabInfo.url || '' })
+        setBadge(tabId, tab.state === 'connected' ? 'on' : 'ready')
+      } catch {
+        // Tab no longer exists — mark for cleanup
+        stale.push(tabId)
+      }
     }
   }
+  // Remove stale tabs and notify relay
+  for (const tabId of stale) {
+    const tab = tabs.get(tabId)
+    if (tab?.sessionId) tabBySession.delete(tab.sessionId)
+    tabs.delete(tabId)
+    if (tab?.sessionId && tab?.targetId) {
+      try { sendToRelay({ method: 'forwardCDPEvent', params: { method: 'Target.detachedFromTarget', params: { sessionId: tab.sessionId, targetId: tab.targetId } } }) } catch { /* */ }
+    }
+    console.log(`Cleaned up stale tab ${tabId}`)
+  }
 
-  // Then announce + attach all other tabs
+  // NOTE: We intentionally do NOT discover/announce new tabs here.
+  // New tabs are only announced on-demand when the agent targets them
+  // (via handleForwardCdpCommand → announceTab). This prevents the debugger
+  // bar from appearing on tabs the user is just browsing normally.
+  // New tabs CAN be announced on initial relay connect (announceAllTabs
+  // is called once at startup), but NOT on periodic keepalive.
+
+  await persistState()
+}
+
+/** One-time full discovery — called only on initial relay connect. */
+async function discoverAndAnnounceNewTabs() {
+  if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
   let allTabs
-  try { allTabs = await chrome.tabs.query({}) } catch { return }
+  try { allTabs = await chrome.tabs.query({}) } catch { allTabs = [] }
   for (const tab of allTabs) {
     if (!tab.id || tabs.has(tab.id) || !isAttachableUrl(tab.url)) continue
     try { await announceTab(tab.id) } catch { /* skip */ }
   }
-
-  await persistState()
 }
 
 // ── Lazy debugger attach (on CDP command) ────────────────────────────────────
@@ -426,37 +450,47 @@ async function ensureDebuggerAttached(tabId) {
   try {
     await chrome.debugger.attach(debuggee, '1.3')
   } catch (err) {
-    attachingTabs.delete(tabId)
-    if (existing) tabs.set(tabId, { ...existing, state: /** @type {const} */ ('announced') })
-    throw err
-  }
-
-  // Enable CDP domains so commands work immediately after attach
-  // This must happen BEFORE we mark as 'connected' and release attachingTabs
-  for (const domain of CDP_DOMAINS_TO_ENABLE) {
-    try {
-      await chrome.debugger.sendCommand(debuggee, `${domain}.enable`)
-    } catch (err) {
-      console.warn(`Tab ${tabId}: ${domain}.enable failed:`, err?.message || err)
+    const msg = err?.message || String(err)
+    if (msg.includes('Another debugger') || msg.includes('already attached')) {
+      // Debugger already attached (e.g. DevTools open or previous session) — reuse it.
+      // Verify it's responsive, then treat as connected.
+      try {
+        await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: '1', returnByValue: true })
+        console.log(`Tab ${tabId}: reusing existing debugger attachment`)
+        // Fall through to domain enables below
+      } catch {
+        attachingTabs.delete(tabId)
+        if (existing) tabs.set(tabId, { ...existing, state: /** @type {const} */ ('announced') })
+        throw new Error(`Tab ${tabId}: debugger attached by another client and not responsive`)
+      }
+    } else {
+      attachingTabs.delete(tabId)
+      if (existing) tabs.set(tabId, { ...existing, state: /** @type {const} */ ('announced') })
+      throw err
     }
   }
 
-  // Settle delay — Chrome needs time to initialize CDP session, populate frame tree,
-  // and send execution context events after domain enables. Playwright processes these
-  // asynchronously via relay, so we need enough time for the full round-trip.
-  await new Promise((r) => setTimeout(r, 500))
-
-  // Verify debugger is responsive with a probe command
+  // Pre-enable Page domain to get the REAL main frame ID from Page.getFrameTree.
+  // Chrome's target IDs can differ from main frame IDs (e.g. after SPA navigation).
+  // Playwright REQUIRES targetId == main frame.id for CRPage to work.
+  // We intentionally do NOT call Page.disable — leaving Page enabled means
+  // Playwright's subsequent Page.enable is a no-op, which is fine since Playwright
+  // uses Page.getFrameTree (not Page.enable events) for initial state.
+  // Events fired during this probe are suppressed by the attachingTabs guard.
+  let realFrameId = null
   try {
-    await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', { expression: '1', returnByValue: true })
+    await chrome.debugger.sendCommand(debuggee, 'Page.enable')
+    const tree = /** @type {any} */ (await chrome.debugger.sendCommand(debuggee, 'Page.getFrameTree'))
+    realFrameId = tree?.frameTree?.frame?.id || null
   } catch (err) {
-    console.warn(`Tab ${tabId}: post-attach probe failed, extra settle:`, err?.message || err)
-    await new Promise((r) => setTimeout(r, 500))
+    console.warn(`Tab ${tabId}: Page.getFrameTree probe failed:`, err?.message || err)
   }
 
   attachingTabs.delete(tabId)
 
-  // Keep sessionId but get real Chrome targetId if we don't have one yet
+  // Keep existing sessionId and STABLE targetId — never refresh targetId from Chrome.
+  // Chrome's real target IDs change on navigation, but our UUID is stable for the tab's lifetime.
+  // The frame ID rewriting mechanism handles any mismatch transparently.
   let sessionId = existing?.sessionId
   let attachOrder = existing?.attachOrder
   let targetId = existing?.targetId
@@ -467,15 +501,21 @@ async function ensureDebuggerAttached(tabId) {
     targetId = targetId || generateUUID()
   }
 
-  // ALWAYS refresh real Chrome target ID on every attach/re-attach
-  targetId = await getRealTargetId(tabId, targetId)
+  // Set up frame ID rewriting if the real frame ID (from Page.getFrameTree probe)
+  // differs from our stable announced targetId. This is EXPECTED — Chrome's frame IDs
+  // are ephemeral, our targetId is a stable UUID.
+  let frameIdMap = null
+  if (realFrameId && realFrameId !== targetId) {
+    console.log(`Tab ${tabId}: frame ID rewrite: targetId=${targetId}, realFrameId=${realFrameId}`)
+    frameIdMap = { real: realFrameId, announced: targetId }
+  }
 
-  tabs.set(tabId, { state: 'connected', sessionId, targetId, attachOrder })
+  tabs.set(tabId, { state: 'connected', sessionId, targetId, attachOrder, frameIdMap })
   tabBySession.set(sessionId, tabId)
 
   setBadge(tabId, 'on')
   await persistState()
-  console.log(`Debugger attached to tab ${tabId} (domains enabled, ready for CDP)`)
+  console.log(`Debugger attached to tab ${tabId} (targetId: ${targetId}, ready for CDP)`)
   return tabs.get(tabId)
 }
 
@@ -494,6 +534,29 @@ async function detachTab(tabId, reason) {
   if (tab?.state === 'connected') { try { await chrome.debugger.detach({ tabId }) } catch { /* */ } }
   setBadge(tabId, 'off')
   await persistState()
+}
+
+// ── Idle auto-detach ─────────────────────────────────────────────────────────
+
+function resetIdleDetachTimer(tabId) {
+  const existing = idleDetachTimers.get(tabId)
+  if (existing) clearTimeout(existing)
+  idleDetachTimers.set(tabId, setTimeout(() => {
+    idleDetachTimers.delete(tabId)
+    const tab = tabs.get(tabId)
+    if (!tab || tab.state !== 'connected') return
+    console.log(`Tab ${tabId}: idle auto-detach after ${IDLE_DETACH_MS / 1000}s`)
+    // Downgrade to announced — keep UUID, no relay events
+    try { chrome.debugger.detach({ tabId }) } catch { /* */ }
+    tabs.set(tabId, { ...tab, state: 'announced', frameIdMap: undefined })
+    setBadge(tabId, 'ready')
+    void persistState()
+  }, IDLE_DETACH_MS))
+}
+
+function clearIdleDetachTimer(tabId) {
+  const existing = idleDetachTimers.get(tabId)
+  if (existing) { clearTimeout(existing); idleDetachTimers.delete(tabId) }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -543,6 +606,32 @@ async function getRealTargetId(tabId, fallback) {
   return fallback || generateUUID()
 }
 
+/**
+ * Rewrite frame IDs in a CDP result/params object to match the announced targetId.
+ * Chrome can return frame IDs that differ from the target ID (e.g. after navigation).
+ * Playwright requires targetId == main frame.id, so we transparently patch the mismatch.
+ * @param {any} obj - The object to rewrite (mutated in place)
+ * @param {string} realId - Chrome's actual frame ID
+ * @param {string} announcedId - The targetId we announced to the relay
+ */
+function rewriteFrameIds(obj, realId, announcedId) {
+  if (!obj || typeof obj !== 'object') return
+  // Direct frameId fields
+  if (obj.frameId === realId) obj.frameId = announcedId
+  // Frame objects (Page.getFrameTree, Page.frameNavigated)
+  if (obj.id === realId) obj.id = announcedId
+  if (obj.parentId === realId) obj.parentId = announcedId
+  // Nested objects
+  if (obj.frame) rewriteFrameIds(obj.frame, realId, announcedId)
+  if (obj.frameTree) rewriteFrameIds(obj.frameTree, realId, announcedId)
+  // auxData in Runtime.executionContextCreated
+  if (obj.context?.auxData?.frameId === realId) obj.context.auxData.frameId = announcedId
+  // Child frames in Page.getFrameTree
+  if (Array.isArray(obj.childFrames)) {
+    for (const child of obj.childFrames) rewriteFrameIds(child, realId, announcedId)
+  }
+}
+
 function isAttachableUrl(url) {
   if (!url) return true
   return !url.startsWith('chrome://') && !url.startsWith('chrome-extension://') && !url.startsWith('devtools://') && !url.startsWith('chrome-search://')
@@ -559,17 +648,14 @@ async function handleForwardCdpCommand(msg) {
   const targetId = typeof params?.targetId === 'string' ? params.targetId : undefined
   let tabId = bySession?.tabId || (targetId ? getTabByTargetId(targetId) : null)
 
-  // Fallback: prefer active tab, then any tab
-  if (!tabId) {
-    if (activeTabId && tabs.has(activeTabId)) tabId = activeTabId
-    else { for (const [id] of tabs.entries()) { tabId = id; break } }
-  }
-
-  // Custom: return active tab info (works without debugger)
+  // Custom: return active tab info (works without debugger).
+  // Also announces the active tab on-demand so the relay/Playwright knows about it.
   if (method === 'Target.getActiveTarget') {
     try {
       const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
       if (!active?.id) return { targetId: null }
+      // On-demand announce: ensure relay knows about this tab
+      if (!tabs.has(active.id)) await announceTab(active.id)
       const ts = tabs.get(active.id)
       return { targetId: ts?.targetId || null, sessionId: ts?.sessionId || null, title: active.title, url: active.url, tabId: active.id, attached: ts?.state === 'connected' }
     } catch { return { targetId: null } }
@@ -597,6 +683,8 @@ async function handleForwardCdpCommand(msg) {
     const tab = await chrome.tabs.create({ url, active: false })
     if (!tab.id) throw new Error('Failed to create tab')
     await new Promise((r) => setTimeout(r, 300))
+    // Announce first (assigns stable UUID), then attach debugger
+    if (!tabs.has(tab.id)) await announceTab(tab.id)
     const attached = await ensureDebuggerAttached(tab.id)
     return { targetId: attached.targetId }
   }
@@ -619,24 +707,115 @@ async function handleForwardCdpCommand(msg) {
     return {}
   }
 
+  // On-demand tab discovery: if no tab found by session/targetId, try to find
+  // the Chrome tab by targetId and announce it now (lazy announcement).
+  if (!tabId && targetId) {
+    try {
+      const targets = await chrome.debugger.getTargets()
+      const match = targets.find(t => t.id === targetId && t.type === 'page')
+      if (match?.tabId) {
+        await announceTab(match.tabId)
+        tabId = match.tabId
+      }
+    } catch { /* */ }
+  }
+
+  // Last resort: use active tab
+  if (!tabId) {
+    if (activeTabId && tabs.has(activeTabId)) tabId = activeTabId
+    else {
+      // Try to announce active tab on-demand
+      try {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+        if (active?.id) { await announceTab(active.id); tabId = active.id }
+      } catch { /* */ }
+    }
+  }
+
   if (!tabId) throw new Error(`No tab available for ${method}`)
+
+  // Clear user-dismissed flag — a fresh agent CDP command overrides the dismissal
+  userDismissedTabs.delete(tabId)
 
   // Attach debugger (or reuse existing connection)
   await ensureDebuggerAttached(tabId)
 
+  // Reset idle auto-detach timer — the agent is actively using this tab
+  resetIdleDetachTimer(tabId)
 
   const debuggee = { tabId }
-
-  if (method === 'Runtime.enable') {
-    try { await chrome.debugger.sendCommand(debuggee, 'Runtime.disable'); await new Promise((r) => setTimeout(r, 50)) } catch { /* */ }
-    return await chrome.debugger.sendCommand(debuggee, 'Runtime.enable', params)
-  }
 
   // Only pass sessionId to Chrome for REAL child sessions (iframes etc).
   // Our synthetic sessions (cb-tab-*, alias-*, browser-*) are NOT Chrome sessions.
   const isRealChildSession = sessionId && childSessionToTab.has(sessionId)
   const debuggerSession = isRealChildSession ? { ...debuggee, sessionId } : debuggee
-  return await chrome.debugger.sendCommand(debuggerSession, method, params)
+
+  // Reverse-rewrite frame IDs in command params: announced → real for Chrome
+  let tabEntry = tabs.get(tabId)
+  let cmdParams = params
+  if (tabEntry?.frameIdMap && cmdParams && typeof cmdParams === 'object') {
+    cmdParams = JSON.parse(JSON.stringify(cmdParams)) // deep clone
+    rewriteFrameIds(cmdParams, tabEntry.frameIdMap.announced, tabEntry.frameIdMap.real)
+  }
+
+  let result
+  try {
+    result = await chrome.debugger.sendCommand(debuggerSession, method, cmdParams)
+  } catch (err) {
+    // Auto-retry with fresh frame ID if Chrome says "No frame for given id found".
+    // This handles cases where: (a) eager probe failed/was stale, (b) page navigated
+    // since probe, (c) frameIdMap wasn't set in time. Re-probes Page.getFrameTree,
+    // updates frameIdMap, and retries the command with the correct frame ID.
+    const errMsg = err?.message || String(err)
+    if (errMsg.includes('No frame for given id') && cmdParams?.frameId) {
+      try {
+        const tree = /** @type {any} */ (await chrome.debugger.sendCommand(debuggee, 'Page.getFrameTree'))
+        const freshRealId = tree?.frameTree?.frame?.id
+        if (freshRealId && freshRealId !== cmdParams.frameId) {
+          console.log(`Tab ${tabId}: frame ID stale for ${method}, reprobing: ${cmdParams.frameId} → ${freshRealId}`)
+          tabEntry = tabs.get(tabId)
+          if (tabEntry) {
+            tabEntry.frameIdMap = { real: freshRealId, announced: tabEntry.targetId }
+            tabs.set(tabId, tabEntry)
+          }
+          const retryParams = { ...cmdParams, frameId: freshRealId }
+          result = await chrome.debugger.sendCommand(debuggerSession, method, retryParams)
+        } else {
+          throw err // same frame ID or no tree — can't recover
+        }
+      } catch (retryErr) {
+        if (retryErr === err) throw err
+        throw new Error(`${method} retry failed: ${retryErr?.message || retryErr} (original: ${errMsg})`)
+      }
+    } else {
+      throw err
+    }
+  }
+
+  // Lazy frame ID mismatch detection: when Page.getFrameTree response arrives,
+  // check if Chrome's main frame.id matches our announced targetId.
+  // If not, set up bidirectional rewriting for all future commands/events.
+  if (method === 'Page.getFrameTree' && result?.frameTree?.frame?.id) {
+    const chromeFrameId = result.frameTree.frame.id
+    tabEntry = tabs.get(tabId) // refresh
+    if (tabEntry && chromeFrameId !== tabEntry.targetId) {
+      if (!tabEntry.frameIdMap || tabEntry.frameIdMap.real !== chromeFrameId) {
+        console.log(`Tab ${tabId}: frame ID mismatch: targetId=${tabEntry.targetId}, frameId=${chromeFrameId}. Enabling rewrite.`)
+        tabEntry.frameIdMap = { real: chromeFrameId, announced: tabEntry.targetId }
+        tabs.set(tabId, tabEntry)
+      }
+    }
+  }
+
+  // Rewrite frame IDs in response: real → announced for Playwright
+  tabEntry = tabs.get(tabId) // refresh after potential frameIdMap update
+  if (tabEntry?.frameIdMap && result && typeof result === 'object') {
+    const clonedResult = JSON.parse(JSON.stringify(result))
+    rewriteFrameIds(clonedResult, tabEntry.frameIdMap.real, tabEntry.frameIdMap.announced)
+    return clonedResult
+  }
+
+  return result
 }
 
 // ── Event listeners ─────────────────────────────────────────────────────────
@@ -662,12 +841,27 @@ function onDebuggerEvent(source, method, params) {
     return
   }
 
-  try { sendToRelay({ method: 'forwardCDPEvent', params: { sessionId: source.sessionId || tab.sessionId, method, params } }) } catch { /* */ }
+  // Rewrite frame IDs if this tab has a frame ID mismatch
+  let fwdParams = params
+  if (tab.frameIdMap && fwdParams) {
+    fwdParams = JSON.parse(JSON.stringify(fwdParams)) // deep clone
+    rewriteFrameIds(fwdParams, tab.frameIdMap.real, tab.frameIdMap.announced)
+  }
+
+  try { sendToRelay({ method: 'forwardCDPEvent', params: { sessionId: source.sessionId || tab.sessionId, method, params: fwdParams } }) } catch { /* */ }
 }
 
 async function onDebuggerDetach(source, reason) {
   const tabId = source.tabId; if (!tabId) return
+  clearIdleDetachTimer(tabId)
   const tab = tabs.get(tabId); if (!tab || tab.state !== 'connected') return
+
+  // If user clicked "Cancel" on the debugger bar, mark as user-dismissed.
+  // This prevents re-attachment until a NEW agent CDP command explicitly targets this tab.
+  if (reason === 'canceled_by_user') {
+    userDismissedTabs.add(tabId)
+    console.log(`Tab ${tabId}: user dismissed debugger bar — blocking re-attach until agent command`)
+  }
 
   // Downgrade to announced — keep same UUID targetId, no relay events
   // The relay still sees this tab by its original UUID; just silently drop the debugger
@@ -732,7 +926,7 @@ async function notifyActiveTabChanged(newId, oldId) {
 // ── Tab lifecycle ───────────────────────────────────────────────────────────
 
 chrome.tabs.onRemoved.addListener((tabId) => void whenReady(() => {
-  reattachPending.delete(tabId); if (!tabs.has(tabId)) return
+  reattachPending.delete(tabId); clearIdleDetachTimer(tabId); userDismissedTabs.delete(tabId); if (!tabs.has(tabId)) return
   const tab = tabs.get(tabId)
   if (tab?.sessionId) tabBySession.delete(tab.sessionId); tabs.delete(tabId)
   for (const [cid, pid] of childSessionToTab.entries()) { if (pid === tabId) childSessionToTab.delete(cid) }
@@ -740,24 +934,16 @@ chrome.tabs.onRemoved.addListener((tabId) => void whenReady(() => {
   void persistState()
 }))
 
-// Announce new tabs (no debugger — init commands get mock responses)
-chrome.tabs.onCreated.addListener((tab) => void whenReady(async () => {
-  if (!tab.id || !relayWs || relayWs.readyState !== WebSocket.OPEN) return
-  await new Promise((r) => setTimeout(r, 500))
-  if (tabs.has(tab.id)) return
-  try { await announceTab(tab.id) } catch { /* */ }
-}))
+// Do NOT auto-announce new tabs to the relay — this triggers Playwright to
+// create CRPage + send init commands → debugger attaches (yellow bar) on tabs
+// the user is just browsing normally. Tabs are announced on-demand when the
+// agent actually targets them, or via announceAllTabs on relay connect.
+// chrome.tabs.onCreated — intentionally no listener
 
-// Update tab info on navigation complete
+// Update tab info on navigation complete (only for already-tracked tabs)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => void whenReady(async () => {
   if (changeInfo.status !== 'complete') return
-
-  if (!tabs.has(tabId)) {
-    // New tab — announce it
-    if (!isAttachableUrl(tab.url) || !relayWs || relayWs.readyState !== WebSocket.OPEN) return
-    try { await announceTab(tabId) } catch { /* */ }
-    return
-  }
+  if (!tabs.has(tabId)) return // don't auto-announce new tabs
 
   // Existing tab — update title/url in relay
   const entry = tabs.get(tabId)
@@ -810,22 +996,21 @@ chrome.webNavigation.onCompleted.addListener(({ tabId, frameId }) => void whenRe
   const tab = tabs.get(tabId)
   if (!tab) return
 
-  // Refresh targetId after navigation — Chrome may assign new frame IDs
-  const freshId = await getRealTargetId(tabId, tab.targetId)
-  if (freshId !== tab.targetId) {
-    tabs.set(tabId, { ...tab, targetId: freshId })
-    console.log(`Tab ${tabId} navigated, targetId updated: ${tab.targetId} → ${freshId}`)
-    // Update relay with new targetId
-    if (relayWs?.readyState === WebSocket.OPEN && tab.sessionId) {
-      announcedTargetIds.delete(tab.targetId) // allow re-announce with new ID
-      try {
-        const tabInfo = await chrome.tabs.get(tabId)
-        const isActive = tabId === activeTabId
-        const title = isActive ? `[ACTIVE] ${tabInfo.title || ''}` : tabInfo.title || ''
-        announceTargetToRelay(tab.sessionId, freshId, tab.targetId, { title, url: tabInfo.url || '' })
-      } catch { /* */ }
-    }
-    await persistState()
+  // Navigation complete — clear stale frameIdMap so it's re-probed on next attach.
+  // The targetId stays STABLE (our UUID never changes). Only the frame ID rewriting
+  // needs to be updated, which happens automatically in ensureDebuggerAttached.
+  if (tab.frameIdMap) {
+    tabs.set(tabId, { ...tab, frameIdMap: undefined })
+  }
+
+  // Update title/url in relay (targetId stays the same)
+  if (relayWs?.readyState === WebSocket.OPEN && tab.sessionId && tab.targetId) {
+    try {
+      const tabInfo = await chrome.tabs.get(tabId)
+      const isActive = tabId === activeTabId
+      const title = isActive ? `[ACTIVE] ${tabInfo.title || ''}` : tabInfo.title || ''
+      sendToRelay({ method: 'forwardCDPEvent', params: { method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: tab.targetId, type: 'page', title, url: tabInfo.url || '', attached: true } } } })
+    } catch { /* */ }
   }
 
   if (tab.state === 'connected') setBadge(tabId, relayWs?.readyState === WebSocket.OPEN ? 'on' : 'connecting')
@@ -867,7 +1052,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       await ensureRelayConnection().catch(() => { if (!reconnectTimer) scheduleReconnect() })
     }
   } else {
-    // Announce any new tabs
+    // Only maintain existing tracked tabs — do NOT discover new tabs on keepalive.
+    // New tabs are discovered on-demand when the agent targets them.
     await announceAllTabs()
   }
 })
@@ -901,6 +1087,7 @@ initPromise.then(async () => {
       await ensureRelayConnection()
       reconnectAttempt = 0
       await announceAllTabs()
+      await discoverAndAnnounceNewTabs() // only on initial connect — not keepalive
     } catch { scheduleReconnect() }
   }
 })
