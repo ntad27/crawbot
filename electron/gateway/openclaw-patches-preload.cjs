@@ -4,12 +4,12 @@
  * Uses Node.js module.register() ESM loader hook to rewrite source code in memory.
  * No node_modules modifications needed. Survives OpenClaw version updates.
  *
- * Patch A) dispatch-*.js, reply-*.js, pi-embedded-*.js, compact-*.js (browser tool client):
+ * Patch A) any chunk containing fetchBrowserJson (browser tool client):
  *   A1. fetchHttpJson default timeout: 5s → 30s
  *   A2. fetchBrowserJson default timeout: 5s → 30s
  *   A3. Replace "Do NOT retry" agent hint with retry-friendly message
  *
- * Patch B) relay file (was chrome-*.js, now may be reply-*.js or other bundled file):
+ * Patch B) any chunk containing broadcastToCdpClients (Chrome extension relay):
  *   B1. Dedup: disable duplicate Target.attachedToTarget re-send (Playwright crash)
  *   B2. Passthrough: remove local Target.attachToTarget handler → fall through
  *       to extension for unique session alias (prevents session overwrite race)
@@ -107,9 +107,8 @@ const loaderSource = [
   '  const base = url.split("/").pop() || "";',
   '  if (!base.endsWith(".js")) return nextLoad(url, context);',
   '',
-  '  // Only process candidate files (dispatch/reply/pi-embedded/compact/chrome bundles)',
-  '  const isCandidate = base.startsWith("dispatch-") || base.startsWith("pi-embedded-") || base.startsWith("compact-") || base.startsWith("reply-") || base.startsWith("chrome-");',
-  '  if (!isCandidate || dispatchDone.has(base) && relayDone.has(base)) return nextLoad(url, context);',
+  '  // Skip files that have already been patched for both dispatch and relay',
+  '  if (dispatchDone.has(base) && relayDone.has(base)) return nextLoad(url, context);',
   '',
   '  let src;',
   '  try { src = readFileSync(fileURLToPath(url), "utf8"); } catch { return nextLoad(url, context); }',
