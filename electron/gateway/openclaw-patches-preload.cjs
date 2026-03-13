@@ -1,0 +1,161 @@
+/**
+ * Runtime in-memory patches for OpenClaw — loaded via --require before gateway starts.
+ *
+ * Uses Node.js module.register() ESM loader hook to rewrite source code in memory.
+ * No node_modules modifications needed. Survives OpenClaw version updates.
+ *
+ * Patch A) dispatch-*.js, reply-*.js, pi-embedded-*.js, compact-*.js (browser tool client):
+ *   A1. fetchHttpJson default timeout: 5s → 30s
+ *   A2. fetchBrowserJson default timeout: 5s → 30s
+ *   A3. Replace "Do NOT retry" agent hint with retry-friendly message
+ *
+ * Patch B) relay file (was chrome-*.js, now may be reply-*.js or other bundled file):
+ *   B1. Dedup: disable duplicate Target.attachedToTarget re-send (Playwright crash)
+ *   B2. Passthrough: remove local Target.attachToTarget handler → fall through
+ *       to extension for unique session alias (prevents session overwrite race)
+ *   B3. Broadcast-dedup: prevent ensureTargetEventsForClient from re-sending
+ *       targets that were already broadcast to Playwright (race condition fix)
+ *   B4. Delay Target.setAutoAttach response for CRPage init
+ *   B5. Disable pruneStaleTargetsFromCommandFailure (prevents cascade "tab not found")
+ *   B6. Increase sendToExtension timeout: 30s → 120s (prevents navigate timeout)
+ */
+'use strict';
+
+const { register } = require('node:module');
+const { pathToFileURL } = require('node:url');
+
+// Build the loader source as a regular string, then encode for data: URL.
+// This avoids escaping issues with template literals inside encodeURIComponent.
+const loaderSource = [
+  'import { readFileSync } from "node:fs";',
+  'import { fileURLToPath } from "node:url";',
+  '',
+  'const NEW_TIMEOUT = "30e3";',
+  '',
+  '// ── Patch A: dispatch-*.js ──',
+  'const DISPATCH_PATCHES = [',
+  '  ["const timeoutMs = init.timeoutMs ?? 5e3;", "const timeoutMs = init.timeoutMs ?? " + NEW_TIMEOUT + ";"],',
+  '  ["const timeoutMs = init?.timeoutMs ?? 5e3;", "const timeoutMs = init?.timeoutMs ?? " + NEW_TIMEOUT + ";"],',
+  '  ["Do NOT retry the browser tool \\u2014 it will keep failing. Use an alternative approach or inform the user that the browser is currently unavailable.",',
+  '   "This may be a transient timeout. Retry the browser tool at least 3 more times before giving up. If it still fails after retries, inform the user that the browser may need a restart."],',
+  '];',
+  '',
+  '// ── Patch B: chrome-*.js ──',
+  '// B1: dedup — disable the if-block that re-sends Target.attachedToTarget after routeCdpCommand',
+  'const B1_FIND = \'if (cmd.method === "Target.attachToTarget") {\';',
+  'const B1_REPLACE = \'if (false && cmd.method === "Target.attachToTarget") {\';',
+  '',
+  '// B2: passthrough — remove the local case handler so it falls through to extension',
+  'const B2_FIND_RE = /case "Target\\.attachToTarget": \\{[\\s\\S]*?throw new Error\\("target not found"\\);\\s*\\}/;',
+  'const B2_REPLACE = \'case "Target.attachToTarget":\';',
+  '',
+  '// B3: global dedup — persistent set of targetIds known to Playwright.',
+  '// Prevents Playwright "Duplicate target" crash from any code path.',
+  '// Cleared when last CDP client disconnects (so reconnecting Playwright gets fresh targets).',
+  'const B3A_FIND = "const broadcastToCdpClients = (evt) => {";',
+  'const B3A_REPLACE = \'const __sentTargetIds = new Set(); const broadcastToCdpClients = (evt) => { const __tid = evt.params?.targetInfo?.targetId || evt.params?.targetId; if (evt.method === "Target.attachedToTarget" && __tid && __sentTargetIds.has(__tid)) return; const __msg = JSON.stringify(evt); let __sent = false; for (const ws of cdpClients) { if (ws.readyState !== 1) continue; ws.send(__msg); __sent = true; } if (__sent && __tid) { if (evt.method === "Target.attachedToTarget") __sentTargetIds.add(__tid); else if (evt.method === "Target.detachedFromTarget") __sentTargetIds.delete(__tid); } return;\';',
+  '',
+  '// B3b: replace ensureTargetEventsForClient to skip already-sent targets',
+  'const B3B_FIND_RE = /const ensureTargetEventsForClient = \\(ws, mode\\) => \\{[\\s\\S]*?\\};\\s*const routeCdpCommand/;',
+  'const B3B_REPLACE = [',
+  '  "const ensureTargetEventsForClient = (ws, mode) => {",',
+  '  "  for (const target of connectedTargets.values()) {",',
+  '  "    if (__sentTargetIds.has(target.targetId)) continue;",',
+  '  "    if (mode === \\"autoAttach\\") { ws.send(JSON.stringify({ method: \\"Target.attachedToTarget\\", params: { sessionId: target.sessionId, targetInfo: { ...target.targetInfo, attached: true }, waitingForDebugger: false } })); __sentTargetIds.add(target.targetId); }",',
+  '  "    else ws.send(JSON.stringify({ method: \\"Target.targetCreated\\", params: { targetInfo: { ...target.targetInfo, attached: true } } }));",',
+  '  "  }",',
+  '  "};",',
+  '  "const routeCdpCommand"',
+  '].join("\\n\\t\\t");',
+  '',
+  '// B3c: clear __sentTargetIds when last CDP client disconnects (Playwright reconnect gets fresh)',
+  'const B3C_FIND = "cdpClients.delete(ws);";',
+  'const B3C_REPLACE = "cdpClients.delete(ws); if (cdpClients.size === 0) __sentTargetIds.clear();";',
+  '',
+  '// B4: delay Target.setAutoAttach response so CRPage init completes before connectOverCDP returns.',
+  '// Without this, Playwright tries URL matching before pages have received Page.frameNavigated events.',
+  '// CRITICAL: clear __sentTargetIds FIRST so the new Playwright connection receives all targets.',
+  '// Without this, __sentTargetIds from a previous connection blocks targets from being sent,',
+  '// causing "tab not found" errors on every subsequent browser action.',
+  '// Wait scales with number of targets: base 1s + 0.5s per target.',
+  'const B4_FIND = \'.setAutoAttach" && !cmd.sessionId) ensureTargetEventsForClient(ws, "autoAttach");\';',
+  'const B4_REPLACE = \'.setAutoAttach" && !cmd.sessionId) { __sentTargetIds.clear(); ensureTargetEventsForClient(ws, "autoAttach"); const __n = connectedTargets.size; if (__n > 0) await new Promise(r => setTimeout(r, 1500 + __n * 500)); }\';',
+  '',
+  '// B5: disable pruneStaleTargetsFromCommandFailure — prevents one failed command from',
+  '// removing the target from connectedTargets, which cascades to all future commands',
+  '// failing with "tab not found". The extension handles re-attach transparently.',
+  'const B5_FIND = "pruneStaleTargetsFromCommandFailure(cmd, err);";',
+  'const B5_REPLACE = "/* B5: disabled target pruning — extension handles re-attach */ void 0;";',
+  '',
+  '// B6: increase sendToExtension timeout from 30s to 120s.',
+  '// Heavy pages (Facebook, etc) can take longer when debugger needs to re-attach.',
+  '// Use specific context to avoid changing unrelated 3e4 timeouts (e.g. heartbeat).',
+  'const B6_FIND = "extension request timeout";',
+  'const B6_REPLACE_FN = (src) => { const marker = "extension request timeout"; const idx = src.indexOf(marker); if (idx === -1) return src; const after = src.indexOf("}, 3e4);", idx); if (after === -1 || after - idx > 200) return src; return src.slice(0, after) + "}, 12e4);" + src.slice(after + "}, 3e4);".length); };',
+  '',
+  'const dispatchDone = new Set();',
+  'const relayDone = new Set();',
+  '',
+  'function applyPairs(src, pairs) {',
+  '  let s = src, n = 0;',
+  '  for (const [f, r] of pairs) { if (s.includes(f)) { s = s.split(f).join(r); n++; } }',
+  '  return { s, n };',
+  '}',
+  '',
+  'export async function load(url, context, nextLoad) {',
+  '  if (!url.startsWith("file://") || !url.includes("openclaw")) return nextLoad(url, context);',
+  '  const base = url.split("/").pop() || "";',
+  '  if (!base.endsWith(".js")) return nextLoad(url, context);',
+  '',
+  '  // Only process candidate files (dispatch/reply/pi-embedded/compact/chrome bundles)',
+  '  const isCandidate = base.startsWith("dispatch-") || base.startsWith("pi-embedded-") || base.startsWith("compact-") || base.startsWith("reply-") || base.startsWith("chrome-");',
+  '  if (!isCandidate || dispatchDone.has(base) && relayDone.has(base)) return nextLoad(url, context);',
+  '',
+  '  let src;',
+  '  try { src = readFileSync(fileURLToPath(url), "utf8"); } catch { return nextLoad(url, context); }',
+  '',
+  '  let modified = src;',
+  '  let dispatchCount = 0;',
+  '  let relayCount = 0;',
+  '',
+  '  // Patch A: apply to files containing fetchBrowserJson (timeout + retry hint)',
+  '  if (!dispatchDone.has(base) && modified.includes("fetchBrowserJson")) {',
+  '    const { s, n } = applyPairs(modified, DISPATCH_PATCHES);',
+  '    if (n > 0) { modified = s; dispatchCount = n; dispatchDone.add(base); }',
+  '  }',
+  '',
+  '  // Patch B: apply to files containing relay code (broadcastToCdpClients)',
+  '  if (!relayDone.has(base) && modified.includes("broadcastToCdpClients")) {',
+  '    let count = 0;',
+  '    // B1: dedup',
+  '    if (modified.includes(B1_FIND)) { modified = modified.split(B1_FIND).join(B1_REPLACE); count++; }',
+  '    // B2: passthrough',
+  '    if (B2_FIND_RE.test(modified)) { modified = modified.replace(B2_FIND_RE, B2_REPLACE); count++; }',
+  '    // B3a: add broadcast tracking',
+  '    if (modified.includes(B3A_FIND)) { modified = modified.split(B3A_FIND).join(B3A_REPLACE); count++; }',
+  '    // B3b: replace ensureTargetEventsForClient with dedup version',
+  '    if (B3B_FIND_RE.test(modified)) { modified = modified.replace(B3B_FIND_RE, B3B_REPLACE); count++; }',
+  '    // B3c: clear __sentTargetIds on last CDP client disconnect',
+  '    if (modified.includes(B3C_FIND)) { modified = modified.split(B3C_FIND).join(B3C_REPLACE); count++; }',
+  '    // B4: delay Target.setAutoAttach response + clear __sentTargetIds',
+  '    if (modified.includes(B4_FIND)) { modified = modified.split(B4_FIND).join(B4_REPLACE); count++; }',
+  '    // B5: disable pruneStaleTargetsFromCommandFailure',
+  '    if (modified.includes(B5_FIND)) { modified = modified.split(B5_FIND).join(B5_REPLACE); count++; }',
+  '    // B6: increase sendToExtension timeout 30s → 120s (targeted replacement)',
+  '    if (modified.includes(B6_FIND)) { modified = B6_REPLACE_FN(modified); count++; }',
+  '    if (count > 0) { relayCount = count; relayDone.add(base); }',
+  '  }',
+  '',
+  '  if (dispatchCount > 0 || relayCount > 0) {',
+  '    const parts = [];',
+  '    if (dispatchCount > 0) parts.push("dispatch: " + dispatchCount);',
+  '    if (relayCount > 0) parts.push("relay: " + relayCount);',
+  '    console.error("[openclaw-patches] " + parts.join(", ") + " patch(es) applied (" + base + ")");',
+  '    return { format: "module", source: modified, shortCircuit: true };',
+  '  }',
+  '',
+  '  return nextLoad(url, context);',
+  '}',
+].join('\n');
+
+register('data:text/javascript,' + encodeURIComponent(loaderSource), pathToFileURL(__filename).href);
