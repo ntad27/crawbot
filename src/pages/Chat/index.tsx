@@ -111,6 +111,7 @@ export function Chat() {
   const streamImages = streamMsg ? extractImages(streamMsg) : [];
   const hasStreamImages = streamImages.length > 0;
   const hasStreamToolStatus = showThinking && streamingTools.length > 0;
+  const hasRunningTools = streamingTools.some(t => t.status === 'running');
   const shouldRenderStreaming = sending && (hasStreamText || hasStreamThinking || hasStreamTools || hasStreamImages || hasStreamToolStatus);
 
   return (
@@ -162,8 +163,8 @@ export function Chat() {
                   />
                 )}
 
-                {/* Typing indicator when sending but no stream yet */}
-                {sending && !hasStreamText && !hasStreamThinking && !hasStreamTools && !hasStreamImages && !hasStreamToolStatus && (
+                {/* Typing indicator when sending but no active stream content */}
+                {sending && !hasStreamText && !hasStreamThinking && !hasStreamTools && !hasStreamImages && !hasRunningTools && (
                   <TypingIndicator />
                 )}
               </>

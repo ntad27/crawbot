@@ -114,6 +114,13 @@ const DEFAULT_SESSION_KEY = `${DEFAULT_CANONICAL_PREFIX}:main`;
 // Throttle for agent-event-triggered history reloads (module-level to avoid store pollution)
 let lastAgentHistoryReload = 0;
 
+// Timestamp of the last streaming event received (delta, agent tool, etc.)
+// Used by the safety timeout to detect stalled streams.
+let lastStreamEventAt = 0;
+
+// ID of the currently running safety-timeout timer so we can avoid duplicates.
+let safetyTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
 // ── Local image cache ─────────────────────────────────────────
 // The Gateway doesn't store image attachments in session content blocks,
 // so we cache them locally keyed by staged file path (which appears in the
@@ -899,6 +906,49 @@ function hasNonToolAssistantContent(message: RawMessage | undefined): boolean {
   return false;
 }
 
+/**
+ * Start (or restart) the safety timeout that detects stalled streams.
+ * Uses `lastStreamEventAt` to check if events have stopped arriving.
+ * If no new event arrives for IDLE_TIMEOUT_MS after the last event (or after
+ * the initial call if no events yet), we clear the sending state.
+ */
+function startSafetyTimeout(
+  get: () => ChatState,
+  set: (partial: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => void,
+) {
+  // Clear any existing timer to avoid duplicates
+  if (safetyTimeoutId !== null) {
+    clearTimeout(safetyTimeoutId);
+    safetyTimeoutId = null;
+  }
+
+  const IDLE_TIMEOUT_MS = 90_000; // No events for 90s → consider stalled
+  const CHECK_INTERVAL_MS = 10_000;
+
+  const check = () => {
+    const state = get();
+    if (!state.sending) {
+      safetyTimeoutId = null;
+      return;
+    }
+    const idleSince = lastStreamEventAt || Date.now();
+    if (Date.now() - idleSince >= IDLE_TIMEOUT_MS) {
+      safetyTimeoutId = null;
+      set({
+        error: 'No response received from the model. The provider may be unavailable or the API key may have insufficient quota. Please check your provider settings.',
+        sending: false,
+        activeRunId: null,
+        lastUserMessageAt: null,
+      });
+      return;
+    }
+    safetyTimeoutId = setTimeout(check, CHECK_INTERVAL_MS);
+  };
+
+  // First check after 30s
+  safetyTimeoutId = setTimeout(check, 30_000);
+}
+
 // ── Store ────────────────────────────────────────────────────────
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -1298,29 +1348,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // No runId from gateway; keep sending state and wait for events.
       }
 
-      // Safety timeout: if we're still in "sending" state after 90s without
-      // receiving any streaming event, the run likely failed silently (e.g.
-      // provider error not surfaced as a chat event). Surface the error to the
-      // user instead of leaving an infinite spinner.
+      // Safety timeout: if no streaming events arrive for 90s, the run likely
+      // failed silently. Uses lastStreamEventAt to detect stalled streams even
+      // after partial data has arrived.
       if (result.success) {
-        const sentAt = Date.now();
-        const SAFETY_TIMEOUT_MS = 90_000;
-        const checkStuck = () => {
-          const state = get();
-          if (!state.sending) return;
-          if (state.streamingMessage || state.streamingText) return;
-          if (Date.now() - sentAt < SAFETY_TIMEOUT_MS) {
-            setTimeout(checkStuck, 10_000);
-            return;
-          }
-          set({
-            error: 'No response received from the model. The provider may be unavailable or the API key may have insufficient quota. Please check your provider settings.',
-            sending: false,
-            activeRunId: null,
-            lastUserMessageAt: null,
-          });
-        };
-        setTimeout(checkStuck, 30_000);
+        lastStreamEventAt = 0; // Reset — no events received yet for this run
+        startSafetyTimeout(get, set);
       }
     } catch (err) {
       set({ error: String(err), sending: false });
@@ -1331,6 +1364,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   abortRun: async () => {
     const { currentSessionKey } = get();
+    if (safetyTimeoutId !== null) { clearTimeout(safetyTimeoutId); safetyTimeoutId = null; }
     set({ sending: false, activeRunId: null, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [] });
     set({ streamingTools: [] });
 
@@ -1378,6 +1412,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     switch (resolvedState) {
       case 'delta': {
+        // If we receive a delta after the safety timeout cleared the sending state,
+        // the agent is still running — re-activate streaming so the UI resumes updates.
+        if (!get().sending) {
+          console.log('[handleChatEvent] Received delta after timeout — re-activating streaming state');
+          set({ sending: true, error: null, activeRunId: runId || null });
+          startSafetyTimeout(get, set);
+        }
+        lastStreamEventAt = Date.now();
+
         // Streaming update - store the cumulative message
         const updates = collectToolUpdates(event.message, resolvedState);
         set((s) => ({
@@ -1393,6 +1436,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break;
       }
       case 'final': {
+        lastStreamEventAt = Date.now();
         // Message complete - add to history and clear streaming
         const finalMsg = event.message as RawMessage | undefined;
         if (finalMsg) {
@@ -1456,7 +1500,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 pendingToolImages: toolFiles.length > 0
                   ? [...s.pendingToolImages, ...toolFiles]
                   : s.pendingToolImages,
-                streamingTools: updates.length > 0 ? upsertToolStatuses(s.streamingTools, updates) : s.streamingTools,
+                // Clear streaming tools — these tools are done and snapshotted into
+                // messages[]. Keeping them here would block the typing indicator while
+                // waiting for the next LLM turn.
+                streamingTools: [],
               };
             });
             break;
@@ -1530,6 +1577,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break;
       }
       case 'error': {
+        if (safetyTimeoutId !== null) { clearTimeout(safetyTimeoutId); safetyTimeoutId = null; }
         const errorMsg = String(event.errorMessage || 'An error occurred');
         set({
           error: errorMsg,
@@ -1545,6 +1593,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break;
       }
       case 'aborted': {
+        if (safetyTimeoutId !== null) { clearTimeout(safetyTimeoutId); safetyTimeoutId = null; }
         set({
           sending: false,
           activeRunId: null,
@@ -1558,11 +1607,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break;
       }
       default: {
-        // Unknown or empty state — if we're currently sending and receive an event
-        // with a message, attempt to process it as streaming data. This handles
-        // edge cases where the Gateway sends events without a state field.
-        const { sending } = get();
-        if (sending && event.message && typeof event.message === 'object') {
+        // Unknown or empty state — if we receive an event with a message, attempt
+        // to process it as streaming data. This handles edge cases where the
+        // Gateway sends events without a state field, including after a safety
+        // timeout when the agent is still running.
+        if (event.message && typeof event.message === 'object') {
+          if (!get().sending) {
+            console.log('[handleChatEvent] Received event after timeout — re-activating streaming state');
+            set({ sending: true, error: null, activeRunId: runId || null });
+            startSafetyTimeout(get, set);
+          }
+          lastStreamEventAt = Date.now();
           console.warn(`[handleChatEvent] Unknown event state "${resolvedState}", treating message as streaming delta. Event keys:`, Object.keys(event));
           const updates = collectToolUpdates(event.message, 'delta');
           set((s) => ({
@@ -1580,6 +1635,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   handleAgentEvent: (event: Record<string, unknown>) => {
     const { sending } = get();
     if (!sending) return; // Only process agent events during an active run
+    lastStreamEventAt = Date.now();
 
     const stream = event.stream as string | undefined;
     if (stream !== 'tool') return; // Only process tool events
