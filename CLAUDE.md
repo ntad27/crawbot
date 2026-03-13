@@ -76,3 +76,4 @@ Electron Main Process ──IPC (preload bridge)──▶ React Renderer Process
 - **Gateway communication**: JSON-RPC over WebSocket with exponential backoff reconnection. Protocol types in `electron/gateway/protocol.ts`
 - **i18n**: All user-facing strings go through i18next. Three locale directories under `src/i18n/locales/`
 - **UI components**: Built on shadcn/ui (Radix primitives + CVA + tailwind-merge). Dark mode via Tailwind class strategy
+- **OpenClaw patches**: Runtime in-memory patches via ESM loader hooks. After OpenClaw upgrades, verify patches still apply — see `docs/openclaw-patch-maintenance.md`
