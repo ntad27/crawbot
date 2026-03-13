@@ -128,6 +128,8 @@ export class GatewayManager extends EventEmitter {
   private reconnectConfig: ReconnectConfig;
   private shouldReconnect = true;
   private startLock = false;
+  private restartInProgress = false;
+  private lastRestartAt = 0;
   private lastSpawnSummary: string | null = null;
   private pendingRequests: Map<string, {
     resolve: (value: unknown) => void;
@@ -360,9 +362,21 @@ export class GatewayManager extends EventEmitter {
    * Restart Gateway process
    */
   async restart(): Promise<void> {
+    // Debounce rapid restarts — ignore if restart was requested within last 2 seconds
+    const now = Date.now();
+    if (this.restartInProgress || (now - this.lastRestartAt < 2000)) {
+      logger.debug('Gateway restart debounced (already in progress or too soon)');
+      return;
+    }
+    this.restartInProgress = true;
+    this.lastRestartAt = now;
     logger.debug('Gateway restart requested');
-    await this.stop();
-    await this.start();
+    try {
+      await this.stop();
+      await this.start();
+    } finally {
+      this.restartInProgress = false;
+    }
   }
   
   /**

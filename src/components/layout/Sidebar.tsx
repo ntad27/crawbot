@@ -17,7 +17,7 @@ import {
   ChevronRight,
   Terminal,
   ExternalLink,
-  GitBranch,
+  // GitBranch,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';

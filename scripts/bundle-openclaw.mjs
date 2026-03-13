@@ -167,16 +167,50 @@ echo`   Found ${collected.size} total packages (direct + transitive)`;
 const outputNodeModules = path.join(OUTPUT, 'node_modules');
 fs.mkdirSync(outputNodeModules, { recursive: true });
 
-const copiedNames = new Set(); // Track package names already copied
+const copiedPkgs = new Map(); // pkgName -> { realPath, version }
 let copiedCount = 0;
 let skippedDupes = 0;
 
-for (const [realPath, pkgName] of collected) {
-  if (copiedNames.has(pkgName)) {
-    skippedDupes++;
-    continue; // Keep the first version (closer to openclaw in dep tree)
+/**
+ * Compare two semver-ish version strings. Returns >0 if a>b, <0 if a<b, 0 if equal.
+ */
+function compareSemver(a, b) {
+  const pa = (a || '0.0.0').split('.').map(Number);
+  const pb = (b || '0.0.0').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
   }
-  copiedNames.add(pkgName);
+  return 0;
+}
+
+for (const [realPath, pkgName] of collected) {
+  if (copiedPkgs.has(pkgName)) {
+    // When duplicate found, prefer the HIGHER version to ensure newer APIs
+    // (like "exports" field in https-proxy-agent v8) are available.
+    try {
+      const newPkg = JSON.parse(fs.readFileSync(path.join(realPath, 'package.json'), 'utf8'));
+      const existing = copiedPkgs.get(pkgName);
+      if (compareSemver(newPkg.version, existing.version) > 0) {
+        echo`   ↑ Upgrading ${pkgName}: ${existing.version} → ${newPkg.version}`;
+        // Overwrite the previously copied version
+        const dest = path.join(outputNodeModules, pkgName);
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.cpSync(realPath, dest, { recursive: true, dereference: true });
+        copiedPkgs.set(pkgName, { realPath, version: newPkg.version });
+      }
+    } catch { /* ignore, keep existing */ }
+    skippedDupes++;
+    continue;
+  }
+  // Read version for future dedup comparisons
+  let version = '0.0.0';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(realPath, 'package.json'), 'utf8'));
+    version = pkg.version || '0.0.0';
+  } catch { /* ignore */ }
+  copiedPkgs.set(pkgName, { realPath, version });
 
   const dest = path.join(outputNodeModules, pkgName);
 
