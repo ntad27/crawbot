@@ -4,6 +4,7 @@
  * Communicates with OpenClaw Gateway via gateway:rpc IPC.
  */
 import { create } from 'zustand';
+import { resolveAgentModel } from '@/types/agent';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ export interface ChatSession {
   displayName?: string;
   thinkingLevel?: string;
   model?: string;
+  modelProvider?: string;
 }
 
 export interface ToolStatus {
@@ -110,6 +112,44 @@ interface ChatState {
 
 const DEFAULT_CANONICAL_PREFIX = 'agent:main';
 const DEFAULT_SESSION_KEY = `${DEFAULT_CANONICAL_PREFIX}:main`;
+
+/**
+ * Sync session's model to the models store so the UI selector reflects the persisted choice.
+ * Called on loadSessions and switchSession.
+ * Only sets selectedModel if the session has a non-default model override.
+ */
+function syncSessionModelToStore(session: ChatSession | undefined) {
+  // Lazy imports to avoid circular dependency with models/agents stores
+  Promise.all([import('./models'), import('./agents')]).then(
+    ([{ useModelsStore }, { useAgentsStore }]) => {
+      if (!session?.model || !session.modelProvider) {
+        useModelsStore.setState({ selectedModel: null });
+        return;
+      }
+      const sessionModelKey = `${session.modelProvider}/${session.model}`;
+
+      // Check if this matches the agent's default model — if so, leave as null ("default")
+      const { agents, defaults } = useAgentsStore.getState();
+      const agentId = session.key.startsWith('agent:')
+        ? session.key.split(':')[1]
+        : 'main';
+      const agent = agents.find((a) => a.id === agentId);
+      if (agent) {
+        const defaultModel = resolveAgentModel(agent, defaults);
+        if (
+          defaultModel &&
+          (defaultModel === sessionModelKey ||
+            defaultModel === session.model ||
+            sessionModelKey.endsWith(`/${defaultModel}`))
+        ) {
+          useModelsStore.setState({ selectedModel: null });
+          return;
+        }
+      }
+      useModelsStore.setState({ selectedModel: sessionModelKey });
+    },
+  );
+}
 
 // Throttle for agent-event-triggered history reloads (module-level to avoid store pollution)
 let lastAgentHistoryReload = 0;
@@ -991,6 +1031,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           displayName: s.displayName ? String(s.displayName) : undefined,
           thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
           model: s.model ? String(s.model) : undefined,
+          modelProvider: s.modelProvider ? String(s.modelProvider) : undefined,
         })).filter((s: ChatSession) => s.key);
 
         const canonicalBySuffix = new Map<string, string>();
@@ -1035,6 +1076,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         set({ sessions: sessionsWithCurrent, currentSessionKey: nextSessionKey });
 
+        // Sync model selection from session to models store
+        const currentSession = sessionsWithCurrent.find((s) => s.key === nextSessionKey);
+        syncSessionModelToStore(currentSession);
+
         if (currentSessionKey !== nextSessionKey) {
           get().loadHistory();
         }
@@ -1063,6 +1108,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastUserMessageAt: null,
       pendingToolImages: [],
     });
+    // Sync model selection from session to models store
+    const session = get().sessions.find((s) => s.key === key);
+    syncSessionModelToStore(session);
     // Load history for new session
     get().loadHistory();
   },
@@ -1089,6 +1137,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastUserMessageAt: null,
       pendingToolImages: [],
     });
+    // Sync model selection from session to models store
+    syncSessionModelToStore(agentSession);
     get().loadHistory();
   },
 
@@ -1112,6 +1162,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastUserMessageAt: null,
       pendingToolImages: [],
     }));
+    // New session has no model override — reset to default
+    syncSessionModelToStore(undefined);
   },
 
   // ── Load chat history ──
