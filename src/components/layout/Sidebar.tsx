@@ -117,7 +117,7 @@ export function Sidebar() {
   const navItems = [
     { to: '/', icon: <MessageSquare className="h-5 w-5" />, label: t('sidebar.chat') },
     { to: '/cron', icon: <Clock className="h-5 w-5" />, label: t('sidebar.cronTasks') },
-    { to: '/workflows', icon: <GitBranch className="h-5 w-5" />, label: t('sidebar.workflows') },
+    // { to: '/workflows', icon: <GitBranch className="h-5 w-5" />, label: t('sidebar.workflows') },
     { to: '/skills', icon: <Puzzle className="h-5 w-5" />, label: t('sidebar.skills') },
     { to: '/agents', icon: <Bot className="h-5 w-5" />, label: t('sidebar.agents') },
     { to: '/channels', icon: <Radio className="h-5 w-5" />, label: t('sidebar.channels') },
