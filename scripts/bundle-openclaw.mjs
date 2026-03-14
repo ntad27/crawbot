@@ -125,10 +125,15 @@ if (!openclawVirtualNM) {
 }
 
 echo`   Virtual store root: ${openclawVirtualNM}`;
-queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: 'openclaw' });
+queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: 'openclaw', parentRealPath: openclawReal });
+
+// Track dependency edges with the parent's real path so we know which specific
+// version of the parent needs each dep. This prevents nesting deps under the
+// wrong version when multiple major versions of a package coexist.
+const depEdges = []; // { parentName, parentRealPath, dep, depRealPath }
 
 while (queue.length > 0) {
-  const { nodeModulesDir, skipPkg } = queue.shift();
+  const { nodeModulesDir, skipPkg, parentRealPath } = queue.shift();
   const packages = listPackages(nodeModulesDir);
 
   for (const { name, fullPath } of packages) {
@@ -142,6 +147,11 @@ while (queue.length > 0) {
       continue; // broken symlink, skip
     }
 
+    // Record the dependency edge (parent -> dep) for nesting conflicts later
+    if (skipPkg) {
+      depEdges.push({ parentName: skipPkg, parentRealPath, dep: name, depRealPath: realPath });
+    }
+
     if (collected.has(realPath)) continue; // already visited
     collected.set(realPath, name);
 
@@ -150,7 +160,7 @@ while (queue.length > 0) {
     if (depVirtualNM && depVirtualNM !== nodeModulesDir) {
       // Determine the package's "self name" in its own virtual store
       // For scoped: @clack/core -> skip "@clack/core" when scanning
-      queue.push({ nodeModulesDir: depVirtualNM, skipPkg: name });
+      queue.push({ nodeModulesDir: depVirtualNM, skipPkg: name, parentRealPath: realPath });
     }
   }
 }
@@ -224,6 +234,86 @@ for (const [realPath, pkgName] of collected) {
   }
 }
 
+// 5b. Nest packages with major version conflicts (version-aware)
+//
+// When the hoisted (flat) version has a different major version than what a
+// parent package expects, Node's require() would resolve the wrong major.
+// This causes runtime crashes (e.g. signal-exit v4 has named exports but
+// proper-lockfile expects v3's default export).
+//
+// We track WHERE each package version lives in the output tree so that deps
+// are nested under the correct parent version — not just by name. This prevents
+// accidentally shadowing the hoisted version for packages that need it.
+
+function readVersion(realPath) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(realPath, 'package.json'), 'utf8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+}
+
+function majorOf(version) {
+  return parseInt((version || '0.0.0').split('.')[0], 10);
+}
+
+// Map: realPath -> list of output directories where this version lives.
+// Initially populated with hoisted locations; grows as we nest.
+const outputLocations = new Map(); // realPath -> string[]
+for (const [pkgName, { realPath }] of copiedPkgs) {
+  outputLocations.set(realPath, [path.join(outputNodeModules, pkgName)]);
+}
+// openclaw itself lives at the OUTPUT root
+outputLocations.set(openclawReal, [OUTPUT]);
+
+let nestedCount = 0;
+
+// Process edges in BFS order (guaranteed by how depEdges was built).
+// This ensures parent locations are registered before we process their children.
+for (const { parentName, parentRealPath, dep, depRealPath } of depEdges) {
+  const hoisted = copiedPkgs.get(dep);
+  if (!hoisted) continue;
+
+  // If the dep resolves to the same real path as hoisted, no conflict
+  if (depRealPath === hoisted.realPath) continue;
+
+  const depVersion = readVersion(depRealPath);
+  const hoistedMajor = majorOf(hoisted.version);
+  const depMajor = majorOf(depVersion);
+
+  // Only nest when there's a major version mismatch
+  if (hoistedMajor === depMajor) continue;
+
+  // Find all output locations of the SPECIFIC parent version that needs this dep
+  const parentLocations = outputLocations.get(parentRealPath);
+  if (!parentLocations || parentLocations.length === 0) continue;
+
+  for (const parentLoc of parentLocations) {
+    const nestedDest = path.join(parentLoc, 'node_modules', dep);
+
+    // Skip if already nested here (can happen with diamond deps)
+    if (fs.existsSync(nestedDest)) continue;
+
+    try {
+      fs.mkdirSync(path.dirname(nestedDest), { recursive: true });
+      fs.cpSync(depRealPath, nestedDest, { recursive: true, dereference: true });
+
+      // Register this new location so deeper deps can nest under it
+      const locs = outputLocations.get(depRealPath) || [];
+      locs.push(nestedDest);
+      outputLocations.set(depRealPath, locs);
+
+      const parentVersion = readVersion(parentRealPath);
+      echo`   🔗 Nested ${dep}@${depVersion} under ${parentName}@${parentVersion} (hoisted: ${dep}@${hoisted.version})`;
+      nestedCount++;
+    } catch (err) {
+      echo`   ⚠️  Failed to nest ${dep} under ${parentName}: ${err.message}`;
+    }
+  }
+}
+if (nestedCount > 0) {
+  echo`   Nested ${nestedCount} package(s) to resolve major version conflicts`;
+}
+
 // 6. Clean up unnecessary files to reduce total file count for code signing
 //    This is critical on macOS where every file in the .app bundle gets signed.
 const REMOVE_DIRS = new Set([
@@ -285,6 +375,7 @@ echo``;
 echo`✅ Bundle complete: ${OUTPUT}`;
 echo`   Unique packages copied: ${copiedCount}`;
 echo`   Duplicate versions skipped: ${skippedDupes}`;
+echo`   Nested (major version conflicts): ${nestedCount}`;
 echo`   Total discovered: ${collected.size}`;
 echo`   openclaw.mjs: ${entryExists ? '✓' : '✗'}`;
 echo`   dist/entry.js: ${distExists ? '✓' : '✗'}`;
