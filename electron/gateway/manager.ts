@@ -418,6 +418,7 @@ export class GatewayManager extends EventEmitter {
       };
       
       try {
+        logger.debug(`RPC send: method=${method}, id=${id}, params=${JSON.stringify(params)}`);
         this.ws.send(JSON.stringify(request));
       } catch (error) {
         this.pendingRequests.delete(id);
@@ -1035,11 +1036,12 @@ export class GatewayManager extends EventEmitter {
 
     // Handle OpenClaw protocol response format: { type: "res", id: "...", ok: true/false, ... }
     if (msg.type === 'res' && typeof msg.id === 'string') {
+      logger.debug(`RPC response: id=${msg.id}, ok=${msg.ok}, error=${JSON.stringify(msg.error)}, payload=${JSON.stringify(msg.payload)?.slice(0, 200)}`);
       if (this.pendingRequests.has(msg.id)) {
         const request = this.pendingRequests.get(msg.id)!;
         clearTimeout(request.timeout);
         this.pendingRequests.delete(msg.id);
-        
+
         if (msg.ok === false || msg.error) {
           const errorObj = msg.error as { message?: string; code?: number } | undefined;
           const errorMsg = errorObj?.message || JSON.stringify(msg.error) || 'Unknown error';
