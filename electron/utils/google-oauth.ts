@@ -1,357 +1,26 @@
 /**
- * Google OAuth PKCE flow for Gemini CLI authentication.
+ * Google OAuth via Gemini CLI.
  *
- * Implements the same flow as OpenClaw's google-gemini-cli-auth extension
- * but runs natively in Electron's main process (no TTY required).
- *
- * Credential resolution order:
- *  1. Env vars: OPENCLAW_GEMINI_OAUTH_CLIENT_ID / GEMINI_CLI_OAUTH_CLIENT_ID
- *  2. Extracted from installed Gemini CLI's bundled oauth2.js
+ * Reads tokens directly from Gemini CLI's credential store (~/.gemini/)
+ * instead of reimplementing the OAuth PKCE flow. Requires the user to
+ * have authenticated with `gemini auth login` first.
  */
-import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, mkdirSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
-import { delimiter, dirname, join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { openExternalInDefaultProfile } from './open-external';
 import { logger } from './logger';
 
-// ── OAuth constants (same as openclaw/extensions/google-gemini-cli-auth) ──
-const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const USERINFO_URL = 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json';
+// ── Paths ──
+const GEMINI_DIR = join(homedir(), '.gemini');
+const OAUTH_CREDS_PATH = join(GEMINI_DIR, 'oauth_creds.json');
+const GOOGLE_ACCOUNTS_PATH = join(GEMINI_DIR, 'google_accounts.json');
+
+// ── Project discovery (Code Assist) ──
+
 const CODE_ASSIST_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
-const REDIRECT_URI = 'http://localhost:8085/oauth2callback';
-const REDIRECT_PORT = 8085;
-const SCOPES = [
-  'https://www.googleapis.com/auth/cloud-platform',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-];
-const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const TIER_FREE = 'free-tier';
 const TIER_LEGACY = 'legacy-tier';
 const TIER_STANDARD = 'standard-tier';
-
-// ── Credential resolution ──
-
-function getExtraMacOsSearchDirs(): string[] {
-  if (process.platform !== 'darwin') return [];
-  const dirs: string[] = [];
-  // Homebrew bin directories (Apple Silicon + Intel)
-  dirs.push('/opt/homebrew/bin', '/usr/local/bin');
-  // Common npm global bin locations
-  dirs.push(join(homedir(), '.npm-global', 'bin'));
-  // nvm current version bin
-  const nvmDir = process.env.NVM_DIR || join(homedir(), '.nvm');
-  const nvmCurrent = join(nvmDir, 'current', 'bin');
-  if (existsSync(nvmCurrent)) dirs.push(nvmCurrent);
-  // fnm, volta, asdf shims
-  dirs.push(
-    join(homedir(), '.local', 'bin'),
-    join(homedir(), 'Library', 'Application Support', 'fnm', 'current', 'bin'),
-    join(homedir(), '.volta', 'bin'),
-    join(homedir(), '.asdf', 'shims'),
-  );
-  // Homebrew Cellar node bin (versioned) — scan for any installed node version
-  for (const cellarBase of ['/opt/homebrew/Cellar/node', '/usr/local/Cellar/node']) {
-    try {
-      for (const ver of readdirSync(cellarBase)) {
-        dirs.push(join(cellarBase, ver, 'bin'));
-      }
-    } catch { /* ignore */ }
-  }
-  return dirs;
-}
-
-function findInPath(name: string): string | null {
-  const exts = process.platform === 'win32' ? ['.cmd', '.bat', '.exe', ''] : [''];
-  const searchDirs = (process.env.PATH ?? '').split(delimiter);
-  // On macOS, Electron GUI apps get a minimal PATH; add common locations
-  for (const extra of getExtraMacOsSearchDirs()) {
-    if (!searchDirs.includes(extra)) searchDirs.push(extra);
-  }
-  for (const dir of searchDirs) {
-    for (const ext of exts) {
-      const p = join(dir, name + ext);
-      if (existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-function findFile(dir: string, name: string, depth: number): string | null {
-  if (depth <= 0) return null;
-  try {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = join(dir, e.name);
-      if (e.isFile() && e.name === name) return p;
-      if (e.isDirectory() && !e.name.startsWith('.')) {
-        const found = findFile(p, name, depth - 1);
-        if (found) return found;
-      }
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
-function resolveGeminiCliDir(geminiPath: string): string {
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(geminiPath)) {
-    // On Windows, npm global installs create .cmd/.bat wrappers instead of symlinks.
-    // realpathSync won't resolve them, so dirname(dirname()) would land in the wrong
-    // directory. The package lives at {npmPrefix}/node_modules/@google/gemini-cli.
-    const npmPrefix = dirname(geminiPath);
-    const packageDir = join(npmPrefix, 'node_modules', '@google', 'gemini-cli');
-    if (existsSync(packageDir)) return packageDir;
-  }
-  // Unix: symlink → realpathSync resolves to dist/index.js → dirname×2 = package root
-  const resolvedPath = realpathSync(geminiPath);
-  return dirname(dirname(resolvedPath));
-}
-
-/**
- * On macOS, find the gemini-cli package directory by checking well-known
- * npm/node_modules global roots. This is a fallback when findInPath('gemini')
- * can't locate the binary (e.g. Electron GUI PATH doesn't include it).
- */
-function findGeminiCliDirDirectly(): string | null {
-  const candidates: string[] = [];
-  // npm global roots
-  candidates.push(
-    join(homedir(), '.npm-global', 'lib', 'node_modules', '@google', 'gemini-cli'),
-    '/usr/local/lib/node_modules/@google/gemini-cli',
-    '/opt/homebrew/lib/node_modules/@google/gemini-cli',
-  );
-  // nvm
-  const nvmDir = process.env.NVM_DIR || join(homedir(), '.nvm');
-  const nvmCurrent = join(nvmDir, 'current', 'lib', 'node_modules', '@google', 'gemini-cli');
-  candidates.push(nvmCurrent);
-  // volta
-  candidates.push(join(homedir(), '.volta', 'tools', 'image', 'packages', '@google', 'gemini-cli'));
-  // Homebrew Cellar node (versioned)
-  for (const cellarBase of ['/opt/homebrew/Cellar/node', '/usr/local/Cellar/node']) {
-    try {
-      for (const ver of readdirSync(cellarBase)) {
-        candidates.push(join(cellarBase, ver, 'lib', 'node_modules', '@google', 'gemini-cli'));
-      }
-    } catch { /* ignore */ }
-  }
-  for (const dir of candidates) {
-    if (existsSync(join(dir, 'package.json'))) return dir;
-  }
-  return null;
-}
-
-function extractGeminiCliCredentials(): { clientId: string; clientSecret: string } | null {
-  try {
-    let geminiCliDir: string | null = null;
-
-    const geminiPath = findInPath('gemini');
-    if (geminiPath) {
-      geminiCliDir = resolveGeminiCliDir(geminiPath);
-    }
-
-    // Fallback: search well-known npm global roots directly
-    if (!geminiCliDir || !existsSync(geminiCliDir)) {
-      geminiCliDir = findGeminiCliDirDirectly();
-    }
-    if (!geminiCliDir) return null;
-
-    const searchPaths = [
-      join(geminiCliDir, 'node_modules', '@google', 'gemini-cli-core', 'dist', 'src', 'code_assist', 'oauth2.js'),
-      join(geminiCliDir, 'node_modules', '@google', 'gemini-cli-core', 'dist', 'code_assist', 'oauth2.js'),
-    ];
-
-    let content: string | null = null;
-    for (const p of searchPaths) {
-      if (existsSync(p)) {
-        content = readFileSync(p, 'utf8');
-        break;
-      }
-    }
-    if (!content) {
-      const found = findFile(geminiCliDir, 'oauth2.js', 10);
-      if (found) content = readFileSync(found, 'utf8');
-    }
-    if (!content) return null;
-
-    const idMatch = content.match(/(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/);
-    const secretMatch = content.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
-    if (idMatch && secretMatch) {
-      return { clientId: idMatch[1], clientSecret: secretMatch[1] };
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
-function resolveOAuthClientConfig(): { clientId: string; clientSecret?: string } {
-  logger.info('Extracting Google OAuth credentials from Gemini CLI installation...');
-  const extracted = extractGeminiCliCredentials();
-  if (extracted) {
-    logger.info('Successfully extracted Google OAuth credentials from Gemini CLI');
-    return extracted;
-  }
-
-  logger.error(
-    'Failed to find Gemini CLI credentials. ' +
-    `PATH dirs searched: ${(process.env.PATH ?? '').split(delimiter).length} entries. ` +
-    `Platform: ${process.platform}`,
-  );
-  throw new Error(
-    'Google OAuth credentials not found. Install Gemini CLI ' +
-    '(npm install -g @google/gemini-cli) to enable Google OAuth authentication.'
-  );
-}
-
-// ── PKCE ──
-
-function generatePkce(): { verifier: string; challenge: string } {
-  const verifier = randomBytes(32).toString('hex');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
-  return { verifier, challenge };
-}
-
-// ── Callback server ──
-
-function waitForLocalCallback(
-  expectedState: string,
-  timeoutMs: number,
-): Promise<{ code: string; server: Server }> {
-  return new Promise((resolve, reject) => {
-    let timeout: NodeJS.Timeout | null = null;
-    let settled = false;
-
-    const server = createServer((req, res) => {
-      try {
-        const requestUrl = new URL(req.url ?? '/', `http://localhost:${REDIRECT_PORT}`);
-        if (requestUrl.pathname !== '/oauth2callback') {
-          res.statusCode = 404;
-          res.end('Not found');
-          return;
-        }
-
-        const error = requestUrl.searchParams.get('error');
-        const code = requestUrl.searchParams.get('code')?.trim();
-        const state = requestUrl.searchParams.get('state')?.trim();
-
-        if (error) {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(`<html><body><h2>Authentication Failed</h2><p>${error}</p></body></html>`);
-          finish(new Error(`OAuth error: ${error}`));
-          return;
-        }
-
-        if (!code || !state) {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<html><body><h2>Missing code or state</h2></body></html>');
-          finish(new Error('Missing OAuth code or state'));
-          return;
-        }
-
-        if (state !== expectedState) {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end('<html><body><h2>Invalid state</h2></body></html>');
-          finish(new Error('OAuth state mismatch'));
-          return;
-        }
-
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(
-          '<!doctype html><html><body>' +
-          '<h2>Authentication successful!</h2>' +
-          '<p>You can close this window and return to CrawBot.</p>' +
-          '</body></html>'
-        );
-        finish(undefined, code);
-      } catch (err) {
-        finish(err instanceof Error ? err : new Error('OAuth callback failed'));
-      }
-    });
-
-    const finish = (err?: Error, code?: string) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      if (err) {
-        try { server.close(); } catch { /* ignore */ }
-        reject(err);
-      } else if (code) {
-        resolve({ code, server });
-      }
-    };
-
-    server.once('error', (err) => {
-      finish(err instanceof Error ? err : new Error('OAuth callback server error'));
-    });
-
-    server.listen(REDIRECT_PORT, 'localhost', () => {
-      logger.info(`OAuth callback server listening on ${REDIRECT_URI}`);
-    });
-
-    timeout = setTimeout(() => {
-      finish(new Error('OAuth timeout: no browser response within 5 minutes'));
-    }, timeoutMs);
-  });
-}
-
-// ── Token exchange ──
-
-async function exchangeCodeForTokens(
-  code: string,
-  verifier: string,
-  config: { clientId: string; clientSecret?: string },
-): Promise<{ access_token: string; refresh_token?: string; expires_in: number }> {
-  const body = new URLSearchParams({
-    client_id: config.clientId,
-    code,
-    grant_type: 'authorization_code',
-    redirect_uri: REDIRECT_URI,
-    code_verifier: verifier,
-  });
-  if (config.clientSecret) {
-    body.set('client_secret', config.clientSecret);
-  }
-
-  const response = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token exchange failed: ${errorText}`);
-  }
-
-  const data = await response.json() as {
-    access_token: string;
-    refresh_token?: string;
-    expires_in: number;
-  };
-
-  if (!data.access_token) {
-    throw new Error('No access token received');
-  }
-
-  return data;
-}
-
-// ── User info ──
-
-async function getUserEmail(accessToken: string): Promise<string | undefined> {
-  try {
-    const response = await fetch(USERINFO_URL, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (response.ok) {
-      const data = await response.json() as { email?: string };
-      return data.email;
-    }
-  } catch { /* ignore */ }
-  return undefined;
-}
-
-// ── Project discovery (Code Assist) ──
 
 function isVpcScAffected(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object') return false;
@@ -527,6 +196,35 @@ function writeAuthProfile(credential: {
   writeFileSync(authProfilesPath, JSON.stringify(store, null, 2), 'utf-8');
 }
 
+// ── Gemini CLI credential reader ──
+
+interface GeminiCliCreds {
+  access_token: string;
+  refresh_token?: string;
+  expiry_date: number;
+}
+
+function readGeminiCliCreds(): GeminiCliCreds | null {
+  if (!existsSync(OAUTH_CREDS_PATH)) return null;
+  try {
+    const data = JSON.parse(readFileSync(OAUTH_CREDS_PATH, 'utf-8'));
+    if (!data.access_token) return null;
+    return data as GeminiCliCreds;
+  } catch {
+    return null;
+  }
+}
+
+function readGeminiCliEmail(): string | undefined {
+  if (!existsSync(GOOGLE_ACCOUNTS_PATH)) return undefined;
+  try {
+    const data = JSON.parse(readFileSync(GOOGLE_ACCOUNTS_PATH, 'utf-8'));
+    return typeof data.active === 'string' ? data.active : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Public API ──
 
 export async function runGoogleOAuthFlow(): Promise<{
@@ -534,68 +232,40 @@ export async function runGoogleOAuthFlow(): Promise<{
   error?: string;
   email?: string;
 }> {
-  // 1. Resolve credentials
-  logger.info('Starting Google OAuth PKCE flow');
-  const config = resolveOAuthClientConfig();
-  logger.info('Resolved Google OAuth client credentials');
+  logger.info('Reading Google OAuth credentials from Gemini CLI');
 
-  // 2. Generate PKCE
-  const { verifier, challenge } = generatePkce();
+  // 1. Read tokens from Gemini CLI's credential store (~/.gemini/)
+  const creds = readGeminiCliCreds();
+  if (!creds) {
+    const msg = 'No Gemini CLI credentials found. Install Gemini CLI ' +
+      '(npm install -g @google/gemini-cli) and run: gemini auth login';
+    logger.error(msg);
+    return { success: false, error: msg };
+  }
 
-  // 3. Build auth URL
-  const params = new URLSearchParams({
-    client_id: config.clientId,
-    response_type: 'code',
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPES.join(' '),
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    state: verifier,
-    access_type: 'offline',
-    prompt: 'consent',
-  });
-  const authUrl = `${AUTH_URL}?${params}`;
+  // 2. Read email from Gemini CLI accounts
+  const email = readGeminiCliEmail();
+  logger.info(`Gemini CLI user: ${email || 'unknown'}`);
 
-  // 4. Start callback server, then open browser
-  const callbackPromise = waitForLocalCallback(verifier, CALLBACK_TIMEOUT_MS);
-
-  // Small delay to ensure server is listening before opening browser
-  await new Promise((r) => setTimeout(r, 300));
-  logger.info('Opening browser for Google OAuth consent');
-  await openExternalInDefaultProfile(authUrl);
-
-  // 5. Wait for callback
-  const { code, server } = await callbackPromise;
-  server.close();
-  logger.info('Received OAuth callback with authorization code');
-
-  // 6. Exchange code for tokens
-  const tokens = await exchangeCodeForTokens(code, verifier, config);
-  logger.info('Token exchange successful');
-
-  // 7. Get user email
-  const email = await getUserEmail(tokens.access_token);
-  logger.info(`OAuth user: ${email || 'unknown'}`);
-
-  // 8. Discover/provision project
+  // 3. Discover/provision GCP project (needed by Gateway for API calls)
   let projectId: string | undefined;
   try {
-    projectId = await discoverProject(tokens.access_token);
+    projectId = await discoverProject(creds.access_token);
     logger.info(`Google Cloud project: ${projectId}`);
   } catch (err) {
     logger.warn('Project discovery failed (non-critical):', err);
   }
 
-  // 9. Write auth profile
-  const expires = Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000;
+  // 4. Write auth profile for OpenClaw Gateway
+  const expires = creds.expiry_date - 5 * 60 * 1000; // 5 min safety margin
   writeAuthProfile({
-    access: tokens.access_token,
-    refresh: tokens.refresh_token,
+    access: creds.access_token,
+    refresh: creds.refresh_token,
     expires,
     email,
     projectId,
   });
-  logger.info('Google OAuth credentials saved to auth-profiles.json');
+  logger.info('Google OAuth credentials synced from Gemini CLI to auth-profiles.json');
 
   return { success: true, email };
 }

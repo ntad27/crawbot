@@ -3,7 +3,7 @@
  * Writes API keys to ~/.openclaw/agents/main/agent/auth-profiles.json
  * so the OpenClaw Gateway can load them for AI provider calls.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -158,13 +158,22 @@ export function removeProviderKeyFromOpenClaw(
     }
   }
 
-  // Clean up order and lastGood for all prefixes
+  // Clean up order, lastGood, and usageStats for all prefixes
   for (const prefix of prefixes) {
     if (store.order?.[prefix]) {
       delete store.order[prefix];
     }
     if (store.lastGood?.[prefix]) {
       delete store.lastGood[prefix];
+    }
+  }
+
+  // Clean up usageStats entries that match any removed profile key
+  if (store.usageStats && typeof store.usageStats === 'object') {
+    for (const key of Object.keys(store.usageStats as Record<string, unknown>)) {
+      if (prefixes.some((prefix) => key.startsWith(`${prefix}:`))) {
+        delete (store.usageStats as Record<string, unknown>)[key];
+      }
     }
   }
 
@@ -191,6 +200,24 @@ export function removeProviderKeyFromOpenClaw(
     }
   } catch (err) {
     console.warn('Failed to clean up auth.json:', err);
+  }
+
+  // For Google: also remove Gemini CLI's cached OAuth credentials
+  if (provider === 'google') {
+    const geminiCredsPath = join(homedir(), '.gemini', 'oauth_creds.json');
+    const geminiAccountsPath = join(homedir(), '.gemini', 'google_accounts.json');
+    try {
+      if (existsSync(geminiCredsPath)) {
+        unlinkSync(geminiCredsPath);
+        console.log('Removed Gemini CLI OAuth credentials (~/.gemini/oauth_creds.json)');
+      }
+      if (existsSync(geminiAccountsPath)) {
+        unlinkSync(geminiAccountsPath);
+        console.log('Removed Gemini CLI account info (~/.gemini/google_accounts.json)');
+      }
+    } catch (err) {
+      console.warn('Failed to clean up Gemini CLI credentials:', err);
+    }
   }
 }
 

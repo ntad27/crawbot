@@ -44,13 +44,22 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
 
       if (result.success && result.result?.models) {
         // Filter to only show models from user-configured providers
-        const configuredTypes = new Set<string>(
-          useProviderStore.getState().providers.map((p) => p.type),
-        );
+        const providers = useProviderStore.getState().providers;
+        const configuredTypes = new Set<string>(providers.map((p) => p.type));
         const filtered = configuredTypes.size > 0
           ? result.result.models.filter((m) => configuredTypes.has(m.provider))
           : result.result.models;
-        set({ models: filtered, loading: false });
+
+        // Remap google → google-gemini-cli when using OAuth (no API key)
+        const googleProvider = providers.find((p) => p.type === 'google');
+        const googleUsesOAuth = googleProvider && !googleProvider.hasKey;
+        const models = googleUsesOAuth
+          ? filtered.map((m) =>
+              m.provider === 'google' ? { ...m, provider: 'google-gemini-cli' } : m,
+            )
+          : filtered;
+
+        set({ models, loading: false });
       } else {
         set({ models: [], loading: false, error: result.error || 'No models returned' });
       }

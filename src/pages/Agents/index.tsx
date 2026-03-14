@@ -40,7 +40,7 @@ import { toast } from 'sonner';
 import type { Agent, AgentCreateInput, AgentDefaults, WorkspaceFile } from '@/types/agent';
 import { resolveAgentModel, resolveAgentWorkspace, resolveAgentName } from '@/types/agent';
 import { useModelsStore } from '@/stores/models';
-import { useProviderStore } from '@/stores/providers';
+
 import { useTranslation } from 'react-i18next';
 
 // ─── Emoji Picker (emoji-mart — full Unicode set) ───────────────────
@@ -275,24 +275,16 @@ function ModelSelect({
 }) {
   const { t } = useTranslation('agents');
   const models = useModelsStore((s) => s.models);
-  const configuredProviders = useProviderStore((s) => s.providers);
-
-  const configuredProviderTypes = useMemo(
-    () => new Set<string>(configuredProviders.map((p) => p.type)),
-    [configuredProviders],
-  );
-
-  // Filter models to only configured providers, then group by provider
+  // Group models by provider (models store already filters to configured providers)
   const grouped = useMemo(() => {
     const groups: Record<string, typeof models> = {};
     for (const model of models) {
       const provider = model.provider || 'other';
-      if (!configuredProviderTypes.has(provider)) continue;
       if (!groups[provider]) groups[provider] = [];
       groups[provider].push(model);
     }
     return groups;
-  }, [models, configuredProviderTypes]);
+  }, [models]);
 
   const providers = Object.keys(grouped).sort();
 

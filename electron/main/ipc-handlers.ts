@@ -1085,6 +1085,24 @@ function registerGatewayHandlers(
   // Gateway RPC call
   ipcMain.handle('gateway:rpc', async (_, method: string, params?: unknown, timeoutMs?: number) => {
     try {
+      // Rewrite google/ → google-gemini-cli/ for sessions.patch when using OAuth.
+      // The model catalog returns provider "google" but the Gateway needs
+      // "google-gemini-cli" to match the OAuth auth profile for both API
+      // authentication and /status usage tracking.
+      if (method === 'sessions.patch' && params && typeof params === 'object') {
+        const patchParams = params as Record<string, unknown>;
+        const model = typeof patchParams.model === 'string' ? patchParams.model : '';
+        if (model.startsWith('google/')) {
+          // Check if any configured Google provider uses OAuth (no API key)
+          const allProviders = await getAllProviders();
+          const googleProvider = allProviders.find((p) => p.type === 'google');
+          if (googleProvider && !(await hasApiKey(googleProvider.id))) {
+            const modelName = model.slice('google/'.length);
+            patchParams.model = `google-gemini-cli/${modelName}`;
+          }
+        }
+      }
+
       const result = await gatewayManager.rpc(method, params, timeoutMs);
 
       // Filter models.list to only include user-configured providers
@@ -2203,7 +2221,7 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     }
   );
 
-  // OAuth login (native PKCE flow — no CLI/TTY dependency)
+  // OAuth login (reads tokens from Gemini CLI, or native flow for other providers)
   ipcMain.handle(
     'provider:oauthLogin',
     async (_, providerType: string) => {

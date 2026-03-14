@@ -1298,18 +1298,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // No runId from gateway; keep sending state and wait for events.
       }
 
-      // Safety timeout: if we're still in "sending" state after 90s without
-      // receiving any streaming event, the run likely failed silently (e.g.
-      // provider error not surfaced as a chat event). Surface the error to the
-      // user instead of leaving an infinite spinner.
+      // Safety timeout: if we're still in "sending" state without receiving
+      // any streaming event, the run likely failed silently (e.g. provider
+      // error not surfaced as a chat event). Surface the error to the user
+      // instead of leaving an infinite spinner.
+      //
+      // We track lastActivityAt so multi-step tool-use flows (which clear
+      // streamingMessage between steps) don't falsely trigger the timeout.
       if (result.success) {
-        const sentAt = Date.now();
-        const SAFETY_TIMEOUT_MS = 90_000;
+        let lastActivityAt = Date.now();
+        const INACTIVITY_TIMEOUT_MS = 90_000;
         const checkStuck = () => {
           const state = get();
           if (!state.sending) return;
-          if (state.streamingMessage || state.streamingText) return;
-          if (Date.now() - sentAt < SAFETY_TIMEOUT_MS) {
+          // Active streaming or pending tool execution → still alive
+          if (state.streamingMessage || state.streamingText || state.pendingFinal) {
+            lastActivityAt = Date.now();
+            setTimeout(checkStuck, 10_000);
+            return;
+          }
+          if (Date.now() - lastActivityAt < INACTIVITY_TIMEOUT_MS) {
             setTimeout(checkStuck, 10_000);
             return;
           }

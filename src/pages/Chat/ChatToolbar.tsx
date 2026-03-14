@@ -76,23 +76,18 @@ export function ChatToolbar() {
     setSelectedModel(value || null);
   };
 
-  // Set of provider types the user has configured
-  const configuredProviderTypes = useMemo(
-    () => new Set<string>(configuredProviders.map((p) => p.type)),
-    [configuredProviders],
-  );
-
-  // Filter models to only configured providers, then group by provider
+  // Group models by provider. The models store already filters to configured
+  // providers and remaps provider names (e.g. google → google-gemini-cli),
+  // so no additional filtering is needed here.
   const groupedModels = useMemo(() => {
     const groups: Record<string, typeof models> = {};
     for (const model of models) {
       const provider = model.provider || 'other';
-      if (!configuredProviderTypes.has(provider)) continue;
       if (!groups[provider]) groups[provider] = [];
       groups[provider].push(model);
     }
     return groups;
-  }, [models, configuredProviderTypes]);
+  }, [models]);
 
   const providerKeys = Object.keys(groupedModels).sort();
 
