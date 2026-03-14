@@ -53,26 +53,8 @@ interface BrowserState {
   setZoom: (factor: number) => void;
 }
 
-// ── Navigation callbacks (set by BrowserWebview) ──────────
-
-type NavCallback = (tabId: string, url?: string) => void;
-let _navigateCb: NavCallback | null = null;
-let _goBackCb: NavCallback | null = null;
-let _goForwardCb: NavCallback | null = null;
-let _reloadCb: NavCallback | null = null;
-
-/** Called by BrowserWebview module to register navigation handlers */
-export function registerWebviewNavCallbacks(cbs: {
-  navigate: NavCallback;
-  goBack: NavCallback;
-  goForward: NavCallback;
-  reload: NavCallback;
-}): void {
-  _navigateCb = cbs.navigate;
-  _goBackCb = cbs.goBack;
-  _goForwardCb = cbs.goForward;
-  _reloadCb = cbs.reload;
-}
+// Navigation now goes through IPC to main process (WebContentsView)
+// No more renderer-side webview callbacks needed
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -209,25 +191,25 @@ export const useBrowserStore = create<BrowserState>()(
       navigate: (url) => {
         const { activeTabId } = get();
         if (!activeTabId) return;
-        _navigateCb?.(activeTabId, url);
+        invokeIpc('browser:tab:navigate', activeTabId, url);
       },
 
       goBack: () => {
         const { activeTabId } = get();
         if (!activeTabId) return;
-        _goBackCb?.(activeTabId);
+        invokeIpc('browser:tab:goBack', activeTabId);
       },
 
       goForward: () => {
         const { activeTabId } = get();
         if (!activeTabId) return;
-        _goForwardCb?.(activeTabId);
+        invokeIpc('browser:tab:goForward', activeTabId);
       },
 
       reload: () => {
         const { activeTabId } = get();
         if (!activeTabId) return;
-        _reloadCb?.(activeTabId);
+        invokeIpc('browser:tab:reload', activeTabId);
       },
 
       setZoom: (factor) => {

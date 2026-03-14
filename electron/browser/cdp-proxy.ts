@@ -135,9 +135,10 @@ export class CdpFilterProxy {
         return this.isTargetAllowed(t, exposed);
       });
 
-      // Rewrite ports in URLs AND change webview→page type
+      // Rewrite ports in URLs (no type rewriting needed — WebContentsView
+      // tabs are natively type: "page" in CDP)
       const rewritten = filtered.map((t: Record<string, unknown>) =>
-        this.rewriteTargetType(this.rewritePorts(t, realCdpPort, proxyPort))
+        this.rewritePorts(t, realCdpPort, proxyPort)
       );
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -246,50 +247,27 @@ export class CdpFilterProxy {
     });
 
     // Relay: real CDP → client
-    // Intercept Target.getTargets response to rewrite webview→page types
+    // Filter Target events to hide main app window
     realWs.on('message', (data, isBinary) => {
       if (clientWs.readyState !== WebSocket.OPEN) return;
 
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
-          // Intercept Target.getTargets response
+          // Filter Target.getTargets response — hide main app window
           if (msg.result?.targetInfos) {
-            msg.result.targetInfos = msg.result.targetInfos
-              .filter((t: { url?: string }) => {
-                // Hide main app window
-                const url = t.url || '';
-                return !url.startsWith('http://localhost:5173') &&
-                       !url.startsWith('http://127.0.0.1:5173') &&
-                       !url.startsWith('file://') &&
-                       !url.startsWith('devtools://');
-              })
-              .map((t: { type?: string; attached?: boolean }) => {
-                // Rewrite webview → page so Playwright treats them as controllable
-                if (t.type === 'webview') {
-                  return { ...t, type: 'page', attached: true };
-                }
-                return t;
-              });
-            clientWs.send(JSON.stringify(msg), { binary: false });
-            return;
-          }
-          // Intercept Target.targetCreated event
-          if (msg.method === 'Target.targetCreated' && msg.params?.targetInfo?.type === 'webview') {
-            msg.params.targetInfo.type = 'page';
-            msg.params.targetInfo.attached = true;
-            clientWs.send(JSON.stringify(msg), { binary: false });
-            return;
-          }
-          // Intercept Target.targetInfoChanged event
-          if (msg.method === 'Target.targetInfoChanged' && msg.params?.targetInfo?.type === 'webview') {
-            msg.params.targetInfo.type = 'page';
-            msg.params.targetInfo.attached = true;
+            msg.result.targetInfos = msg.result.targetInfos.filter((t: { url?: string }) => {
+              const url = t.url || '';
+              return !url.startsWith('http://localhost:5173') &&
+                     !url.startsWith('http://127.0.0.1:5173') &&
+                     !url.startsWith('file://') &&
+                     !url.startsWith('devtools://');
+            });
             clientWs.send(JSON.stringify(msg), { binary: false });
             return;
           }
         } catch {
-          // Not valid JSON or parse error — forward as-is
+          // Not valid JSON — forward as-is
         }
       }
 

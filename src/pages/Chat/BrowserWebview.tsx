@@ -4,7 +4,7 @@
  * Listens for navigation commands from the store and executes them on the webview.
  */
 import { useEffect, useRef, useCallback } from 'react';
-import { useBrowserStore, registerWebviewNavCallbacks, type BrowserTab } from '@/stores/browser';
+import { useBrowserStore, type BrowserTab } from '@/stores/browser';
 
 // Electron's webview element type (not in standard DOM types)
 interface WebviewElement extends HTMLElement {
@@ -186,10 +186,5 @@ export function BrowserWebview({ tab }: { tab: BrowserTab }) {
   );
 }
 
-// Register navigation callbacks so the store can drive webview navigation
-registerWebviewNavCallbacks({
-  navigate: navigateWebview,
-  goBack: goBackWebview,
-  goForward: goForwardWebview,
-  reload: reloadWebview,
-});
+// Note: Navigation is now handled by main process via IPC → WebContentsView
+// These webview functions are only used for legacy webauth provider tabs

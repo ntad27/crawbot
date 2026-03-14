@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
 import { openExternalInDefaultProfile } from '../utils/open-external';
 import { browserManager } from '../browser/manager';
+import { automationViews } from '../browser/automation-views';
 import {
   getCookies, removeCookie, clearPartition, exportCookies, importCookies,
   type CookieData,
@@ -3693,49 +3694,64 @@ function registerWebhookHandlers(gatewayManager: GatewayManager): void {
  */
 function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
   browserManager.setMainWindowId(mainWindow.webContents.id);
+  automationViews.setMainWindow(mainWindow);
 
   ipcMain.handle(
     'browser:tab:create',
     (_, params: { id: string; url: string; partition: string; category: string }) => {
-      const tab = browserManager.createTab(
-        params.id,
-        params.url,
-        params.partition,
-        params.category as 'automation' | 'webauth'
-      );
-      return { success: true, tab };
+      try {
+        // Create WebContentsView for automation tabs (type: "page" in CDP)
+        const tab = automationViews.createTab(params.id, params.url, params.partition);
+        browserManager.createTab(params.id, params.url, params.partition, params.category as 'automation' | 'webauth');
+        return { success: true, tab: { id: tab.id, url: tab.url, title: tab.title } };
+      } catch (err) {
+        return { success: false, error: String(err) };
+      }
     }
   );
 
   ipcMain.handle('browser:tab:close', (_, tabId: string) => {
+    automationViews.closeTab(tabId);
     browserManager.closeTab(tabId);
     return { success: true };
   });
 
-  ipcMain.handle('browser:tab:navigate', (_, _tabId: string, _url: string) => {
-    // Actual navigation happens in renderer via webview.loadURL()
-    // This handler is a hook for main-process side effects if needed
+  ipcMain.handle('browser:tab:navigate', (_, tabId: string, url: string) => {
+    automationViews.navigateTab(tabId, url);
     return { success: true };
   });
 
-  ipcMain.handle('browser:tab:goBack', (_, _tabId: string) => {
+  ipcMain.handle('browser:tab:goBack', (_, tabId: string) => {
+    automationViews.goBack(tabId);
     return { success: true };
   });
 
-  ipcMain.handle('browser:tab:goForward', (_, _tabId: string) => {
+  ipcMain.handle('browser:tab:goForward', (_, tabId: string) => {
+    automationViews.goForward(tabId);
     return { success: true };
   });
 
-  ipcMain.handle('browser:tab:reload', (_, _tabId: string) => {
+  ipcMain.handle('browser:tab:reload', (_, tabId: string) => {
+    automationViews.reload(tabId);
     return { success: true };
   });
 
-  ipcMain.handle('browser:tab:setZoom', (_, _tabId: string, _factor: number) => {
+  ipcMain.handle('browser:tab:setZoom', (_, tabId: string, factor: number) => {
+    automationViews.setZoom(tabId, factor);
     return { success: true };
   });
 
   ipcMain.handle('browser:tab:list', () => {
-    return { success: true, tabs: browserManager.getAllTabs() };
+    const tabs = automationViews.getAllTabs().map(t => ({
+      id: t.id, url: t.url, title: t.title, partition: t.partition,
+    }));
+    return { success: true, tabs };
+  });
+
+  // Panel bounds — renderer tells main process where to position WebContentsViews
+  ipcMain.handle('browser:panel:setBounds', (_, bounds: { x: number; y: number; width: number; height: number }) => {
+    automationViews.setPanelBounds(bounds);
+    return { success: true };
   });
 
   ipcMain.handle('browser:cdp:getPort', () => {

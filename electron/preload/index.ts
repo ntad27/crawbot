@@ -249,6 +249,7 @@ const electronAPI = {
         'browser:panel:detach',
         'browser:panel:attach',
         'browser:panel:isDetached',
+        'browser:panel:setBounds',
 
         // WebAuth
         'webauth:provider:add',

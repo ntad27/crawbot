@@ -3,20 +3,7 @@
  * Tests for useBrowserStore Zustand store
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useBrowserStore, registerWebviewNavCallbacks } from '@/stores/browser';
-
-// Mock navigation callbacks
-const mockNavigate = vi.fn();
-const mockGoBack = vi.fn();
-const mockGoForward = vi.fn();
-const mockReload = vi.fn();
-
-registerWebviewNavCallbacks({
-  navigate: mockNavigate,
-  goBack: mockGoBack,
-  goForward: mockGoForward,
-  reload: mockReload,
-});
+import { useBrowserStore } from '@/stores/browser';
 
 describe('useBrowserStore', () => {
   beforeEach(() => {
@@ -27,10 +14,7 @@ describe('useBrowserStore', () => {
       tabs: [],
       activeTabId: null,
     });
-    mockNavigate.mockClear();
-    mockGoBack.mockClear();
-    mockGoForward.mockClear();
-    mockReload.mockClear();
+    vi.clearAllMocks();
   });
 
   // ── Tab Management ──
@@ -162,41 +146,51 @@ describe('useBrowserStore', () => {
   // ── Navigation ──
 
   describe('navigation', () => {
-    it('navigate calls webview callback with active tab ID', () => {
+    it('navigate calls IPC with active tab ID', () => {
       const { addTab } = useBrowserStore.getState();
       const id = addTab();
       useBrowserStore.getState().navigate('https://example.com');
 
-      expect(mockNavigate).toHaveBeenCalledWith(id, 'https://example.com');
+      expect(window.electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+        'browser:tab:navigate', id, 'https://example.com'
+      );
     });
 
     it('navigate does nothing if no active tab', () => {
       useBrowserStore.getState().navigate('https://example.com');
-      expect(mockNavigate).not.toHaveBeenCalled();
+      // Only addTab IPC calls should exist, not navigate
+      const calls = (window.electron.ipcRenderer.invoke as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.filter(c => c[0] === 'browser:tab:navigate')).toHaveLength(0);
     });
 
-    it('goBack calls webview callback', () => {
+    it('goBack calls IPC', () => {
       const { addTab } = useBrowserStore.getState();
       const id = addTab();
       useBrowserStore.getState().goBack();
 
-      expect(mockGoBack).toHaveBeenCalledWith(id);
+      expect(window.electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+        'browser:tab:goBack', id
+      );
     });
 
-    it('goForward calls webview callback', () => {
+    it('goForward calls IPC', () => {
       const { addTab } = useBrowserStore.getState();
       const id = addTab();
       useBrowserStore.getState().goForward();
 
-      expect(mockGoForward).toHaveBeenCalledWith(id);
+      expect(window.electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+        'browser:tab:goForward', id
+      );
     });
 
-    it('reload calls webview callback', () => {
+    it('reload calls IPC', () => {
       const { addTab } = useBrowserStore.getState();
       const id = addTab();
       useBrowserStore.getState().reload();
 
-      expect(mockReload).toHaveBeenCalledWith(id);
+      expect(window.electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+        'browser:tab:reload', id
+      );
     });
   });
 

@@ -1,13 +1,22 @@
 /**
  * BrowserPanel — Resizable right panel for built-in browser
- * Follows WorkspacePanel pattern (drag-to-resize, toggle)
+ *
+ * Browser tabs are rendered as WebContentsView (main process) overlaid
+ * on top of this panel area. This component manages:
+ * - Panel layout (resize, hide/show)
+ * - Tab bar UI
+ * - Toolbar UI (URL, nav, zoom)
+ * - Reports panel bounds to main process via IPC so WebContentsView
+ *   can be positioned correctly
+ *
+ * The actual web content is NOT rendered here — it's a native
+ * WebContentsView managed by electron/browser/automation-views.ts
  */
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { PanelRightClose } from 'lucide-react';
 import { useBrowserStore } from '@/stores/browser';
 import { BrowserTabBar } from './BrowserTabBar';
 import { BrowserToolbar } from './BrowserToolbar';
-import { BrowserWebview } from './BrowserWebview';
 
 export function BrowserPanel() {
   const panelOpen = useBrowserStore((s) => s.panelOpen);
@@ -15,33 +24,48 @@ export function BrowserPanel() {
   const setPanelWidth = useBrowserStore((s) => s.setPanelWidth);
   const closePanel = useBrowserStore((s) => s.closePanel);
   const closeTab = useBrowserStore((s) => s.closeTab);
+  const addTab = useBrowserStore((s) => s.addTab);
   const tabs = useBrowserStore((s) => s.tabs);
   const activeTabId = useBrowserStore((s) => s.activeTabId);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
-  const addTab = useBrowserStore((s) => s.addTab);
+  // ── Panel bounds reporting ──
+  // Tell main process where to position the WebContentsView
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  // Ctrl+W close tab, Ctrl+T new tab (only when panel is open)
+  const reportBounds = useCallback(() => {
+    if (!contentRef.current || !panelOpen) return;
+    const rect = contentRef.current.getBoundingClientRect();
+    // Account for device pixel ratio
+    const dpr = window.devicePixelRatio || 1;
+    window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
+      x: Math.round(rect.x * dpr),
+      y: Math.round(rect.y * dpr),
+      width: Math.round(rect.width * dpr),
+      height: Math.round(rect.height * dpr),
+    });
+  }, [panelOpen]);
+
+  // Report bounds on mount, resize, and panel state changes
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!panelOpen) return;
-      const mod = e.ctrlKey || e.metaKey;
-      if (mod && e.key === 'w') {
-        if (activeTabId) {
-          e.preventDefault();
-          e.stopPropagation();
-          closeTab(activeTabId);
-        }
-      } else if (mod && e.key === 't') {
-        e.preventDefault();
-        e.stopPropagation();
-        addTab();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [panelOpen, activeTabId, closeTab, addTab]);
+    reportBounds();
+    window.addEventListener('resize', reportBounds);
+    return () => window.removeEventListener('resize', reportBounds);
+  }, [reportBounds, panelWidth, tabs.length, activeTabId]);
+
+  // Also report after a short delay (DOM layout settling)
+  useEffect(() => {
+    if (panelOpen) {
+      const timer = setTimeout(reportBounds, 100);
+      return () => clearTimeout(timer);
+    } else {
+      // Hide WebContentsView when panel is hidden
+      window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
+        x: -9999, y: 0, width: 0, height: 0,
+      });
+    }
+  }, [panelOpen, reportBounds]);
 
   // ── Drag resize ──
   const [isDragging, setIsDragging] = useState(false);
@@ -75,6 +99,8 @@ export function BrowserPanel() {
       setIsDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      // Report new bounds after resize
+      setTimeout(reportBounds, 50);
     };
 
     document.addEventListener('mousemove', handleMouseMove);
@@ -85,7 +111,28 @@ export function BrowserPanel() {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [isDragging, setPanelWidth]);
+  }, [isDragging, setPanelWidth, reportBounds]);
+
+  // ── Keyboard shortcuts ──
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!panelOpen) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === 'w') {
+        if (activeTabId) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeTab(activeTabId);
+        }
+      } else if (mod && e.key === 't') {
+        e.preventDefault();
+        e.stopPropagation();
+        addTab();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [panelOpen, activeTabId, closeTab, addTab]);
 
   const resolvedWidth = panelWidth === 0 ? '50%' : `${panelWidth}px`;
 
@@ -97,30 +144,19 @@ export function BrowserPanel() {
         minWidth: 320,
         maxWidth: 1200,
       } : {
-        // Hidden but webviews stay fully active (not throttled)
-        // Use fixed position offscreen instead of width:0 so Chromium
-        // doesn't suspend the renderer process
-        position: 'fixed',
-        left: -9999,
-        top: 0,
-        width: 800,
-        height: '100vh',
-        visibility: 'hidden' as const,
-        pointerEvents: 'none' as const,
+        width: 0,
+        minWidth: 0,
+        overflow: 'hidden',
+        borderLeftWidth: 0,
       }}
     >
-      {/* Drag handle — wider hit area for easier grabbing */}
+      {/* Drag handle */}
       <div
         className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 z-20"
         onMouseDown={handleMouseDown}
       />
 
-      {/*
-        Drag overlay — covers the entire panel (including webview) during drag
-        to prevent webview from stealing mouse events.
-        Without this, dragging over a webview/iframe causes mousemove/mouseup
-        to not fire on the document, making the drag "stuck".
-      */}
+      {/* Drag overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-30" style={{ cursor: 'col-resize' }} />
       )}
@@ -145,23 +181,18 @@ export function BrowserPanel() {
       {/* Toolbar */}
       {activeTab && <BrowserToolbar tab={activeTab} />}
 
-      {/* Webview content area */}
-      <div className="flex-1 relative min-h-0">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className="absolute inset-0"
-            style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
-          >
-            <BrowserWebview tab={tab} />
-          </div>
-        ))}
-
+      {/* Content area — WebContentsView is overlaid here by main process */}
+      <div
+        ref={contentRef}
+        className="flex-1 relative min-h-0"
+      >
         {tabs.length === 0 && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
             No tabs open. Click + to add a tab.
           </div>
         )}
+        {/* Actual web content is rendered by WebContentsView (native layer)
+            positioned on top of this div by main process using setBounds() */}
       </div>
     </div>
   );

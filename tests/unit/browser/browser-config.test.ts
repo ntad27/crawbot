@@ -76,11 +76,11 @@ describe('browser-config', () => {
       expect(config.browser.enabled).toBe(true);
     });
 
-    it('sets correct cdpUrl with given port', () => {
-      setOpenClawBrowserConfig(9444);
+    it('sets correct cdpUrl with proxy port 9333', () => {
+      setOpenClawBrowserConfig(9333);
 
       const config = JSON.parse(mockFs[CONFIG_PATH]);
-      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9444');
+      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9333');
     });
 
     it('overwrites existing browser config', () => {
