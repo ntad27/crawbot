@@ -229,6 +229,36 @@ const electronAPI = {
         'webhook:update-server-config',
         'webhook:api-key',
         'webhook:regenerate-api-key',
+
+        // Browser
+        'browser:tab:create',
+        'browser:tab:close',
+        'browser:tab:navigate',
+        'browser:tab:goBack',
+        'browser:tab:goForward',
+        'browser:tab:reload',
+        'browser:tab:setZoom',
+        'browser:tab:list',
+        'browser:cookies:get',
+        'browser:cookies:remove',
+        'browser:cookies:clear',
+        'browser:cookies:export',
+        'browser:cookies:import',
+        'browser:cdp:getPort',
+        'browser:cdp:status',
+        'browser:panel:detach',
+        'browser:panel:attach',
+        'browser:panel:isDetached',
+
+        // WebAuth
+        'webauth:provider:add',
+        'webauth:provider:remove',
+        'webauth:provider:login',
+        'webauth:provider:check',
+        'webauth:provider:check-all',
+        'webauth:proxy:start',
+        'webauth:proxy:stop',
+        'webauth:proxy:status',
       ];
 
       if (validChannels.includes(channel)) {
@@ -267,6 +297,11 @@ const electronAPI = {
         'update:error',
         'cron:updated',
         'file:changed',
+        'browser:tab:updated',
+        'browser:tab:created',
+        'browser:tab:closed',
+        'webauth:provider:status-changed',
+        'webauth:provider:session-expired',
       ];
 
       if (validChannels.includes(channel)) {

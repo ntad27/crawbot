@@ -39,6 +39,7 @@ import { useUpdateStore } from '@/stores/update';
 import { useWebhookStore } from '@/stores/webhook';
 import { ProvidersSettings } from '@/components/settings/ProvidersSettings';
 import { UpdateSettings } from '@/components/settings/UpdateSettings';
+import { WebAuthSettings } from './WebAuthSettings';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '@/i18n';
 type ControlUiInfo = {
@@ -514,6 +515,9 @@ export function Settings() {
           <ProvidersSettings />
         </CardContent>
       </Card>
+
+      {/* WebAuth Providers */}
+      <WebAuthSettings />
 
       {/* Gateway */}
       <Card>

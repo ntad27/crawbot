@@ -11,12 +11,14 @@ import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { useFileBrowserStore } from '@/stores/file-browser';
+
 import { resolveAgentWorkspace } from '@/types/agent';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { ChatToolbar } from './ChatToolbar';
 import { WorkspacePanel } from './WorkspacePanel';
+import { BrowserPanel } from './BrowserPanel';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 
@@ -204,6 +206,9 @@ export function Chat() {
 
       {/* Workspace Panel (right side, collapsible) */}
       {panelOpen && <WorkspacePanel />}
+
+      {/* Browser Panel (right side, always mounted to preserve webview state) */}
+      <BrowserPanel />
     </div>
   );
 }

@@ -28,6 +28,10 @@ import { ensureManagedBinInProcessPath } from '../utils/nodejs-setup';
 // Disable GPU acceleration for better compatibility
 app.disableHardwareAcceleration();
 
+// Enable CDP (Chrome DevTools Protocol) on internal port for browser automation
+// The CDP Filter Proxy (port 9333) will filter and relay to this internal port
+app.commandLine.appendSwitch('remote-debugging-port', '9222');
+
 // Register 'local-file' as a privileged scheme so it can be used in <iframe>, <img>, <video>, <audio>.
 // Must be called before app.whenReady().
 // NOTE: `standard: true` enables proper URL parsing. We use "localhost" as the host component
@@ -295,6 +299,17 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
+  // Start CDP filter proxy then configure OpenClaw to use it
+  try {
+    const { startCdpProxy } = await import('../browser/cdp-proxy');
+    const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+    const cdpProxy = await startCdpProxy(9333, 9222);
+    setOpenClawBrowserConfig(cdpProxy.port);
+    logger.info(`CDP proxy started on port ${cdpProxy.port}, browser config set`);
+  } catch (err) {
+    logger.warn('CDP proxy/config failed:', err);
+  }
+
   // Start Gateway automatically
   try {
     logger.debug('Auto-starting Gateway...');
@@ -399,6 +414,16 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   isQuitting = true;
+  // Clean up browser config from openclaw.json so CLI mode works standalone
+  try {
+    const { removeOpenClawBrowserConfig } = await import('../utils/browser-config');
+    removeOpenClawBrowserConfig();
+  } catch { /* ignore */ }
+  // Stop CDP proxy
+  try {
+    const { stopCdpProxy } = await import('../browser/cdp-proxy');
+    await stopCdpProxy();
+  } catch { /* ignore */ }
   // Clean up LibreOffice conversion temp files
   const { cleanupTempDirs } = await import('../utils/libreoffice');
   cleanupTempDirs();

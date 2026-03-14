@@ -4,7 +4,7 @@
  * Rendered in the Header when on the Chat page.
  */
 import { useMemo, useEffect } from 'react';
-import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useChatStore } from '@/stores/chat';
@@ -12,6 +12,7 @@ import { useModelsStore } from '@/stores/models';
 import { useAgentsStore } from '@/stores/agents';
 import { useProviderStore } from '@/stores/providers';
 import { useFileBrowserStore } from '@/stores/file-browser';
+import { useBrowserStore } from '@/stores/browser';
 import { resolveAgentModel } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -30,6 +31,9 @@ export function ChatToolbar() {
 
   const panelOpen = useFileBrowserStore((s) => s.panelOpen);
   const togglePanel = useFileBrowserStore((s) => s.togglePanel);
+
+  const browserPanelOpen = useBrowserStore((s) => s.panelOpen);
+  const toggleBrowserPanel = useBrowserStore((s) => s.togglePanel);
 
   const models = useModelsStore((s) => s.models);
   const selectedModel = useModelsStore((s) => s.selectedModel);
@@ -279,6 +283,26 @@ export function ChatToolbar() {
         </TooltipTrigger>
         <TooltipContent>
           <p>{panelOpen ? 'Close workspace' : 'Open workspace'}</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Browser panel toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'h-8 w-8',
+              browserPanelOpen && 'bg-primary/10 text-primary',
+            )}
+            onClick={toggleBrowserPanel}
+          >
+            <Globe className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>{browserPanelOpen ? 'Close browser' : 'Open browser'}</p>
         </TooltipContent>
       </Tooltip>
     </div>

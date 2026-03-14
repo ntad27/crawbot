@@ -9,6 +9,11 @@ import { join, extname, basename, dirname, normalize, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
 import { openExternalInDefaultProfile } from '../utils/open-external';
+import { browserManager } from '../browser/manager';
+import {
+  getCookies, removeCookie, clearPartition, exportCookies, importCookies,
+  type CookieData,
+} from '../browser/cookie-manager';
 import { GatewayManager } from '../gateway/manager';
 import { ClawHubService, ClawHubSearchParams, ClawHubInstallParams, ClawHubUninstallParams } from '../gateway/clawhub';
 import {
@@ -193,6 +198,12 @@ export function registerIpcHandlers(
 
   // Webhook / HTTP API handlers
   registerWebhookHandlers(gatewayManager);
+
+  // Built-in browser handlers
+  registerBuiltinBrowserHandlers(mainWindow);
+
+  // WebAuth provider handlers
+  registerWebAuthHandlers();
 }
 
 /**
@@ -3673,5 +3684,192 @@ function registerWebhookHandlers(gatewayManager: GatewayManager): void {
 
   ipcMain.handle('webhook:regenerate-api-key', async () => {
     return httpServer.regenerateApiKey();
+  });
+}
+
+/**
+ * Built-in browser IPC handlers
+ * Tab management, navigation, zoom — operates via BrowserManager
+ */
+function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
+  browserManager.setMainWindowId(mainWindow.webContents.id);
+
+  ipcMain.handle(
+    'browser:tab:create',
+    (_, params: { id: string; url: string; partition: string; category: string }) => {
+      const tab = browserManager.createTab(
+        params.id,
+        params.url,
+        params.partition,
+        params.category as 'automation' | 'webauth'
+      );
+      return { success: true, tab };
+    }
+  );
+
+  ipcMain.handle('browser:tab:close', (_, tabId: string) => {
+    browserManager.closeTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:navigate', (_, _tabId: string, _url: string) => {
+    // Actual navigation happens in renderer via webview.loadURL()
+    // This handler is a hook for main-process side effects if needed
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:goBack', (_, _tabId: string) => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:goForward', (_, _tabId: string) => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:reload', (_, _tabId: string) => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:setZoom', (_, _tabId: string, _factor: number) => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:list', () => {
+    return { success: true, tabs: browserManager.getAllTabs() };
+  });
+
+  ipcMain.handle('browser:cdp:getPort', () => {
+    // Will be implemented in Phase 2 when CDP proxy is ready
+    return { success: true, port: null };
+  });
+
+  ipcMain.handle('browser:cdp:status', () => {
+    return {
+      success: true,
+      running: false,
+      port: null,
+      targets: browserManager.getExposedTargetIds().size,
+    };
+  });
+
+  ipcMain.handle('browser:panel:detach', () => {
+    // Will be implemented in Phase 5
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:panel:attach', () => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:panel:isDetached', () => {
+    return { success: true, detached: false };
+  });
+
+  // ── Cookie management ──
+
+  ipcMain.handle('browser:cookies:get', async (_, partition: string, url: string) => {
+    const cookies = await getCookies(partition, url);
+    return { success: true, cookies };
+  });
+
+  ipcMain.handle('browser:cookies:remove', async (_, partition: string, url: string, name: string) => {
+    await removeCookie(partition, url, name);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:cookies:clear', async (_, partition: string) => {
+    await clearPartition(partition);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:cookies:export', async (_, partition: string) => {
+    const cookies = await exportCookies(partition);
+    return { success: true, cookies };
+  });
+
+  ipcMain.handle('browser:cookies:import', async (_, partition: string, cookies: CookieData[]) => {
+    const count = await importCookies(partition, cookies);
+    return { success: true, imported: count };
+  });
+}
+
+/**
+ * WebAuth provider IPC handlers
+ */
+function registerWebAuthHandlers(): void {
+  ipcMain.handle('webauth:provider:add', (_, _providerId: string) => {
+    // Provider registration is handled in renderer store
+    // Main process will create webview when renderer requests it
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:provider:remove', async (_, providerId: string) => {
+    // Clear the partition data
+    const { clearPartition: clearPart } = await import('../browser/cookie-manager');
+    const partitionMap: Record<string, string> = {
+      'claude-web': 'persist:webauth-claude',
+      'chatgpt-web': 'persist:webauth-chatgpt',
+      'deepseek-web': 'persist:webauth-deepseek',
+      'gemini-web': 'persist:webauth-gemini',
+      'grok-web': 'persist:webauth-grok',
+      'qwen-intl-web': 'persist:webauth-qwen-intl',
+      'qwen-china-web': 'persist:webauth-qwen-china',
+      'kimi-web': 'persist:webauth-kimi',
+      'doubao-web': 'persist:webauth-doubao',
+      'glm-china-web': 'persist:webauth-glm-china',
+      'glm-intl-web': 'persist:webauth-glm-intl',
+      'manus-api': 'persist:webauth-manus',
+    };
+    const partition = partitionMap[providerId];
+    if (partition) {
+      await clearPart(partition);
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:provider:login', (_, _providerId: string) => {
+    // Login is handled via browser panel in renderer (opens webview tab)
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:provider:check', (_, _providerId: string) => {
+    // Auth check is done via webview.executeJavaScript in renderer
+    return { success: true, status: 'not-configured' };
+  });
+
+  ipcMain.handle('webauth:provider:check-all', () => {
+    return { success: true, providers: [] };
+  });
+
+  ipcMain.handle('webauth:proxy:start', async () => {
+    try {
+      const { createWebAuthProxy } = await import('../browser/webauth-proxy');
+      const proxy = createWebAuthProxy();
+      const port = await proxy.start();
+      return { success: true, port };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:proxy:stop', async () => {
+    try {
+      const { getWebAuthProxy } = await import('../browser/webauth-proxy');
+      const proxy = getWebAuthProxy();
+      if (proxy) await proxy.stop();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:proxy:status', async () => {
+    const { getWebAuthProxy } = await import('../browser/webauth-proxy');
+    const proxy = getWebAuthProxy();
+    return {
+      success: true,
+      running: proxy?.isRunning ?? false,
+      port: proxy?.port ?? null,
+    };
   });
 }

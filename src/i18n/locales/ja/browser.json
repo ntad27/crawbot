@@ -1,0 +1,43 @@
+{
+  "panel": {
+    "title": "Browser",
+    "close": "Close browser panel",
+    "noTabs": "No tabs open. Click + to add a tab.",
+    "newTab": "New tab"
+  },
+  "toolbar": {
+    "back": "Back",
+    "forward": "Forward",
+    "reload": "Reload",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "urlPlaceholder": "Enter URL or search..."
+  },
+  "webauth": {
+    "title": "WebAuth Providers",
+    "description": "Use web login sessions as LLM API — no API key needed",
+    "add": "Add",
+    "addDialog": "Select a provider to add:",
+    "allAdded": "All providers already added",
+    "cancel": "Cancel",
+    "login": "Login",
+    "relogin": "Re-login",
+    "remove": "Remove",
+    "showBrowser": "Show browser",
+    "noProviders": "No WebAuth providers configured. Click \"Add\" to get started.",
+    "proxyRunning": "Running on port {{port}}",
+    "proxyNotRunning": "Not running",
+    "status": {
+      "valid": "Valid",
+      "expiring": "Expiring",
+      "expired": "Expired",
+      "notConfigured": "Not configured"
+    },
+    "toast": {
+      "added": "Added {{name}}",
+      "removed": "Removed {{name}}",
+      "loginOpening": "Opening {{name}} login page...",
+      "sessionExpired": "{{name}} session expired — click to re-login"
+    }
+  }
+}
