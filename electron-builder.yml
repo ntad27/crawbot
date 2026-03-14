@@ -28,6 +28,9 @@ extraResources:
   # CrawBot Browser Relay Chrome extension
   - from: assets/chrome-extension/
     to: assets/chrome-extension/
+  # Runtime patches preload (loaded via --require before gateway starts)
+  - from: electron/gateway/openclaw-patches-preload.cjs
+    to: openclaw-patches-preload.cjs
 
 afterPack: ./scripts/after-pack.cjs
 
