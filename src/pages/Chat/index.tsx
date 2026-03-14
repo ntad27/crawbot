@@ -4,7 +4,7 @@
  * via gateway:rpc IPC. Session selector, thinking toggle, and refresh
  * are in the toolbar; messages render with markdown + streaming.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertCircle, Bot, MessageSquare, Sparkles } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { useChatStore, type RawMessage } from '@/stores/chat';
@@ -45,7 +45,18 @@ export function Chat() {
   const setRootPath = useFileBrowserStore((s) => s.setRootPath);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
+
+  // Track whether user is near the bottom of the scroll container.
+  // Only auto-scroll if they haven't manually scrolled up.
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const threshold = 150; // px from bottom
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }, []);
 
   // Sync workspace path when agent changes
   useEffect(() => {
@@ -70,10 +81,19 @@ export function Chat() {
     };
   }, [isGatewayRunning, loadHistory, loadSessions]);
 
-  // Auto-scroll on new messages or streaming
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // Auto-scroll: only when user is near bottom, instant during streaming
+  useLayoutEffect(() => {
+    if (!isNearBottomRef.current) return;
+    // Instant scroll during streaming to avoid smooth-scroll pile-up;
+    // smooth scroll only for discrete events (new message sent).
+    const behavior = streamingMessage ? 'instant' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior });
   }, [messages, streamingMessage, sending]);
+
+  // When user sends a message, always scroll to bottom
+  useEffect(() => {
+    if (sending) isNearBottomRef.current = true;
+  }, [sending]);
 
   // Update timestamp when sending starts
   useEffect(() => {
@@ -123,7 +143,7 @@ export function Chat() {
         </div>
 
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-4">
           <div className="max-w-4xl mx-auto space-y-4">
             {loading ? (
               <div className="flex h-full items-center justify-center py-20">

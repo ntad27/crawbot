@@ -1074,6 +1074,11 @@ export class GatewayManager extends EventEmitter {
     
     // Handle OpenClaw protocol event format: { type: "event", event: "...", payload: {...} }
     if (msg.type === 'event' && typeof msg.event === 'string') {
+      if (msg.event !== 'tick') {
+        const p = msg.payload as Record<string, unknown> | undefined;
+        const extra = msg.event === 'chat' ? `, state=${p?.state}, hasMessage=${!!p?.message}` : '';
+        logger.debug(`Protocol event: event=${msg.event}, seq=${msg.seq}, payloadKeys=${p ? Object.keys(p).join(',') : 'none'}${extra}`);
+      }
       this.handleProtocolEvent(msg.event, msg.payload);
       return;
     }
@@ -1102,6 +1107,7 @@ export class GatewayManager extends EventEmitter {
     }
     
     // Emit generic message for other handlers
+    logger.debug(`Unhandled WS message: type=${msg.type}, keys=${Object.keys(msg).join(',')}`);
     this.emit('message', message);
   }
   

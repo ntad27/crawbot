@@ -1311,8 +1311,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const checkStuck = () => {
           const state = get();
           if (!state.sending) return;
-          // Active streaming or pending tool execution → still alive
-          if (state.streamingMessage || state.streamingText || state.pendingFinal) {
+          // Active streaming, pending tool execution, or tool events → still alive
+          if (state.streamingMessage || state.streamingText || state.pendingFinal || state.streamingTools.length > 0) {
             lastActivityAt = Date.now();
             setTimeout(checkStuck, 10_000);
             return;
