@@ -41,6 +41,33 @@
         "discordChannelId": "Discord Channel ID",
         "discordChannelIdPlaceholder": "e.g., 1438452657525100686",
         "discordChannelIdDesc": "Right-click the Discord channel → Copy Channel ID",
+        "recipientId": {
+          "default": "Recipient ID",
+          "telegram": "Telegram Chat ID",
+          "whatsapp": "WhatsApp Number",
+          "discord": "Discord Channel ID",
+          "slack": "Slack Channel ID",
+          "signal": "Signal Recipient",
+          "imessage": "iMessage Recipient"
+        },
+        "recipientPlaceholder": {
+          "default": "Enter recipient ID",
+          "telegram": "e.g., -1001234567890",
+          "whatsapp": "e.g., 84901234567",
+          "discord": "e.g., 1438452657525100686",
+          "slack": "e.g., C01234ABCDE",
+          "signal": "e.g., +84901234567",
+          "imessage": "e.g., user@example.com"
+        },
+        "recipientDesc": {
+          "default": "The target where the task output will be delivered",
+          "telegram": "Chat ID for the group or user. Use -100... for groups, or topic format: -1001234567890:topic:123",
+          "whatsapp": "Phone number with country code (no + prefix)",
+          "discord": "Right-click the Discord channel → Copy Channel ID",
+          "slack": "Channel ID from Slack (starts with C)",
+          "signal": "Phone number with country code",
+          "imessage": "Email or phone number"
+        },
         "enableImmediately": "Enable immediately",
         "enableImmediatelyDesc": "Start running this task after creation",
         "saveChanges": "Save Changes",
@@ -90,6 +117,7 @@
         "messageRequired": "Please enter a message",
         "channelRequired": "Please select a channel",
         "discordIdRequired": "Please enter a Discord Channel ID",
+        "recipientRequired": "Please enter a recipient ID for delivery",
         "scheduleRequired": "Please select or enter a schedule"
     },
     "webhook": {

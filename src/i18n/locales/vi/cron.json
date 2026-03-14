@@ -41,6 +41,33 @@
         "discordChannelId": "ID Kênh Discord",
         "discordChannelIdPlaceholder": "Ví dụ: 1438452657525100686",
         "discordChannelIdDesc": "Nhấp chuột phải kênh Discord → Sao chép ID Kênh",
+        "recipientId": {
+          "default": "ID Người nhận",
+          "telegram": "Telegram Chat ID",
+          "whatsapp": "Số WhatsApp",
+          "discord": "ID Kênh Discord",
+          "slack": "ID Kênh Slack",
+          "signal": "Người nhận Signal",
+          "imessage": "Người nhận iMessage"
+        },
+        "recipientPlaceholder": {
+          "default": "Nhập ID người nhận",
+          "telegram": "Ví dụ: -1001234567890",
+          "whatsapp": "Ví dụ: 84901234567",
+          "discord": "Ví dụ: 1438452657525100686",
+          "slack": "Ví dụ: C01234ABCDE",
+          "signal": "Ví dụ: +84901234567",
+          "imessage": "Ví dụ: user@example.com"
+        },
+        "recipientDesc": {
+          "default": "Nơi kết quả tác vụ sẽ được gửi đến",
+          "telegram": "Chat ID của nhóm hoặc người dùng. Dùng -100... cho nhóm, hoặc topic: -1001234567890:topic:123",
+          "whatsapp": "Số điện thoại có mã quốc gia (không có dấu +)",
+          "discord": "Nhấp chuột phải kênh Discord → Sao chép ID Kênh",
+          "slack": "ID Kênh từ Slack (bắt đầu bằng C)",
+          "signal": "Số điện thoại có mã quốc gia",
+          "imessage": "Email hoặc số điện thoại"
+        },
         "enableImmediately": "Bật ngay",
         "enableImmediatelyDesc": "Bắt đầu chạy tác vụ sau khi tạo",
         "saveChanges": "Lưu thay đổi",
@@ -90,6 +117,7 @@
         "messageRequired": "Vui lòng nhập tin nhắn",
         "channelRequired": "Vui lòng chọn kênh",
         "discordIdRequired": "Vui lòng nhập ID Kênh Discord",
+        "recipientRequired": "Vui lòng nhập ID người nhận để gửi kết quả",
         "scheduleRequired": "Vui lòng chọn hoặc nhập lịch trình"
     },
     "webhook": {
