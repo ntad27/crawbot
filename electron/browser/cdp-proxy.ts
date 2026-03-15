@@ -507,32 +507,57 @@ export class CdpFilterProxy {
     targetPath: string
   ): Promise<void> {
     try {
-      // Find the webContents for this target
-      let wc = findWebContentsForTarget(targetPath);
-      if (!wc) {
-        // Fallback: search automation tabs by target path ID
-        const idPart = targetPath.split('/').pop();
-        if (idPart) {
-          for (const tab of automationViews.getAllTabs()) {
-            if (String(tab.view.webContents.id) === idPart) {
-              wc = tab.view.webContents;
+      // Find webContents by matching CDP targetId to real CDP /json/list
+      const cdpTargetId = targetPath.split('/').pop() || '';
+      let wc: Electron.WebContents | null = null;
+
+      // Get target URL from real CDP
+      const listRes = await this.fetchFromRealCdp(this.options.realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
+      const target = targets.find((t: { id: string }) => t.id === cdpTargetId);
+
+      if (target?.url) {
+        // Find matching automation tab by URL
+        for (const tab of automationViews.getAllTabs()) {
+          if (tab.view.webContents.getURL() === target.url) {
+            wc = tab.view.webContents;
+            break;
+          }
+        }
+        // Fallback: search all webContents
+        if (!wc) {
+          for (const contents of webContents.getAllWebContents()) {
+            if (contents.getURL() === target.url) {
+              wc = contents;
               break;
             }
           }
         }
       }
+
       if (!wc) {
-        throw new Error('Could not find webContents for target');
+        // Last resort: use the active automation tab
+        const activeId = automationViews.getActiveTabId();
+        if (activeId) {
+          const activeTab = automationViews.getTab(activeId);
+          if (activeTab) wc = activeTab.view.webContents;
+        }
       }
 
-      // Convert CDP printToPDF params to Electron's printToPDF options
-      const pdfOptions: Electron.PrintToPDFOptions = {};
+      if (!wc) {
+        throw new Error('Could not find webContents for PDF target');
+      }
+
+      logger.info(`${LOG_TAG} printToPDF: using webContents id=${wc.id} url=${wc.getURL().substring(0, 50)}`);
+
+      // Convert CDP params to Electron's printToPDF options
       const p = msg.params || {};
+      const pdfOptions: Electron.PrintToPDFOptions = {
+        printBackground: (p.printBackground as boolean) ?? true,
+      };
       if (p.landscape) pdfOptions.landscape = true;
-      if (p.printBackground) pdfOptions.printBackground = true;
       if (p.scale) pdfOptions.scale = p.scale as number;
       if (p.paperWidth || p.paperHeight) {
-        // CDP uses inches, Electron pageSize uses microns (1 inch = 25400 microns)
         pdfOptions.pageSize = {
           width: ((p.paperWidth as number) || 8.5) * 25400,
           height: ((p.paperHeight as number) || 11) * 25400,
@@ -540,32 +565,31 @@ export class CdpFilterProxy {
       }
       if (p.marginTop !== undefined || p.marginBottom !== undefined ||
           p.marginLeft !== undefined || p.marginRight !== undefined) {
-        // CDP margins are in inches, Electron margins are in CSS pixels (at 96 DPI)
         pdfOptions.margins = {
-          top: ((p.marginTop as number) || 0) * 2.54,
-          bottom: ((p.marginBottom as number) || 0) * 2.54,
-          left: ((p.marginLeft as number) || 0) * 2.54,
-          right: ((p.marginRight as number) || 0) * 2.54,
+          top: ((p.marginTop as number) || 0) * 96,
+          bottom: ((p.marginBottom as number) || 0) * 96,
+          left: ((p.marginLeft as number) || 0) * 96,
+          right: ((p.marginRight as number) || 0) * 96,
         };
       }
 
       const pdfBuffer = await wc.printToPDF(pdfOptions);
       const base64Data = pdfBuffer.toString('base64');
-      const response = {
-        id: msg.id,
-        result: { data: base64Data, stream: undefined },
-      };
+
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify(response));
+        clientWs.send(JSON.stringify({
+          id: msg.id,
+          result: { data: base64Data },
+        }));
       }
+      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB`);
     } catch (err) {
       logger.error(`${LOG_TAG} printToPDF failed:`, err);
-      const errorResponse = {
-        id: msg.id,
-        error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
-      };
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify(errorResponse));
+        clientWs.send(JSON.stringify({
+          id: msg.id,
+          error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
+        }));
       }
     }
   }
