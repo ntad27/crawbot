@@ -243,6 +243,26 @@ export const useBrowserStore = create<BrowserState>()(
 // ── Listen for tab updates from main process (WebContentsView navigation) ──
 
 if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
+  // Restore persisted tabs — recreate WebContentsViews in main process
+  const restoredTabs = useBrowserStore.getState().tabs;
+  if (restoredTabs.length > 0) {
+    setTimeout(() => {
+      const state = useBrowserStore.getState();
+      for (const tab of state.tabs) {
+        invokeIpc('browser:tab:create', {
+          id: tab.id,
+          url: tab.url,
+          partition: tab.partition,
+          category: tab.category,
+        });
+      }
+      // Set active tab
+      if (state.activeTabId) {
+        invokeIpc('browser:tab:setActive', state.activeTabId);
+      }
+    }, 500);
+  }
+
   window.electron.ipcRenderer.on('browser:tab:updated', (tabId: unknown, updates: unknown) => {
     if (typeof tabId === 'string' && updates && typeof updates === 'object') {
       useBrowserStore.getState().updateTab(tabId, updates as Partial<BrowserTab>);
