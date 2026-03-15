@@ -588,7 +588,7 @@ export class CdpFilterProxy {
         throw new Error('Could not find webContents for PDF target');
       }
 
-      logger.info(`${LOG_TAG} printToPDF: using webContents id=${wc.id} url=${wc.getURL().substring(0, 50)}`);
+      logger.info(`${LOG_TAG} printToPDF: wc=${wc.id} url=${wc.getURL().substring(0, 50)} params=${JSON.stringify(msg.params).substring(0, 200)}`);
 
       // CRITICAL: Force WebContentsView to full visible size before printing.
       // Electron printToPDF renders based on view's ACTUAL rendered content.
@@ -617,29 +617,20 @@ export class CdpFilterProxy {
       await wc.executeJavaScript('void(document.body.offsetHeight)').catch(() => {});
       await new Promise(r => setTimeout(r, 500));
 
-      // Convert CDP params to Electron's printToPDF options
-      // Always use standard page size (A4/Letter) — WebContentsView bounds
-      // may be tiny/hidden which causes "dimensions out-of-range" errors
+      // Use fixed A4 page size and standard margins
+      // Ignore CDP paperWidth/paperHeight — they cause dimension issues
+      // with Electron's printToPDF on WebContentsView
       const p = msg.params || {};
       const pdfOptions: Electron.PrintToPDFOptions = {
         printBackground: (p.printBackground as boolean) ?? true,
-        pageSize: 'A4',
-      };
-      if (p.landscape) pdfOptions.landscape = true;
-      if (p.scale) pdfOptions.scale = p.scale as number;
-      if (p.paperWidth && p.paperHeight) {
-        // CDP uses inches — convert to Electron pageSize (microns: 1 inch = 25400)
-        pdfOptions.pageSize = {
-          width: Math.round(((p.paperWidth as number) || 8.27) * 25400),
-          height: Math.round(((p.paperHeight as number) || 11.69) * 25400),
-        };
-      }
-      // Electron margins are in inches (same as CDP)
-      pdfOptions.margins = {
-        top: (p.marginTop as number) ?? 0.4,
-        bottom: (p.marginBottom as number) ?? 0.4,
-        left: (p.marginLeft as number) ?? 0.4,
-        right: (p.marginRight as number) ?? 0.4,
+        pageSize: 'A4' as Electron.PrintToPDFOptions['pageSize'],
+        landscape: !!(p.landscape),
+        margins: {
+          top: 0.4,
+          bottom: 0.4,
+          left: 0.4,
+          right: 0.4,
+        },
       };
 
       const pdfBuffer = await wc.printToPDF(pdfOptions);
