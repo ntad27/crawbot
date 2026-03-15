@@ -119,7 +119,7 @@ export function Chat() {
   return (
     <div className="flex -m-3 sm:-m-6" style={{ height: 'calc(100vh - 2.5rem)' }}>
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div id="chat-panel" className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
         {/* Toolbar */}
         <div className="flex shrink-0 items-center justify-end px-4 py-2">
           <ChatToolbar />

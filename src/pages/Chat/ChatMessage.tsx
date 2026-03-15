@@ -547,9 +547,13 @@ function ImageLightbox({
     }
   }, [filePath]);
 
+  // Render into the chat panel container (not document.body) so the
+  // lightbox stays within the chat area and doesn't overlap the native
+  // Electron WebContentsView browser panel.
+  const chatPanel = document.getElementById('chat-panel');
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={onClose}
     >
       {/* Image + buttons stacked */}
@@ -560,7 +564,7 @@ function ImageLightbox({
         <img
           src={src}
           alt={fileName}
-          className="max-w-[90vw] max-h-[85vh] rounded-lg shadow-2xl object-contain"
+          className="max-w-full max-h-[85%] rounded-lg shadow-2xl object-contain"
         />
 
         {/* Action buttons below image */}
@@ -588,7 +592,7 @@ function ImageLightbox({
         </div>
       </div>
     </div>,
-    document.body,
+    chatPanel || document.body,
   );
 }
 
