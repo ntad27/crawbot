@@ -161,11 +161,19 @@ export class CdpFilterProxy {
         return this.isTargetAllowed(t, exposed);
       });
 
-      // Rewrite ports in URLs (no type rewriting needed — WebContentsView
-      // tabs are natively type: "page" in CDP)
-      const rewritten = filtered.map((t: Record<string, unknown>) =>
-        this.rewritePorts(t, realCdpPort, proxyPort)
-      );
+      // Rewrite ports + mark active tab in title
+      const activeTabId = automationViews.getActiveTabId();
+      const rewritten = filtered.map((t: Record<string, unknown>) => {
+        const result = this.rewritePorts(t, realCdpPort, proxyPort);
+        // Mark active tab by matching URL to active automation tab
+        if (activeTabId) {
+          const activeTab = automationViews.getTab(activeTabId);
+          if (activeTab && result.url === activeTab.view.webContents.getURL()) {
+            result.title = `[Active] ${result.title || ''}`;
+          }
+        }
+        return result;
+      });
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(rewritten));
@@ -348,11 +356,19 @@ export class CdpFilterProxy {
         try {
           const msg = JSON.parse(data.toString());
 
-          // Filter Target.getTargets response — hide main app window
+          // Filter Target.getTargets response — hide internal targets + mark active tab
           if (msg.result?.targetInfos) {
-            msg.result.targetInfos = msg.result.targetInfos.filter(
-              (t: { url?: string }) => !this.isInternalTarget(t.url)
-            );
+            const activeId = automationViews.getActiveTabId();
+            const activeUrl = activeId ? automationViews.getTab(activeId)?.view.webContents.getURL() : null;
+
+            msg.result.targetInfos = msg.result.targetInfos
+              .filter((t: { url?: string }) => !this.isInternalTarget(t.url))
+              .map((t: { url?: string; title?: string }) => {
+                if (activeUrl && t.url === activeUrl) {
+                  return { ...t, title: `[Active] ${t.title || ''}` };
+                }
+                return t;
+              });
             clientWs.send(JSON.stringify(msg), { binary: false });
             return;
           }
