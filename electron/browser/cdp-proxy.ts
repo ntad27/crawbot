@@ -10,7 +10,7 @@
 
 import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { webContents } from 'electron';
+import { webContents, BrowserWindow } from 'electron';
 import { browserManager } from './manager';
 import { automationViews } from './automation-views';
 import { logger } from '../utils/logger';
