@@ -34,15 +34,19 @@ export function BrowserPanel() {
   // Tell main process where to position the WebContentsView
   const contentRef = useRef<HTMLDivElement>(null);
 
+  const DRAG_HANDLE_WIDTH = 4;
+
   const reportBounds = useCallback(() => {
     if (!contentRef.current || !panelOpen) return;
     const rect = contentRef.current.getBoundingClientRect();
     // Skip if element has no dimensions (panel still transitioning)
     if (rect.width < 10 || rect.height < 10) return;
+    // Offset x and shrink width by drag handle so the native
+    // WebContentsView doesn't cover the resize handle
     window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
-      x: Math.round(rect.x),
+      x: Math.round(rect.x + DRAG_HANDLE_WIDTH),
       y: Math.round(rect.y),
-      width: Math.round(rect.width),
+      width: Math.round(rect.width - DRAG_HANDLE_WIDTH),
       height: Math.round(rect.height),
     });
   }, [panelOpen]);
@@ -102,6 +106,8 @@ export function BrowserPanel() {
     const handleMouseMove = (e: MouseEvent) => {
       const delta = startXRef.current - e.clientX;
       setPanelWidth(startWidthRef.current + delta);
+      // Update WebContentsView bounds during drag for smooth resize
+      reportBounds();
     };
 
     const handleMouseUp = () => {
@@ -159,11 +165,13 @@ export function BrowserPanel() {
         borderLeftWidth: 0,
       }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — wide hit area with thin visible line */}
       <div
-        className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 z-20"
+        className="absolute left-0 top-0 bottom-0 w-3 cursor-col-resize z-20 group"
         onMouseDown={handleMouseDown}
-      />
+      >
+        <div className="absolute left-0 top-0 bottom-0 w-1 group-hover:bg-primary/30 group-active:bg-primary/50 transition-colors" />
+      </div>
 
       {/* Drag overlay */}
       {isDragging && (
