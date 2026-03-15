@@ -248,4 +248,14 @@ if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
       useBrowserStore.getState().updateTab(tabId, updates as Partial<BrowserTab>);
     }
   });
+
+  // When main process activates a tab (e.g., from CDP/Playwright focus)
+  window.electron.ipcRenderer.on('browser:tab:activated', (tabId: unknown) => {
+    if (typeof tabId === 'string') {
+      const { tabs } = useBrowserStore.getState();
+      if (tabs.some((t) => t.id === tabId)) {
+        useBrowserStore.setState({ activeTabId: tabId });
+      }
+    }
+  });
 }

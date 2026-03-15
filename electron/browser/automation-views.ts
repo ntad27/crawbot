@@ -135,6 +135,17 @@ class AutomationViewManager {
       }
     });
 
+    // When this tab's webContents gets focus (e.g., from CDP/Playwright),
+    // sync the active tab to renderer
+    view.webContents.on('focus', () => {
+      if (this.activeTabId !== tabId) {
+        this.activeTabId = tabId;
+        this.notifyRenderer('browser:tab:activated', tabId);
+        // Re-apply bounds to bring this tab to front
+        this.setActiveTab(tabId);
+      }
+    });
+
     // Inject anti-detection
     view.webContents.on('dom-ready', () => {
       view.webContents.executeJavaScript(`

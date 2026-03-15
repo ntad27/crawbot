@@ -302,6 +302,7 @@ const electronAPI = {
         'browser:tab:updated',
         'browser:tab:created',
         'browser:tab:closed',
+        'browser:tab:activated',
         'webauth:provider:status-changed',
         'webauth:provider:session-expired',
       ];
