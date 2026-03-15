@@ -49,6 +49,8 @@ export class CdpFilterProxy {
   private wss: WebSocketServer | null = null;
   private options: CdpProxyOptions;
   private running = false;
+  /** PDF stream data for IO.read/IO.close protocol */
+  pdfStreams = new Map<string, { data: string; read: boolean }>();
 
   constructor(options: CdpProxyOptions) {
     this.options = options;
@@ -282,6 +284,36 @@ export class CdpFilterProxy {
               }
             });
             return; // Don't forward to real CDP
+          }
+
+          // Handle IO.read for our PDF stream handles
+          if (msg.method === 'IO.read' && msg.params?.handle && this.pdfStreams.has(msg.params.handle)) {
+            const stream = this.pdfStreams.get(msg.params.handle)!;
+            const response: Record<string, unknown> = {
+              id: msg.id,
+              result: {
+                data: stream.read ? '' : stream.data,
+                eof: stream.read,
+                base64Encoded: !stream.read,
+              },
+            };
+            if (msg.sessionId) response.sessionId = msg.sessionId;
+            stream.read = true; // Next read returns eof
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify(response));
+            }
+            return; // Don't forward
+          }
+
+          // Handle IO.close for our PDF stream handles
+          if (msg.method === 'IO.close' && msg.params?.handle && this.pdfStreams.has(msg.params.handle)) {
+            this.pdfStreams.delete(msg.params.handle);
+            const response: Record<string, unknown> = { id: msg.id, result: {} };
+            if (msg.sessionId) response.sessionId = msg.sessionId;
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify(response));
+            }
+            return;
           }
 
           // Track Page.printToPDF requests by id+sessionId so we can
@@ -612,17 +644,21 @@ export class CdpFilterProxy {
       const pdfBuffer = await wc.printToPDF(pdfOptions);
       const base64Data = pdfBuffer.toString('base64');
 
+      // Return as stream handle (like real CDP does with transferMode: "ReturnAsStream")
+      // Playwright reads data via IO.read/IO.close protocol
+      const streamHandle = `crawbot-pdf-${Date.now()}`;
+      this.pdfStreams.set(streamHandle, { data: base64Data, read: false });
+
       const response: Record<string, unknown> = {
         id: msg.id,
-        result: { data: base64Data },
+        result: { stream: streamHandle },
       };
-      // Include sessionId if present (flattened CDP session from Playwright)
       if (sessionId) response.sessionId = sessionId;
 
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify(response));
       }
-      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB sessionId=${sessionId || 'none'}`);
+      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB stream=${streamHandle}`);
     } catch (err) {
       logger.error(`${LOG_TAG} printToPDF failed:`, err);
       const errResponse: Record<string, unknown> = {
