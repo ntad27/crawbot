@@ -242,6 +242,27 @@ export class CdpFilterProxy {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ type: 'string', value: 'Target is closing' }));
       }
+    } else if (normalizedUrl.startsWith('/json/activate/')) {
+      // Activate a CDP target and sync CrawBot's active tab state
+      const targetId = normalizedUrl.split('/json/activate/')[1];
+      logger.info(`${LOG_TAG} Activating target: ${targetId}`);
+
+      // Sync automationViews active tab
+      if (targetId) {
+        this.activateTabByTargetId(targetId, realCdpPort);
+      }
+
+      // Forward to real CDP
+      try {
+        const realRes = await this.fetchFromRealCdp(realCdpPort, url);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(realRes);
+      } catch {
+        // Electron may not support /json/activate — return success anyway
+        // since we've already synced the tab state in automationViews
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'string', value: 'Target activated' }));
+      }
     } else {
       // Pass-through unknown endpoints
       try {
@@ -788,7 +809,15 @@ export class CdpFilterProxy {
   /** Activate the CrawBot browser tab matching a CDP targetId */
   private async activateTabByTargetId(targetId: string, realCdpPort: number): Promise<void> {
     try {
-      // Get target info from real CDP
+      // In Electron's builtin browser, CDP target ID is the webContents ID (numeric string).
+      // Try direct match first — faster and more reliable than URL matching.
+      const numericId = parseInt(targetId, 10);
+      if (!isNaN(numericId) && automationViews.activateByWebContentsId(numericId)) {
+        logger.info(`${LOG_TAG} Activated tab by webContents ID: ${numericId}`);
+        return;
+      }
+
+      // Fallback: match by URL via real CDP target list
       const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
       const targets = JSON.parse(listRes);
       const target = targets.find((t: { id: string }) => t.id === targetId);
@@ -796,6 +825,7 @@ export class CdpFilterProxy {
         const wcId = automationViews.findWebContentsIdByUrl(target.url);
         if (wcId != null) {
           automationViews.activateByWebContentsId(wcId);
+          logger.info(`${LOG_TAG} Activated tab by URL match: ${target.url}`);
         }
       }
     } catch {
