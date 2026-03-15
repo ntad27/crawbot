@@ -37,13 +37,13 @@ export function BrowserPanel() {
   const reportBounds = useCallback(() => {
     if (!contentRef.current || !panelOpen) return;
     const rect = contentRef.current.getBoundingClientRect();
-    // Account for device pixel ratio
-    const dpr = window.devicePixelRatio || 1;
+    // Skip if element has no dimensions (panel still transitioning)
+    if (rect.width < 10 || rect.height < 10) return;
     window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
-      x: Math.round(rect.x * dpr),
-      y: Math.round(rect.y * dpr),
-      width: Math.round(rect.width * dpr),
-      height: Math.round(rect.height * dpr),
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
     });
   }, [panelOpen]);
 
@@ -54,18 +54,27 @@ export function BrowserPanel() {
     return () => window.removeEventListener('resize', reportBounds);
   }, [reportBounds, panelWidth, tabs.length, activeTabId]);
 
-  // Also report after a short delay (DOM layout settling)
+  // Report bounds on layout changes with multiple retries
   useEffect(() => {
     if (panelOpen) {
-      const timer = setTimeout(reportBounds, 100);
-      return () => clearTimeout(timer);
+      // Multiple delays to catch DOM layout settling
+      const t1 = setTimeout(reportBounds, 50);
+      const t2 = setTimeout(reportBounds, 200);
+      const t3 = setTimeout(reportBounds, 500);
+      const t4 = setTimeout(reportBounds, 1000);
+      // Also use RAF for accurate timing after paint
+      let raf: number;
+      const rafLoop = () => { reportBounds(); raf = requestAnimationFrame(rafLoop); };
+      raf = requestAnimationFrame(rafLoop);
+      const stopRaf = setTimeout(() => cancelAnimationFrame(raf), 1500);
+      return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); clearTimeout(stopRaf); cancelAnimationFrame(raf); };
     } else {
-      // Hide WebContentsView when panel is hidden
+      // Move WebContentsView offscreen when panel is hidden
       window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
         x: -9999, y: 0, width: 0, height: 0,
       });
     }
-  }, [panelOpen, reportBounds]);
+  }, [panelOpen, reportBounds, tabs.length]);
 
   // ── Drag resize ──
   const [isDragging, setIsDragging] = useState(false);

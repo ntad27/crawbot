@@ -299,15 +299,18 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
-  // Start CDP filter proxy then configure OpenClaw to use it
+  // Configure OpenClaw to use Electron's real CDP directly (port 9222)
+  // WebContentsView tabs appear as type: "page" natively — no proxy needed
   try {
-    const { startCdpProxy } = await import('../browser/cdp-proxy');
     const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-    const cdpProxy = await startCdpProxy(9333, 9222);
-    setOpenClawBrowserConfig(cdpProxy.port);
-    logger.info(`CDP proxy started on port ${cdpProxy.port}, browser config set`);
+    setOpenClawBrowserConfig(9222);
+    logger.info('Browser config set: direct CDP on port 9222');
+
+    // Start CDP filter proxy on 9333 for future filtered access
+    const { startCdpProxy } = await import('../browser/cdp-proxy');
+    startCdpProxy(9333, 9222).catch(() => {});
   } catch (err) {
-    logger.warn('CDP proxy/config failed:', err);
+    logger.warn('Browser config failed:', err);
   }
 
   // Start Gateway automatically

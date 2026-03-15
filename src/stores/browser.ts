@@ -238,3 +238,13 @@ export const useBrowserStore = create<BrowserState>()(
     }
   )
 );
+
+// ── Listen for tab updates from main process (WebContentsView navigation) ──
+
+if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
+  window.electron.ipcRenderer.on('browser:tab:updated', (tabId: unknown, updates: unknown) => {
+    if (typeof tabId === 'string' && updates && typeof updates === 'object') {
+      useBrowserStore.getState().updateTab(tabId, updates as Partial<BrowserTab>);
+    }
+  });
+}

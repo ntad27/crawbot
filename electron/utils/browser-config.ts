@@ -47,8 +47,10 @@ function writeConfig(config: Record<string, unknown>): void {
 export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
   const config = readConfig();
 
-  // Use CDP filter proxy (rewrites webview type→page so Playwright can control them)
-  const proxyPort = 9333;
+  // Connect directly to Electron's real CDP (port 9222).
+  // WebContentsView tabs natively appear as type: "page" — no proxy rewriting needed.
+  // The cdpProxyPort parameter is ignored; we use the real CDP port.
+  const cdpPort = 9222;
 
   config.browser = {
     enabled: true,
@@ -59,19 +61,19 @@ export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
     remoteCdpHandshakeTimeoutMs: 10000,
     profiles: {
       crawbot: {
-        cdpUrl: `http://127.0.0.1:${proxyPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',
       },
       chrome: {
-        cdpUrl: `http://127.0.0.1:${proxyPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',
       },
       openclaw: {
-        cdpUrl: `http://127.0.0.1:${proxyPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',

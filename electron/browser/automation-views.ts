@@ -39,6 +39,7 @@ class AutomationViewManager {
 
   /** Update the panel area bounds (called from renderer via IPC) */
   setPanelBounds(bounds: { x: number; y: number; width: number; height: number }): void {
+    logger.info(`${LOG_TAG} setBounds: x=${bounds.x} y=${bounds.y} w=${bounds.width} h=${bounds.height}`);
     this.panelBounds = bounds;
     this.updateActiveViewBounds();
   }
@@ -79,16 +80,48 @@ class AutomationViewManager {
     // Add to main window
     this.mainWindow.contentView.addChildView(view);
 
-    // Track navigation events
+    // Track navigation and loading events
+    view.webContents.on('did-start-loading', () => {
+      this.notifyRenderer('browser:tab:updated', tabId, { isLoading: true });
+    });
+
+    view.webContents.on('did-stop-loading', () => {
+      tab.url = view.webContents.getURL();
+      tab.title = view.webContents.getTitle();
+      this.notifyRenderer('browser:tab:updated', tabId, {
+        url: tab.url,
+        title: tab.title,
+        isLoading: false,
+        canGoBack: view.webContents.canGoBack(),
+        canGoForward: view.webContents.canGoForward(),
+      });
+    });
+
     view.webContents.on('did-navigate', () => {
       tab.url = view.webContents.getURL();
       tab.title = view.webContents.getTitle();
-      this.notifyRenderer('browser:tab:updated', tabId, { url: tab.url, title: tab.title });
+      this.notifyRenderer('browser:tab:updated', tabId, {
+        url: tab.url,
+        title: tab.title,
+        canGoBack: view.webContents.canGoBack(),
+        canGoForward: view.webContents.canGoForward(),
+      });
+    });
+
+    view.webContents.on('did-navigate-in-page', () => {
+      tab.url = view.webContents.getURL();
+      this.notifyRenderer('browser:tab:updated', tabId, { url: tab.url });
     });
 
     view.webContents.on('page-title-updated', (_, title) => {
       tab.title = title;
       this.notifyRenderer('browser:tab:updated', tabId, { title });
+    });
+
+    view.webContents.on('page-favicon-updated', (_, favicons) => {
+      if (favicons.length > 0) {
+        this.notifyRenderer('browser:tab:updated', tabId, { favicon: favicons[0] });
+      }
     });
 
     // Inject anti-detection
@@ -196,7 +229,8 @@ class AutomationViewManager {
   private updateActiveViewBounds(): void {
     if (this.activeTabId) {
       const tab = this.tabs.get(this.activeTabId);
-      if (tab) {
+      if (tab && this.panelBounds.width > 0 && this.panelBounds.height > 0) {
+        logger.info(`${LOG_TAG} Applying bounds to tab ${this.activeTabId}: ${JSON.stringify(this.panelBounds)}`);
         tab.view.setBounds(this.panelBounds);
       }
     }
