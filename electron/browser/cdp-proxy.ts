@@ -321,15 +321,162 @@ export class CdpFilterProxy {
             return;
           }
 
-          // Fix Page.captureScreenshot: OpenClaw hardcodes captureBeyondViewport=true
-          // Override to false always — let clip handle full page if needed
+          // Fix Page.captureScreenshot: disable captureBeyondViewport
+          // OpenClaw hardcodes captureBeyondViewport=true which captures
+          // content beyond viewport. Set to false for viewport screenshots.
+          // For full page (with clip), keep captureBeyondViewport=true so
+          // CDP captures the full content area defined by clip.
           if (msg.method === 'Page.captureScreenshot' && msg.params) {
-            msg.params.captureBeyondViewport = false;
-            const modified = JSON.stringify(msg);
-            if (realWsReady && realWs.readyState === WebSocket.OPEN) {
-              realWs.send(modified, { binary: false });
+            if (!msg.params.clip) {
+              // Viewport-only: disable beyond viewport
+              msg.params.captureBeyondViewport = false;
+            } else {
+              // Full page with clip: auto-scroll to trigger animations,
+              // then trim clip to actual content bounds
+              const activeTabId = automationViews.getActiveTabId();
+              const activeTab = activeTabId ? automationViews.getTab(activeTabId) : null;
+              if (activeTab) {
+                const wc = activeTab.view.webContents;
+                const captureMsg = msg;
+                const captureData = data;
+
+                // Async scroll + capture — return early to prevent sync forwarding
+                (async () => {
+                  try {
+                    // Step 1: Get page height and auto-scroll to trigger animations
+                    // Uses viewport-height steps so IntersectionObserver thresholds
+                    // are reliably crossed, with enough delay for CSS transitions.
+                    const MAX_SCROLL = 20000;
+                    const STEP_DELAY = 300;
+
+                    const scrollInfo = await wc.executeJavaScript(
+                      '({ pageHeight: Math.min(Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), ' + MAX_SCROLL + '), viewportHeight: window.innerHeight })'
+                    );
+                    const pageHeight = scrollInfo.pageHeight;
+                    // Use viewport-height steps (or 500px min) so each scroll
+                    // reveals a new screenful for IntersectionObserver triggers
+                    const STEP = Math.max(Math.floor(scrollInfo.viewportHeight * 0.7), 500);
+
+                    // Scroll incrementally from top to bottom
+                    for (let y = 0; y < pageHeight; y += STEP) {
+                      await wc.executeJavaScript(`window.scrollTo(0, ${y})`);
+                      await new Promise(r => setTimeout(r, STEP_DELAY));
+                    }
+                    // Scroll to very bottom
+                    await wc.executeJavaScript(`window.scrollTo(0, ${pageHeight})`);
+                    await new Promise(r => setTimeout(r, STEP_DELAY));
+
+                    // Scroll back to top
+                    await wc.executeJavaScript('window.scrollTo(0, 0)');
+                    // Wait for animations to settle after scroll-back
+                    await new Promise(r => setTimeout(r, 500));
+
+                    // Force all elements visible: override scroll-triggered
+                    // animations that may leave elements with opacity:0 or
+                    // off-screen transforms if the scroll was too fast.
+                    await wc.executeJavaScript(`
+                      (function() {
+                        var style = document.createElement('style');
+                        style.id = '__crawbot_screenshot_override';
+                        style.textContent = '*, *::before, *::after { ' +
+                          'opacity: 1 !important; ' +
+                          'transform: none !important; ' +
+                          'transition: none !important; ' +
+                          'animation: none !important; ' +
+                          'visibility: visible !important; ' +
+                        '}';
+                        document.head.appendChild(style);
+                      })()
+                    `);
+                    // Let the override take effect
+                    await new Promise(r => setTimeout(r, 500));
+
+                    // Step 2: Get actual content bounds for trimmed clip
+                    // Scan leaf-level elements (text, images, SVGs, inputs, videos)
+                    // to find the real bottom of visible content, ignoring empty
+                    // wrapper divs that extend to the full document height.
+                    const bounds = await wc.executeJavaScript(`
+                      (function() {
+                        var body = document.body;
+                        var html = document.documentElement;
+                        var docWidth = Math.max(body.scrollWidth || 0, html.scrollWidth || 0, html.clientWidth || 0);
+                        var docHeight = Math.max(body.scrollHeight || 0, html.scrollHeight || 0, html.clientHeight || 0);
+                        // Scan elements that carry actual visible content
+                        var contentTags = 'p,h1,h2,h3,h4,h5,h6,span,a,li,td,th,img,svg,video,canvas,input,button,textarea,select,label,figcaption,blockquote,pre,code,footer,nav,header,section>*,article>*';
+                        var allEls = document.querySelectorAll(contentTags);
+                        var maxBottom = 0, maxRight = 0, minLeft = 999999;
+                        for (var i = 0; i < allEls.length; i++) {
+                          var el = allEls[i];
+                          var style = window.getComputedStyle(el);
+                          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                          var rect = el.getBoundingClientRect();
+                          if (rect.width === 0 || rect.height === 0) continue;
+                          var absBottom = rect.bottom + window.scrollY;
+                          var absRight = rect.right + window.scrollX;
+                          var absLeft = rect.left + window.scrollX;
+                          if (absBottom > maxBottom) maxBottom = absBottom;
+                          if (absRight > maxRight) maxRight = absRight;
+                          if (absLeft < minLeft && rect.width > 10) minLeft = absLeft;
+                        }
+                        if (minLeft === 999999) minLeft = 0;
+                        // Add padding
+                        if (maxBottom > 0) maxBottom = Math.min(maxBottom + 50, docHeight);
+                        // Content bounds with padding
+                        var contentWidth = (maxRight > 100 && minLeft < maxRight) ? (maxRight - minLeft + 40) : (html.clientWidth || docWidth);
+                        var contentX = (minLeft > 10) ? Math.max(0, minLeft - 20) : 0;
+                        // Height: prefer scanned maxBottom
+                        var finalHeight = (maxBottom > 100) ? maxBottom : docHeight;
+                        if (finalHeight > ${MAX_SCROLL}) finalHeight = ${MAX_SCROLL};
+                        return { x: contentX, width: contentWidth, height: finalHeight };
+                      })()
+                    `);
+
+                    // Step 3: Update clip with trimmed content bounds
+                    if (bounds && bounds.width > 0 && bounds.height > 0) {
+                      captureMsg.params.clip = {
+                        x: bounds.x || 0,
+                        y: 0,
+                        width: bounds.width,
+                        height: bounds.height,
+                        scale: 2, // Retina quality — sharp text and images
+                      };
+                    }
+
+                    logger.info(`${LOG_TAG} Screenshot clip trimmed to ${bounds?.width}x${bounds?.height}`);
+
+                    // Forward the modified message
+                    const modifiedData = JSON.stringify(captureMsg);
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(modifiedData, { binary: false });
+                    } else {
+                      pendingMessages.push({ data: Buffer.from(modifiedData), isBinary: false });
+                    }
+
+                    // Remove the CSS override after a delay so the screenshot
+                    // has time to be captured before restoring animations
+                    setTimeout(() => {
+                      wc.executeJavaScript(`
+                        (function() {
+                          var el = document.getElementById('__crawbot_screenshot_override');
+                          if (el) el.remove();
+                        })()
+                      `).catch(() => {});
+                    }, 3000);
+                  } catch (err) {
+                    logger.error(`${LOG_TAG} Screenshot scroll/trim failed:`, err);
+                    // Forward original message as fallback
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(captureData, { binary: false });
+                    } else {
+                      pendingMessages.push({ data: captureData as Buffer, isBinary: false });
+                    }
+                  }
+                })();
+                return; // Don't forward synchronously — async handler will forward
+              }
+              // No active tab — forward normally
             }
-            return;
+            // Forward normally for viewport-only case
           }
 
           // Fix Emulation.setDeviceMetricsOverride — Playwright uses this for
