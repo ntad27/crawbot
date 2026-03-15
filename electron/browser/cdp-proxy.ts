@@ -590,30 +590,32 @@ export class CdpFilterProxy {
 
       logger.info(`${LOG_TAG} printToPDF: using webContents id=${wc.id} url=${wc.getURL().substring(0, 50)}`);
 
-      // Ensure WebContentsView is visible with proper size before printing
-      // printToPDF needs a visible, properly-sized view to render content
+      // CRITICAL: Force WebContentsView to full visible size before printing.
+      // Electron printToPDF renders based on view's ACTUAL rendered content.
+      // If view is hidden/offscreen/tiny, PDF will be blank.
       const tab = automationViews.getAllTabs().find(t => t.view.webContents === wc);
       const view = tab?.view;
-      if (view) {
+      const savedBounds = view?.getBounds() || { x: 0, y: 0, width: 0, height: 0 };
+
+      const parentWindow = BrowserWindow.getAllWindows()[0];
+      if (view && parentWindow) {
+        // Force view to full visible area
+        view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
         view.setVisible(true);
-        // Set a standard page size if bounds are too small
-        const bounds = view.getBounds();
-        if (bounds.width < 100 || bounds.height < 100) {
-          view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
-        }
+        // Ensure it's on top (re-add to parent)
+        try { parentWindow.contentView.removeChildView(view); } catch { /* */ }
+        parentWindow.contentView.addChildView(view);
       }
 
-      // Reset zoom to 100% and wait for re-render
+      // Reset zoom to 100%
       const originalZoom = wc.getZoomFactor();
-      if (originalZoom !== 1.0) {
-        wc.setZoomFactor(1.0);
-      }
+      wc.setZoomFactor(1.0);
 
-      // Wait for layout to settle at new zoom/size
-      await new Promise(r => setTimeout(r, 1000));
-
-      // Force layout recalculation
-      await wc.executeJavaScript('document.body.offsetHeight').catch(() => {});
+      // Wait for full re-render at correct size
+      await new Promise(r => setTimeout(r, 2000));
+      // Force layout + paint
+      await wc.executeJavaScript('void(document.body.offsetHeight)').catch(() => {});
+      await new Promise(r => setTimeout(r, 500));
 
       // Convert CDP params to Electron's printToPDF options
       // Always use standard page size (A4/Letter) — WebContentsView bounds
@@ -640,6 +642,15 @@ export class CdpFilterProxy {
       };
 
       const pdfBuffer = await wc.printToPDF(pdfOptions);
+
+      // Restore original view bounds/zoom after printing
+      if (view) {
+        wc.setZoomFactor(originalZoom);
+        if (savedBounds.width > 0) {
+          view.setBounds(savedBounds);
+        }
+      }
+
       const base64Data = pdfBuffer.toString('base64');
 
       // Return as stream handle (like real CDP does with transferMode: "ReturnAsStream")
