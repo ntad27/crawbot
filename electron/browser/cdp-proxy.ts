@@ -634,11 +634,12 @@ export class CdpFilterProxy {
           height: Math.round(((p.paperHeight as number) || 11.69) * 25400),
         };
       }
+      // Electron margins are in inches (same as CDP)
       pdfOptions.margins = {
-        top: ((p.marginTop as number) || 0.4) * 96,
-        bottom: ((p.marginBottom as number) || 0.4) * 96,
-        left: ((p.marginLeft as number) || 0.4) * 96,
-        right: ((p.marginRight as number) || 0.4) * 96,
+        top: (p.marginTop as number) ?? 0.4,
+        bottom: (p.marginBottom as number) ?? 0.4,
+        left: (p.marginLeft as number) ?? 0.4,
+        right: (p.marginRight as number) ?? 0.4,
       };
 
       const pdfBuffer = await wc.printToPDF(pdfOptions);
