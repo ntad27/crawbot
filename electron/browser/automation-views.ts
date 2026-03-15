@@ -295,6 +295,10 @@ class AutomationViewManager {
     return [...this.tabs.values()];
   }
 
+  getPanelBounds(): { x: number; y: number; width: number; height: number } {
+    return { ...this.panelBounds };
+  }
+
   getActiveTabId(): string | null {
     return this.activeTabId;
   }

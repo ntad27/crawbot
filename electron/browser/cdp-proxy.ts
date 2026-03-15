@@ -322,17 +322,47 @@ export class CdpFilterProxy {
           }
 
           // Fix Page.captureScreenshot: OpenClaw hardcodes captureBeyondViewport=true
-          // which captures the entire page content instead of just the viewport.
-          // Override to false when no clip is specified (viewport-only screenshot).
+          // Override to false always — let clip handle full page if needed
           if (msg.method === 'Page.captureScreenshot' && msg.params) {
-            if (!msg.params.clip && msg.params.captureBeyondViewport) {
-              msg.params.captureBeyondViewport = false;
-              const modified = JSON.stringify(msg);
-              if (realWsReady && realWs.readyState === WebSocket.OPEN) {
-                realWs.send(modified, { binary: false });
-              }
-              return; // Don't forward original
+            msg.params.captureBeyondViewport = false;
+            const modified = JSON.stringify(msg);
+            if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+              realWs.send(modified, { binary: false });
             }
+            return;
+          }
+
+          // Fix Emulation.setDeviceMetricsOverride — Playwright uses this for
+          // page.setViewportSize(). After it completes, restore WebContentsView
+          // bounds to panel position so the page doesn't stay "méo"/distorted.
+          if (msg.method === 'Emulation.setDeviceMetricsOverride') {
+            // Track this to restore bounds after response
+            const restoreId = msg.id;
+            const restoreHandler = (rData: Buffer | ArrayBuffer | Buffer[]) => {
+              try {
+                const resp = JSON.parse(rData.toString());
+                if (resp.id === restoreId) {
+                  // After viewport change completes, re-report panel bounds
+                  // so WebContentsView snaps back to panel area
+                  const activeId = automationViews.getActiveTabId();
+                  if (activeId) {
+                    const activeTab = automationViews.getTab(activeId);
+                    if (activeTab) {
+                      // Slight delay to let layout settle
+                      setTimeout(() => {
+                        const panelBounds = automationViews.getPanelBounds();
+                        if (panelBounds && panelBounds.width > 0) {
+                          activeTab.view.setBounds(panelBounds);
+                        }
+                      }, 500);
+                    }
+                  }
+                  realWs.removeListener('message', restoreHandler);
+                }
+              } catch { /* */ }
+            };
+            realWs.on('message', restoreHandler);
+            // Forward the command normally (don't return)
           }
 
           // Intercept Page.printToPDF — DO NOT forward to real CDP.
