@@ -321,44 +321,9 @@ export class CdpFilterProxy {
             return;
           }
 
-          // Resize view to desktop size before screenshot
-          if (msg.method === 'Page.captureScreenshot') {
-            const activeId = automationViews.getActiveTabId();
-            const ssTab = activeId ? automationViews.getTab(activeId) : null;
-            const ssView = ssTab?.view;
-
-            if (ssView) {
-              const ssBounds = ssView.getBounds();
-              const ssZoom = ssView.webContents.getZoomFactor();
-
-              // Resize offscreen, wait for render, then forward
-              ssView.setBounds({ x: -2000, y: -2000, width: 1920, height: 1080 });
-              ssView.webContents.setZoomFactor(1.0);
-
-              // Delay then forward (async via setTimeout)
-              setTimeout(() => {
-                // Track response to restore after screenshot
-                const restoreHandler = (rData: Buffer | ArrayBuffer | Buffer[]) => {
-                  try {
-                    const resp = JSON.parse(rData.toString());
-                    if (resp.id === msg.id) {
-                      ssView.webContents.setZoomFactor(ssZoom);
-                      if (ssBounds.width > 0) ssView.setBounds(ssBounds);
-                      realWs.removeListener('message', restoreHandler);
-                    }
-                  } catch { /* */ }
-                };
-                realWs.on('message', restoreHandler);
-
-                // Forward screenshot command
-                if (realWsReady && realWs.readyState === WebSocket.OPEN) {
-                  realWs.send(JSON.stringify(msg), { binary: false });
-                }
-              }, 1500);
-              return; // Don't forward yet — setTimeout will forward after delay
-            }
-            // No view found — forward normally below
-          }
+          // Page.captureScreenshot: forward as-is to real CDP.
+          // Screenshot captures current viewport (panel width + zoom level).
+          // Agent can use browser act:resize for desktop-size screenshots.
 
           // Intercept Page.printToPDF — DO NOT forward to real CDP.
           // Electron headed mode doesn't support CDP printToPDF, but
