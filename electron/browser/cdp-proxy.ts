@@ -618,18 +618,36 @@ export class CdpFilterProxy {
 
       logger.info(`${LOG_TAG} printToPDF: using webContents id=${wc.id} url=${wc.getURL().substring(0, 50)}`);
 
-      // Reset zoom to 100% for proper PDF rendering (tabs default to 60%)
+      // Ensure WebContentsView is visible with proper size before printing
+      // printToPDF needs a visible, properly-sized view to render content
+      const tab = automationViews.getAllTabs().find(t => t.view.webContents === wc);
+      const view = tab?.view;
+      if (view) {
+        view.setVisible(true);
+        // Set a standard page size if bounds are too small
+        const bounds = view.getBounds();
+        if (bounds.width < 100 || bounds.height < 100) {
+          view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
+        }
+      }
+
+      // Reset zoom to 100% and wait for re-render
       const originalZoom = wc.getZoomFactor();
       if (originalZoom !== 1.0) {
         wc.setZoomFactor(1.0);
-        // Wait for re-render at new zoom
-        await new Promise(r => setTimeout(r, 500));
       }
+
+      // Wait for layout to settle at new zoom/size
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Force layout recalculation
+      await wc.executeJavaScript('document.body.offsetHeight').catch(() => {});
 
       // Convert CDP params to Electron's printToPDF options
       const p = msg.params || {};
       const pdfOptions: Electron.PrintToPDFOptions = {
         printBackground: (p.printBackground as boolean) ?? true,
+        preferCSSPageSize: true,
       };
       if (p.landscape) pdfOptions.landscape = true;
       if (p.scale) pdfOptions.scale = p.scale as number;
