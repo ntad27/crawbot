@@ -88,8 +88,11 @@ class AutomationViewManager {
     const tab: AutomationTab = { id: tabId, view, url, title: 'New Tab', partition };
     this.tabs.set(tabId, tab);
 
-    // Add to main window
+    // Add to main window — start hidden until panel reports valid bounds
     this.mainWindow.contentView.addChildView(view);
+    if (this.panelBounds.width <= 0 || this.panelBounds.height <= 0 || this.panelBounds.x < -9000) {
+      view.setVisible(false);
+    }
 
     // Notify renderer to add tab to store (for tabs created via CDP proxy)
     this.notifyRenderer('browser:tab:created', {
