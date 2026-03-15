@@ -177,6 +177,7 @@ export const useBrowserStore = create<BrowserState>()(
         const { tabs } = get();
         if (tabs.some((t) => t.id === tabId)) {
           set({ activeTabId: tabId });
+          invokeIpc('browser:tab:setActive', tabId);
         }
       },
 

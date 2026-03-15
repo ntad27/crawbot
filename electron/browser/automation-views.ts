@@ -39,9 +39,20 @@ class AutomationViewManager {
 
   /** Update the panel area bounds (called from renderer via IPC) */
   setPanelBounds(bounds: { x: number; y: number; width: number; height: number }): void {
-    logger.info(`${LOG_TAG} setBounds: x=${bounds.x} y=${bounds.y} w=${bounds.width} h=${bounds.height}`);
     this.panelBounds = bounds;
-    this.updateActiveViewBounds();
+    // Apply bounds to ALL tabs (not just active) so they're ready when switched to
+    for (const [id, tab] of this.tabs) {
+      if (id === this.activeTabId) {
+        if (bounds.width > 0 && bounds.height > 0) {
+          tab.view.setVisible(true);
+          tab.view.setBounds(bounds);
+        } else {
+          tab.view.setVisible(false);
+        }
+      } else {
+        tab.view.setVisible(false);
+      }
+    }
   }
 
   /** Create a new automation tab with WebContentsView */
@@ -174,14 +185,21 @@ class AutomationViewManager {
     logger.info(`${LOG_TAG} Closed tab ${tabId}`);
   }
 
-  /** Set active tab — shows it and hides others */
+  /** Set active tab — shows it on top and hides others */
   setActiveTab(tabId: string): void {
     this.activeTabId = tabId;
 
     for (const [id, tab] of this.tabs) {
       if (id === tabId) {
+        // Bring to front: remove and re-add so it's on top
+        if (this.mainWindow) {
+          try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
+          this.mainWindow.contentView.addChildView(tab.view);
+        }
         tab.view.setVisible(true);
-        tab.view.setBounds(this.panelBounds);
+        if (this.panelBounds.width > 0 && this.panelBounds.height > 0) {
+          tab.view.setBounds(this.panelBounds);
+        }
       } else {
         tab.view.setVisible(false);
       }

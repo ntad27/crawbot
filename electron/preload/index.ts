@@ -238,6 +238,7 @@ const electronAPI = {
         'browser:tab:goForward',
         'browser:tab:reload',
         'browser:tab:setZoom',
+        'browser:tab:setActive',
         'browser:tab:list',
         'browser:cookies:get',
         'browser:cookies:remove',

@@ -3741,6 +3741,11 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
     return { success: true };
   });
 
+  ipcMain.handle('browser:tab:setActive', (_, tabId: string) => {
+    automationViews.setActiveTab(tabId);
+    return { success: true };
+  });
+
   ipcMain.handle('browser:tab:list', () => {
     const tabs = automationViews.getAllTabs().map(t => ({
       id: t.id, url: t.url, title: t.title, partition: t.partition,
