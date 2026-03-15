@@ -216,9 +216,6 @@ export class CdpFilterProxy {
 
     const realWs = new WebSocket(realWsUrl);
 
-    // Track printToPDF requests to intercept error responses
-    const pendingPdfRequests = new Map<number, { params: Record<string, unknown>; sessionId?: string; targetPath: string }>();
-
     // Buffer messages from client until real WS is open
     const pendingMessages: { data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }[] = [];
     let realWsReady = false;
@@ -316,20 +313,19 @@ export class CdpFilterProxy {
             return;
           }
 
-          // Track Page.printToPDF requests by id+sessionId so we can
-          // intercept the ERROR response from real CDP and replace with
-          // Electron's webContents.printToPDF() result (which works in headed mode).
-          // IMPORTANT: we forward the request to real CDP (so Playwright's
-          // internal state tracking stays consistent), then intercept the
-          // error response and replace it with our success response.
+          // Intercept Page.printToPDF — DO NOT forward to real CDP.
+          // Electron headed mode doesn't support CDP printToPDF, but
+          // Electron's webContents.printToPDF() API works.
+          // Response includes sessionId for Playwright's flattened session tracking.
           if (msg.method === 'Page.printToPDF') {
-            logger.info(`${LOG_TAG} Tracking Page.printToPDF id=${msg.id} sessionId=${msg.sessionId || 'none'}`);
-            pendingPdfRequests.set(msg.id, {
-              params: msg.params || {},
-              sessionId: msg.sessionId,
+            logger.info(`${LOG_TAG} Intercepted Page.printToPDF id=${msg.id} sessionId=${msg.sessionId || 'none'}`);
+            this.handlePrintToPdf(
+              { id: msg.id, params: msg.params || {} },
+              clientWs,
               targetPath,
-            });
-            // Forward to real CDP — don't intercept the request
+              msg.sessionId
+            );
+            return; // Don't forward to real CDP
           }
         } catch {
           // Not JSON, forward as-is
@@ -351,30 +347,6 @@ export class CdpFilterProxy {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
-
-          // Intercept Page.printToPDF ERROR response — replace with Electron API result
-          if (msg.id && msg.error && pendingPdfRequests.has(msg.id)) {
-            const pdfReq = pendingPdfRequests.get(msg.id)!;
-            pendingPdfRequests.delete(msg.id);
-            logger.info(`${LOG_TAG} printToPDF CDP error intercepted, using Electron API`);
-
-            // Use Electron's printToPDF which works in headed mode
-            this.handlePrintToPdf(
-              { id: msg.id, params: pdfReq.params },
-              clientWs,
-              pdfReq.targetPath,
-              pdfReq.sessionId // Pass sessionId for correct Playwright session
-            ).catch((err) => {
-              logger.error(`${LOG_TAG} Electron printToPDF also failed:`, err);
-              // Forward original CDP error if our fallback also fails
-              clientWs.send(data, { binary: isBinary });
-            });
-            return; // Don't forward the CDP error
-          }
-          // Clean up successful PDF responses (CDP somehow worked)
-          if (msg.id && msg.result && pendingPdfRequests.has(msg.id)) {
-            pendingPdfRequests.delete(msg.id);
-          }
 
           // Filter Target.getTargets response — hide main app window
           if (msg.result?.targetInfos) {
