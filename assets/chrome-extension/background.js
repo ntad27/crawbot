@@ -113,7 +113,7 @@ function startAutoDiscovery() {
     if (token && relayWs?.readyState === WebSocket.OPEN) return
     if (!token) {
       const discovered = await autoDiscoverToken()
-      if (discovered) { try { await ensureRelayConnection(); await announceAllTabs() } catch { /* */ } }
+      if (discovered) { try { await ensureRelayConnection(); await announceAllTabs(); await discoverAndAnnounceNewTabs() } catch { /* */ } }
     }
   }, AUTO_DISCOVER_INTERVAL_MS)
 }
@@ -127,7 +127,7 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     if (msg.relayPort) updates.relayPort = msg.relayPort
     chrome.storage.local.set(updates).then(async () => {
       sendResponse({ success: true })
-      if (msg.token) { try { await ensureRelayConnection(); await announceAllTabs() } catch { /* */ } }
+      if (msg.token) { try { await ensureRelayConnection(); await announceAllTabs(); await discoverAndAnnounceNewTabs() } catch { /* */ } }
     })
     return true
   }
@@ -244,6 +244,7 @@ function scheduleReconnect() {
       await ensureRelayConnection()
       reconnectAttempt = 0
       await announceAllTabs()
+      await discoverAndAnnounceNewTabs()
     } catch (err) {
       if (isRetryableReconnectError(err)) scheduleReconnect()
     }
@@ -697,6 +698,39 @@ async function handleForwardCdpCommand(msg) {
     return { success: true }
   }
 
+  // Target.getTargets: re-discover new tabs before returning the list.
+  // Without this, tabs opened after initial relay connect are invisible.
+  if (method === 'Target.getTargets') {
+    // Discover any new tabs that haven't been announced yet
+    let allTabs
+    try { allTabs = await chrome.tabs.query({}) } catch { allTabs = [] }
+    for (const t of allTabs) {
+      if (!t.id || tabs.has(t.id) || !isAttachableUrl(t.url)) continue
+      try { await announceTab(t.id) } catch { /* skip */ }
+    }
+    // Build synthetic target list from our tracked tabs
+    const targetInfos = []
+    for (const [tabId, entry] of tabs.entries()) {
+      if (!entry.targetId) continue
+      let title = '', url = ''
+      try {
+        const info = await chrome.tabs.get(tabId)
+        title = info.title || ''
+        url = info.url || ''
+      } catch { continue } // tab gone
+      const isActive = tabId === activeTabId
+      targetInfos.push({
+        targetId: entry.targetId,
+        type: 'page',
+        title: isActive ? `[ACTIVE] ${title}` : title,
+        url,
+        attached: entry.state === 'connected',
+        browserContextId: BROWSER_CONTEXT_ID,
+      })
+    }
+    return { targetInfos }
+  }
+
   if (method === 'Target.activateTarget') {
     const t = typeof params?.targetId === 'string' ? params.targetId : ''
     const toActivate = t ? getTabByTargetId(t) : tabId
@@ -934,16 +968,32 @@ chrome.tabs.onRemoved.addListener((tabId) => void whenReady(() => {
   void persistState()
 }))
 
-// Do NOT auto-announce new tabs to the relay — this triggers Playwright to
-// create CRPage + send init commands → debugger attaches (yellow bar) on tabs
-// the user is just browsing normally. Tabs are announced on-demand when the
-// agent actually targets them, or via announceAllTabs on relay connect.
-// chrome.tabs.onCreated — intentionally no listener
+// Auto-announce new tabs to the relay so they appear in /json/list (tab listing).
+// announceTab() only sets state='announced' (no debugger attach, no yellow bar).
+// The debugger is only attached lazily when the agent sends a CDP command to the tab.
+chrome.tabs.onCreated.addListener((tab) => void whenReady(async () => {
+  if (!tab.id || tabs.has(tab.id)) return
+  if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
+  // Wait briefly for the tab URL to settle (new tabs start as about:blank)
+  await new Promise((r) => setTimeout(r, 500))
+  try {
+    const tabInfo = await chrome.tabs.get(tab.id)
+    if (!isAttachableUrl(tabInfo.url)) return
+    await announceTab(tab.id)
+  } catch { /* tab may have been closed already */ }
+}))
 
-// Update tab info on navigation complete (only for already-tracked tabs)
+// Update tab info on navigation complete — also announce previously-unknown tabs
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => void whenReady(async () => {
   if (changeInfo.status !== 'complete') return
-  if (!tabs.has(tabId)) return // don't auto-announce new tabs
+
+  // Announce tabs we don't know about yet (opened before relay connect, or missed by onCreated)
+  if (!tabs.has(tabId)) {
+    if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
+    if (!isAttachableUrl(tab.url)) return
+    try { await announceTab(tabId) } catch { /* */ }
+    return
+  }
 
   // Existing tab — update title/url in relay
   const entry = tabs.get(tabId)
@@ -1052,9 +1102,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       await ensureRelayConnection().catch(() => { if (!reconnectTimer) scheduleReconnect() })
     }
   } else {
-    // Only maintain existing tracked tabs — do NOT discover new tabs on keepalive.
-    // New tabs are discovered on-demand when the agent targets them.
+    // Re-announce tracked tabs + discover any new tabs missed by onCreated/onUpdated
     await announceAllTabs()
+    await discoverAndAnnounceNewTabs()
   }
 })
 
