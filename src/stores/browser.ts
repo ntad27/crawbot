@@ -263,6 +263,22 @@ if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
     }, 500);
   }
 
+  // When main process creates a tab (e.g., via CDP Target.createTarget)
+  window.electron.ipcRenderer.on('browser:tab:created', (tabData: unknown) => {
+    if (tabData && typeof tabData === 'object') {
+      const data = tabData as BrowserTab;
+      const { tabs } = useBrowserStore.getState();
+      // Only add if not already in store (avoid duplicates from IPC addTab)
+      if (!tabs.some((t) => t.id === data.id)) {
+        useBrowserStore.setState((s) => ({
+          tabs: [...s.tabs, data],
+          activeTabId: data.id,
+          panelOpen: true,
+        }));
+      }
+    }
+  });
+
   window.electron.ipcRenderer.on('browser:tab:updated', (tabId: unknown, updates: unknown) => {
     if (typeof tabId === 'string' && updates && typeof updates === 'object') {
       useBrowserStore.getState().updateTab(tabId, updates as Partial<BrowserTab>);

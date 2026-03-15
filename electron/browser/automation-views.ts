@@ -91,6 +91,13 @@ class AutomationViewManager {
     // Add to main window
     this.mainWindow.contentView.addChildView(view);
 
+    // Notify renderer to add tab to store (for tabs created via CDP proxy)
+    this.notifyRenderer('browser:tab:created', {
+      id: tabId, url, title: 'New Tab', partition,
+      category: 'automation', isLoading: true,
+      canGoBack: false, canGoForward: false, zoomFactor: 0.6,
+    });
+
     // Track navigation and loading events
     view.webContents.on('did-start-loading', () => {
       this.notifyRenderer('browser:tab:updated', tabId, { isLoading: true });
