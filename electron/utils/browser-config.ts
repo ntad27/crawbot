@@ -47,11 +47,10 @@ function writeConfig(config: Record<string, unknown>): void {
 export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
   const config = readConfig();
 
-  // Direct CDP connection to Electron (port 9222). No proxy needed.
-  // WebContentsView tabs natively appear as type: "page".
-  // Tab focus sync handled via webContents events in main process.
-  const cdpPort = 9222;
-
+  // CDP proxy (port 9333) intercepts unsupported commands:
+  // - Target.createTarget → creates WebContentsView tab
+  // - Page.printToPDF → uses Electron's webContents.printToPDF()
+  // Page-level WS connections are relayed through the proxy transparently.
   config.browser = {
     enabled: true,
     evaluateEnabled: true,
@@ -61,19 +60,19 @@ export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
     remoteCdpHandshakeTimeoutMs: 10000,
     profiles: {
       crawbot: {
-        cdpUrl: `http://127.0.0.1:${cdpPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpProxyPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',
       },
       chrome: {
-        cdpUrl: `http://127.0.0.1:${cdpPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpProxyPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',
       },
       openclaw: {
-        cdpUrl: `http://127.0.0.1:${cdpPort}`,
+        cdpUrl: `http://127.0.0.1:${cdpProxyPort}`,
         driver: 'openclaw',
         attachOnly: true,
         color: '#3B82F6',

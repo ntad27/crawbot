@@ -299,18 +299,22 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
-  // Direct CDP on port 9222 — no proxy needed.
-  // WebContentsView tabs are type: "page" natively.
+  // Start CDP proxy (9333) → intercepts Target.createTarget + Page.printToPDF
+  // then relays everything else to Electron's real CDP (9222)
   try {
+    const { startCdpProxy } = await import('../browser/cdp-proxy');
+    await startCdpProxy(9333, 9222);
+    logger.info('CDP proxy started on port 9333 → real CDP 9222');
+
     const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-    setOpenClawBrowserConfig(9222);
-    logger.info('Browser config set: direct CDP on port 9222');
+    setOpenClawBrowserConfig(9333);
+    logger.info('Browser config set: CDP proxy on port 9333');
 
     // Start CDP focus monitor to sync tab switches from Playwright/agent
     const { startCdpFocusMonitor } = await import('../browser/cdp-focus-monitor');
     startCdpFocusMonitor(9222).catch(() => {});
   } catch (err) {
-    logger.warn('Browser config failed:', err);
+    logger.warn('Browser config / CDP proxy failed:', err);
   }
 
   // Start Gateway automatically

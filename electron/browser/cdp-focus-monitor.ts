@@ -8,8 +8,6 @@
  * Browser-level CDP allows multiple clients (unlike page-level).
  */
 
-import WebSocket from 'ws';
-import http from 'node:http';
 import { automationViews } from './automation-views';
 import { logger } from '../utils/logger';
 
@@ -43,28 +41,9 @@ export async function startCdpFocusMonitor(_cdpPort = 9222): Promise<void> {
   logger.info(`${LOG_TAG} Focus polling started (300ms interval)`);
 }
 
-async function getBrowserWsUrl(port: number): Promise<string | null> {
-  return new Promise((resolve) => {
-    http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
-      let d = '';
-      res.on('data', (c) => { d += c; });
-      res.on('end', () => {
-        try {
-          const ver = JSON.parse(d);
-          resolve(ver.webSocketDebuggerUrl || null);
-        } catch { resolve(null); }
-      });
-    }).on('error', () => resolve(null));
-  });
-}
-
 export function stopCdpFocusMonitor(): void {
-  if (monitorInterval) {
-    clearInterval(monitorInterval);
-    monitorInterval = null;
-  }
-  if (monitorWs) {
-    try { monitorWs.close(); } catch { /* */ }
-    monitorWs = null;
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
   }
 }

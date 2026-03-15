@@ -10,10 +10,30 @@
 
 import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { BrowserWindow, session } from 'electron';
+import { webContents } from 'electron';
 import { browserManager } from './manager';
 import { automationViews } from './automation-views';
 import { logger } from '../utils/logger';
+
+/** Map page-level WS paths to their webContents ID for printToPDF interception */
+function findWebContentsForTarget(targetPath: string): Electron.WebContents | null {
+  // targetPath looks like /devtools/page/<targetId>
+  // We need to match it to an automation tab's webContents
+  const allWc = webContents.getAllWebContents();
+  for (const wc of allWc) {
+    // Electron assigns numeric IDs that appear in CDP target paths
+    const debuggerUrl = `/devtools/page/${wc.id}`;
+    if (targetPath === debuggerUrl) return wc;
+  }
+  // Also try matching by looking for the ID after the last /
+  const idPart = targetPath.split('/').pop();
+  if (idPart) {
+    for (const wc of allWc) {
+      if (String(wc.id) === idPart) return wc;
+    }
+  }
+  return null;
+}
 
 const LOG_TAG = '[CDP-Proxy]';
 
@@ -123,7 +143,10 @@ export class CdpFilterProxy {
   ): Promise<void> {
     const url = req.url || '/';
 
-    if (url === '/json/list' || url === '/json') {
+    // Normalize trailing slash for URL matching
+    const normalizedUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+
+    if (normalizedUrl === '/json/list' || normalizedUrl === '/json') {
       // Filter targets: only expose automation tabs
       const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
       const targets = JSON.parse(realRes);
@@ -144,10 +167,10 @@ export class CdpFilterProxy {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(rewritten));
-    } else if (url.startsWith('/json/new')) {
+    } else if (normalizedUrl.startsWith('/json/new')) {
       // Electron doesn't support Target.createTarget via CDP.
       // Create a real BrowserWindow as a CDP-controllable page.
-      const targetUrl = url.split('?')[1] || 'about:blank';
+      const targetUrl = normalizedUrl.split('?')[1] || 'about:blank';
       const target = await this.createCdpPage(targetUrl, realCdpPort, proxyPort);
       if (target) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -156,13 +179,13 @@ export class CdpFilterProxy {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to create page' }));
       }
-    } else if (url === '/json/version') {
+    } else if (normalizedUrl === '/json/version') {
       const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/version');
       const version = JSON.parse(realRes);
       const rewritten = this.rewritePorts(version, realCdpPort, proxyPort);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(rewritten));
-    } else if (url === '/json/protocol') {
+    } else if (normalizedUrl === '/json/protocol') {
       const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/protocol');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(realRes);
@@ -192,7 +215,7 @@ export class CdpFilterProxy {
     const realWs = new WebSocket(realWsUrl);
 
     // Buffer messages from client until real WS is open
-    const pendingMessages: (Buffer | ArrayBuffer | Buffer[])[] = [];
+    const pendingMessages: { data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }[] = [];
     let realWsReady = false;
 
     realWs.on('open', () => {
@@ -200,13 +223,13 @@ export class CdpFilterProxy {
       realWsReady = true;
       // Flush buffered messages
       for (const msg of pendingMessages) {
-        realWs.send(msg);
+        realWs.send(msg.data, { binary: msg.isBinary });
       }
       pendingMessages.length = 0;
     });
 
     // Relay: client → real CDP (buffer if not ready)
-    // Intercept Target.createTarget since Electron doesn't support it
+    // Intercept commands that Electron doesn't support natively
     clientWs.on('message', (data, isBinary) => {
       if (!isBinary) {
         try {
@@ -214,13 +237,28 @@ export class CdpFilterProxy {
           // Intercept Target.activateTarget to sync tab switch in CrawBot UI
           if (msg.method === 'Target.activateTarget' && msg.params?.targetId) {
             logger.info(`${LOG_TAG} Intercepted Target.activateTarget: ${msg.params.targetId}`);
-            // Find the WebContentsView with matching URL from CDP target list
             this.activateTabByTargetId(msg.params.targetId, realCdpPort);
           }
 
+          // Rewrite Target.setAutoAttach to disable waitForDebuggerOnStart
+          // In Electron, waitForDebuggerOnStart pauses ALL targets (including
+          // internal ones) and there's no reliable way to resume them. This
+          // prevents Playwright's connectOverCDP from breaking existing tabs.
+          if (msg.method === 'Target.setAutoAttach' && msg.params?.waitForDebuggerOnStart) {
+            logger.info(`${LOG_TAG} Rewriting setAutoAttach: waitForDebuggerOnStart=false`);
+            msg.params.waitForDebuggerOnStart = false;
+            // Replace the forwarded data with the modified message
+            const modifiedData = JSON.stringify(msg);
+            if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+              realWs.send(modifiedData, { binary: false });
+            } else {
+              pendingMessages.push({ data: Buffer.from(modifiedData), isBinary: false });
+            }
+            return; // Don't forward the original
+          }
+
+          // Intercept Target.createTarget — Electron doesn't support it
           if (msg.method === 'Target.createTarget') {
-            // Electron doesn't support Target.createTarget
-            // Create a BrowserWindow instead and return its target info
             const url = msg.params?.url || 'about:blank';
             logger.info(`${LOG_TAG} Intercepted Target.createTarget for: ${url}`);
             this.createCdpPage(url, realCdpPort, this.options.proxyPort).then((target) => {
@@ -242,6 +280,14 @@ export class CdpFilterProxy {
             });
             return; // Don't forward to real CDP
           }
+
+          // Intercept Page.printToPDF — only works in headless Chromium,
+          // but Electron's webContents.printToPDF() works in headed mode
+          if (msg.method === 'Page.printToPDF') {
+            logger.info(`${LOG_TAG} Intercepted Page.printToPDF`);
+            this.handlePrintToPdf(msg, clientWs, targetPath);
+            return; // Don't forward to real CDP
+          }
         } catch {
           // Not JSON, forward as-is
         }
@@ -250,29 +296,49 @@ export class CdpFilterProxy {
       if (realWsReady && realWs.readyState === WebSocket.OPEN) {
         realWs.send(data, { binary: isBinary });
       } else {
-        pendingMessages.push(data as Buffer);
+        pendingMessages.push({ data: data as Buffer, isBinary });
       }
     });
 
     // Relay: real CDP → client
-    // Filter Target events to hide main app window
+    // Filter Target events to hide main app window and internal targets
     realWs.on('message', (data, isBinary) => {
       if (clientWs.readyState !== WebSocket.OPEN) return;
 
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
+
           // Filter Target.getTargets response — hide main app window
           if (msg.result?.targetInfos) {
-            msg.result.targetInfos = msg.result.targetInfos.filter((t: { url?: string }) => {
-              const url = t.url || '';
-              return !url.startsWith('http://localhost:5173') &&
-                     !url.startsWith('http://127.0.0.1:5173') &&
-                     !url.startsWith('file://') &&
-                     !url.startsWith('devtools://');
-            });
+            msg.result.targetInfos = msg.result.targetInfos.filter(
+              (t: { url?: string }) => !this.isInternalTarget(t.url)
+            );
             clientWs.send(JSON.stringify(msg), { binary: false });
             return;
+          }
+
+          // Filter Target.attachedToTarget events for internal targets
+          // (prevents Playwright from trying to initialize the main window)
+          if (msg.method === 'Target.attachedToTarget' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              logger.info(`${LOG_TAG} Suppressing attachedToTarget for internal: ${msg.params.targetInfo.url}`);
+              return; // Don't forward to client
+            }
+          }
+
+          // Filter Target.targetCreated events for internal targets
+          if (msg.method === 'Target.targetCreated' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              return; // Don't forward to client
+            }
+          }
+
+          // Filter Target.targetInfoChanged events for internal targets
+          if (msg.method === 'Target.targetInfoChanged' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              return; // Don't forward to client
+            }
           }
         } catch {
           // Not valid JSON — forward as-is
@@ -283,22 +349,28 @@ export class CdpFilterProxy {
     });
 
     // Close propagation
-    clientWs.on('close', () => {
-      realWs.close();
+    clientWs.on('close', (code, reason) => {
+      logger.info(`${LOG_TAG} Client WS closed for ${targetPath}: code=${code}`);
+      if (realWs.readyState === WebSocket.OPEN || realWs.readyState === WebSocket.CONNECTING) {
+        realWs.close();
+      }
     });
 
-    realWs.on('close', () => {
-      clientWs.close();
+    realWs.on('close', (code, reason) => {
+      logger.info(`${LOG_TAG} Real WS closed for ${targetPath}: code=${code}`);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.close();
+      }
     });
 
     // Error handling
     clientWs.on('error', (err) => {
-      logger.error(`${LOG_TAG} Client WS error:`, err.message);
+      logger.error(`${LOG_TAG} Client WS error for ${targetPath}:`, err.message);
       realWs.close();
     });
 
     realWs.on('error', (err) => {
-      logger.error(`${LOG_TAG} Real CDP WS error:`, err.message);
+      logger.error(`${LOG_TAG} Real CDP WS error for ${targetPath}:`, err.message);
       clientWs.close();
     });
   }
@@ -325,10 +397,7 @@ export class CdpFilterProxy {
     });
   }
 
-  // ── Create real BrowserWindow for CDP automation ──
-
-  /** CDP-automation windows — hidden from user but controllable via CDP */
-  private cdpWindows = new Map<number, BrowserWindow>();
+  // ── Create new tab via AutomationViews for CDP automation ──
 
   private async createCdpPage(
     url: string,
@@ -336,57 +405,65 @@ export class CdpFilterProxy {
     proxyPort: number
   ): Promise<Record<string, unknown> | null> {
     try {
-      const chromeVersion = process.versions.chrome || '130.0.0.0';
-      const ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+      // Create a WebContentsView tab (appears as type: "page" in CDP natively)
+      const tabId = `cdp-new-${Date.now()}`;
+      const tab = automationViews.createTab(tabId, url || 'about:blank');
 
-      const ses = session.fromPartition('persist:browser-shared');
-      ses.setUserAgent(ua);
-
-      const win = new BrowserWindow({
-        width: 1280,
-        height: 900,
-        show: true, // Visible so user can see agent's browser automation
-        webPreferences: {
-          session: ses,
-          nodeIntegration: false,
-          contextIsolation: true,
-          sandbox: true,
-        },
+      // Notify renderer about the new tab
+      automationViews.notifyRendererPublic('browser:tab:created', tabId, {
+        id: tabId,
+        url: url || 'about:blank',
+        title: 'New Tab',
+        isLoading: true,
       });
 
-      this.cdpWindows.set(win.webContents.id, win);
+      // Wait for CDP to register the new target
+      const wcId = tab.view.webContents.id;
+      let target: Record<string, unknown> | null = null;
 
-      // Navigate to URL
-      if (url && url !== 'about:blank') {
-        await win.loadURL(url);
+      // Poll for the target to appear in CDP (up to 3 seconds)
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        try {
+          const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+          const targets = JSON.parse(listRes);
+          // Match by webContents ID — Electron uses numeric IDs
+          target = targets.find(
+            (t: { id?: string; type?: string }) =>
+              t.type === 'page' && String(t.id) === String(wcId)
+          );
+          // If not found by ID, try matching by URL for newly navigated pages
+          if (!target && url && url !== 'about:blank') {
+            target = targets.find(
+              (t: { url?: string; type?: string }) =>
+                t.type === 'page' && t.url === url
+            );
+          }
+          if (target) break;
+        } catch { /* retry */ }
       }
-
-      // Wait a moment for CDP to register the target
-      await new Promise((r) => setTimeout(r, 500));
-
-      // Find this window's target in CDP list
-      const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
-      const targets = JSON.parse(listRes);
-      const target = targets.find(
-        (t: { url?: string; type?: string }) =>
-          t.type === 'page' && t.url === (url || 'about:blank')
-      );
 
       if (target) {
-        return this.rewritePorts(target, realCdpPort, proxyPort);
+        return this.rewritePorts(target as Record<string, unknown>, realCdpPort, proxyPort);
       }
 
-      // Fallback: return the last page target
+      // Fallback: find the newest page target that isn't the main app
+      const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
       const pageTargets = targets.filter(
         (t: { type?: string; url?: string }) =>
           t.type === 'page' &&
           !t.url?.startsWith('http://localhost:5173') &&
+          !t.url?.startsWith('http://127.0.0.1:5173') &&
+          !t.url?.startsWith('http://localhost:23333') &&
+          !t.url?.startsWith('file://') &&
           !t.url?.startsWith('devtools://')
       );
       if (pageTargets.length > 0) {
         return this.rewritePorts(pageTargets[pageTargets.length - 1], realCdpPort, proxyPort);
       }
 
+      logger.warn(`${LOG_TAG} createCdpPage: target not found after creation`);
       return null;
     } catch (err) {
       logger.error(`${LOG_TAG} createCdpPage failed:`, err);
@@ -412,24 +489,94 @@ export class CdpFilterProxy {
     }
   }
 
+  /** Check if a target URL belongs to CrawBot's internal windows/pages */
+  private isInternalTarget(url?: string): boolean {
+    if (!url) return false;
+    return url.startsWith('http://localhost:5173') ||
+           url.startsWith('http://127.0.0.1:5173') ||
+           url.startsWith('http://localhost:23333') ||
+           url.startsWith('http://127.0.0.1:23333') ||
+           url.startsWith('file://') ||
+           url.startsWith('devtools://');
+  }
+
+  /** Handle Page.printToPDF via Electron's webContents.printToPDF() API */
+  private async handlePrintToPdf(
+    msg: { id: number; params?: Record<string, unknown> },
+    clientWs: WebSocket,
+    targetPath: string
+  ): Promise<void> {
+    try {
+      // Find the webContents for this target
+      let wc = findWebContentsForTarget(targetPath);
+      if (!wc) {
+        // Fallback: search automation tabs by target path ID
+        const idPart = targetPath.split('/').pop();
+        if (idPart) {
+          for (const tab of automationViews.getAllTabs()) {
+            if (String(tab.view.webContents.id) === idPart) {
+              wc = tab.view.webContents;
+              break;
+            }
+          }
+        }
+      }
+      if (!wc) {
+        throw new Error('Could not find webContents for target');
+      }
+
+      // Convert CDP printToPDF params to Electron's printToPDF options
+      const pdfOptions: Electron.PrintToPDFOptions = {};
+      const p = msg.params || {};
+      if (p.landscape) pdfOptions.landscape = true;
+      if (p.printBackground) pdfOptions.printBackground = true;
+      if (p.scale) pdfOptions.scale = p.scale as number;
+      if (p.paperWidth || p.paperHeight) {
+        // CDP uses inches, Electron pageSize uses microns (1 inch = 25400 microns)
+        pdfOptions.pageSize = {
+          width: ((p.paperWidth as number) || 8.5) * 25400,
+          height: ((p.paperHeight as number) || 11) * 25400,
+        };
+      }
+      if (p.marginTop !== undefined || p.marginBottom !== undefined ||
+          p.marginLeft !== undefined || p.marginRight !== undefined) {
+        // CDP margins are in inches, Electron margins are in CSS pixels (at 96 DPI)
+        pdfOptions.margins = {
+          top: ((p.marginTop as number) || 0) * 2.54,
+          bottom: ((p.marginBottom as number) || 0) * 2.54,
+          left: ((p.marginLeft as number) || 0) * 2.54,
+          right: ((p.marginRight as number) || 0) * 2.54,
+        };
+      }
+
+      const pdfBuffer = await wc.printToPDF(pdfOptions);
+      const base64Data = pdfBuffer.toString('base64');
+      const response = {
+        id: msg.id,
+        result: { data: base64Data, stream: undefined },
+      };
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(response));
+      }
+    } catch (err) {
+      logger.error(`${LOG_TAG} printToPDF failed:`, err);
+      const errorResponse = {
+        id: msg.id,
+        error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
+      };
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(errorResponse));
+      }
+    }
+  }
+
   private isTargetAllowed(
     target: { id: string; url?: string; type?: string },
     _exposed: Set<number>
   ): boolean {
-    // Hide CrawBot's own UI (main window loading the React app)
-    if (target.url) {
-      const isMainApp =
-        target.url.startsWith('file://') ||
-        target.url.startsWith('http://localhost:5173') ||
-        target.url.startsWith('http://localhost:23333') ||
-        target.url.startsWith('http://127.0.0.1:5173') ||
-        target.url.startsWith('devtools://');
-      if (isMainApp) return false;
-    }
+    if (this.isInternalTarget(target.url)) return false;
 
     // Allow both page AND webview types
-    // Webview types will be rewritten to "page" in the response
-    // so Playwright can control them
     if (target.type !== 'page' && target.type !== 'webview') return false;
 
     return true;
