@@ -51,6 +51,8 @@ export class CdpFilterProxy {
   private running = false;
   /** PDF stream data for IO.read/IO.close protocol */
   pdfStreams = new Map<string, { data: string; read: boolean }>();
+  /** Internal CDP message IDs — responses are filtered from clientWs */
+  private internalCdpIds = new Set<number>();
 
   constructor(options: CdpProxyOptions) {
     this.options = options;
@@ -339,6 +341,9 @@ export class CdpFilterProxy {
                 const wc = activeTab.view.webContents;
                 const captureMsg = msg;
                 const captureData = data;
+                // Save original clip from OpenClaw/Playwright — it has the
+                // correct viewport-based x/width for the page layout
+                const originalClip = { ...msg.params.clip };
 
                 // Async scroll + capture — return early to prevent sync forwarding
                 (async () => {
@@ -391,58 +396,46 @@ export class CdpFilterProxy {
                     // Let the override take effect
                     await new Promise(r => setTimeout(r, 500));
 
-                    // Step 2: Get actual content bounds for trimmed clip
-                    // Scan leaf-level elements (text, images, SVGs, inputs, videos)
-                    // to find the real bottom of visible content, ignoring empty
-                    // wrapper divs that extend to the full document height.
-                    const bounds = await wc.executeJavaScript(`
+                    // Step 2: Scan content height to trim empty bottom space
+                    const contentHeight = await wc.executeJavaScript(`
                       (function() {
-                        var body = document.body;
-                        var html = document.documentElement;
-                        var docWidth = Math.max(body.scrollWidth || 0, html.scrollWidth || 0, html.clientWidth || 0);
-                        var docHeight = Math.max(body.scrollHeight || 0, html.scrollHeight || 0, html.clientHeight || 0);
-                        // Scan elements that carry actual visible content
+                        var docHeight = Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0, document.documentElement.clientHeight || 0);
                         var contentTags = 'p,h1,h2,h3,h4,h5,h6,span,a,li,td,th,img,svg,video,canvas,input,button,textarea,select,label,figcaption,blockquote,pre,code,footer,nav,header,section>*,article>*';
                         var allEls = document.querySelectorAll(contentTags);
-                        var maxBottom = 0, maxRight = 0, minLeft = 999999;
+                        var maxBottom = 0;
                         for (var i = 0; i < allEls.length; i++) {
-                          var el = allEls[i];
-                          var style = window.getComputedStyle(el);
-                          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-                          var rect = el.getBoundingClientRect();
+                          var rect = allEls[i].getBoundingClientRect();
                           if (rect.width === 0 || rect.height === 0) continue;
                           var absBottom = rect.bottom + window.scrollY;
-                          var absRight = rect.right + window.scrollX;
-                          var absLeft = rect.left + window.scrollX;
                           if (absBottom > maxBottom) maxBottom = absBottom;
-                          if (absRight > maxRight) maxRight = absRight;
-                          if (absLeft < minLeft && rect.width > 10) minLeft = absLeft;
                         }
-                        if (minLeft === 999999) minLeft = 0;
-                        // Add padding
                         if (maxBottom > 0) maxBottom = Math.min(maxBottom + 50, docHeight);
-                        // Content bounds with padding
-                        var contentWidth = (maxRight > 100 && minLeft < maxRight) ? (maxRight - minLeft + 40) : (html.clientWidth || docWidth);
-                        var contentX = (minLeft > 10) ? Math.max(0, minLeft - 20) : 0;
-                        // Height: prefer scanned maxBottom
                         var finalHeight = (maxBottom > 100) ? maxBottom : docHeight;
                         if (finalHeight > ${MAX_SCROLL}) finalHeight = ${MAX_SCROLL};
-                        return { x: contentX, width: contentWidth, height: finalHeight };
+                        return finalHeight;
                       })()
                     `);
 
-                    // Step 3: Update clip with trimmed content bounds
-                    if (bounds && bounds.width > 0 && bounds.height > 0) {
-                      captureMsg.params.clip = {
-                        x: bounds.x || 0,
-                        y: 0,
-                        width: bounds.width,
-                        height: bounds.height,
-                        scale: 2, // Retina quality — sharp text and images
-                      };
-                    }
+                    // Step 3: Crop clip to compensate for zoom-inflated viewport.
+                    // At zoom 0.6, setDeviceMetricsOverride makes CSS viewport = width/0.6,
+                    // inflating it ~1.67x. Simply multiply clip dimensions by zoom factor
+                    // to crop away the excess whitespace on the right and bottom.
+                    const clipHeight = contentHeight > 0 ? contentHeight : (originalClip.height || 10000);
+                    const zoomFactor = wc.getZoomFactor() || 1;
+                    // Only apply zoom correction if zoom < 1 (zoomed out)
+                    const zoomCorrection = zoomFactor < 1 ? zoomFactor : 1;
+                    const clipWidth = Math.round((originalClip.width || 1280) * zoomCorrection);
+                    const clipHeightCorrected = Math.round(clipHeight * zoomCorrection);
 
-                    logger.info(`${LOG_TAG} Screenshot clip trimmed to ${bounds?.width}x${bounds?.height}`);
+                    captureMsg.params.clip = {
+                      x: originalClip.x || 0,
+                      y: originalClip.y || 0,
+                      width: clipWidth,
+                      height: clipHeightCorrected,
+                      scale: 2, // Retina quality
+                    };
+
+                    logger.info(`${LOG_TAG} Screenshot clip: ${clipWidth}x${clipHeightCorrected} (original: ${originalClip.width}x${clipHeight}, zoom=${zoomFactor}, correction=${zoomCorrection})`);
 
                     // Forward the modified message
                     const modifiedData = JSON.stringify(captureMsg);
@@ -482,7 +475,7 @@ export class CdpFilterProxy {
           // Fix Emulation.setDeviceMetricsOverride — Playwright uses this for
           // page.setViewportSize(). Restore WebContentsView bounds after a delay.
           if (msg.method === 'Emulation.setDeviceMetricsOverride') {
-            logger.info(`${LOG_TAG} Detected viewport resize, will restore bounds in 5s`);
+            logger.info(`${LOG_TAG} Detected viewport resize: ${msg.params.width}x${msg.params.height}`);
             setTimeout(() => {
               const activeId = automationViews.getActiveTabId();
               if (activeId) {
@@ -534,6 +527,13 @@ export class CdpFilterProxy {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
+
+          // Filter responses to our internal CDP commands (not from Playwright)
+          if (msg.id && this.internalCdpIds.has(msg.id)) {
+            this.internalCdpIds.delete(msg.id);
+            logger.info(`${LOG_TAG} Filtered internal CDP response id=${msg.id}`);
+            return; // Don't forward to client
+          }
 
           // Filter Target.getTargets response — hide internal targets + mark active tab
           if (msg.result?.targetInfos) {
