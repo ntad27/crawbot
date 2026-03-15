@@ -94,6 +94,11 @@ class AutomationViewManager {
     // Track navigation and loading events
     view.webContents.on('did-start-loading', () => {
       this.notifyRenderer('browser:tab:updated', tabId, { isLoading: true });
+      // Auto-activate tab when it starts loading (e.g., agent navigated it)
+      if (this.activeTabId !== tabId) {
+        this.setActiveTab(tabId);
+        this.notifyRenderer('browser:tab:activated', tabId);
+      }
     });
 
     view.webContents.on('did-stop-loading', () => {
@@ -135,16 +140,38 @@ class AutomationViewManager {
       }
     });
 
-    // When this tab's webContents gets focus (e.g., from CDP/Playwright),
+    // When this tab's webContents gets focus (e.g., from CDP/Playwright bringToFront),
     // sync the active tab to renderer
     view.webContents.on('focus', () => {
       if (this.activeTabId !== tabId) {
-        this.activeTabId = tabId;
-        this.notifyRenderer('browser:tab:activated', tabId);
-        // Re-apply bounds to bring this tab to front
         this.setActiveTab(tabId);
+        this.notifyRenderer('browser:tab:activated', tabId);
       }
     });
+
+  /** Activate a tab by matching its webContents ID */
+  activateByWebContentsId(webContentsId: number): boolean {
+    for (const [tabId, tab] of this.tabs) {
+      if (tab.view.webContents.id === webContentsId) {
+        if (this.activeTabId !== tabId) {
+          this.setActiveTab(tabId);
+          this.notifyRenderer('browser:tab:activated', tabId);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Find webContents ID by CDP targetId (hex string from /json/list) */
+  findWebContentsIdByUrl(url: string): number | null {
+    for (const tab of this.tabs.values()) {
+      if (tab.view.webContents.getURL() === url) {
+        return tab.view.webContents.id;
+      }
+    }
+    return null;
+  }
 
     // Inject anti-detection
     view.webContents.on('dom-ready', () => {

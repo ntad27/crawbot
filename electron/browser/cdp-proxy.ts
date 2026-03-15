@@ -12,6 +12,7 @@ import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { BrowserWindow, session } from 'electron';
 import { browserManager } from './manager';
+import { automationViews } from './automation-views';
 import { logger } from '../utils/logger';
 
 const LOG_TAG = '[CDP-Proxy]';
@@ -210,6 +211,13 @@ export class CdpFilterProxy {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
+          // Intercept Target.activateTarget to sync tab switch in CrawBot UI
+          if (msg.method === 'Target.activateTarget' && msg.params?.targetId) {
+            logger.info(`${LOG_TAG} Intercepted Target.activateTarget: ${msg.params.targetId}`);
+            // Find the WebContentsView with matching URL from CDP target list
+            this.activateTabByTargetId(msg.params.targetId, realCdpPort);
+          }
+
           if (msg.method === 'Target.createTarget') {
             // Electron doesn't support Target.createTarget
             // Create a BrowserWindow instead and return its target info
@@ -383,6 +391,24 @@ export class CdpFilterProxy {
     } catch (err) {
       logger.error(`${LOG_TAG} createCdpPage failed:`, err);
       return null;
+    }
+  }
+
+  /** Activate the CrawBot browser tab matching a CDP targetId */
+  private async activateTabByTargetId(targetId: string, realCdpPort: number): Promise<void> {
+    try {
+      // Get target info from real CDP
+      const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
+      const target = targets.find((t: { id: string }) => t.id === targetId);
+      if (target?.url) {
+        const wcId = automationViews.findWebContentsIdByUrl(target.url);
+        if (wcId != null) {
+          automationViews.activateByWebContentsId(wcId);
+        }
+      }
+    } catch {
+      // ignore
     }
   }
 
