@@ -616,28 +616,28 @@ export class CdpFilterProxy {
       await wc.executeJavaScript('document.body.offsetHeight').catch(() => {});
 
       // Convert CDP params to Electron's printToPDF options
+      // Always use standard page size (A4/Letter) — WebContentsView bounds
+      // may be tiny/hidden which causes "dimensions out-of-range" errors
       const p = msg.params || {};
       const pdfOptions: Electron.PrintToPDFOptions = {
         printBackground: (p.printBackground as boolean) ?? true,
-        preferCSSPageSize: true,
+        pageSize: 'A4',
       };
       if (p.landscape) pdfOptions.landscape = true;
       if (p.scale) pdfOptions.scale = p.scale as number;
-      if (p.paperWidth || p.paperHeight) {
+      if (p.paperWidth && p.paperHeight) {
+        // CDP uses inches — convert to Electron pageSize (microns: 1 inch = 25400)
         pdfOptions.pageSize = {
-          width: ((p.paperWidth as number) || 8.5) * 25400,
-          height: ((p.paperHeight as number) || 11) * 25400,
+          width: Math.round(((p.paperWidth as number) || 8.27) * 25400),
+          height: Math.round(((p.paperHeight as number) || 11.69) * 25400),
         };
       }
-      if (p.marginTop !== undefined || p.marginBottom !== undefined ||
-          p.marginLeft !== undefined || p.marginRight !== undefined) {
-        pdfOptions.margins = {
-          top: ((p.marginTop as number) || 0) * 96,
-          bottom: ((p.marginBottom as number) || 0) * 96,
-          left: ((p.marginLeft as number) || 0) * 96,
-          right: ((p.marginRight as number) || 0) * 96,
-        };
-      }
+      pdfOptions.margins = {
+        top: ((p.marginTop as number) || 0.4) * 96,
+        bottom: ((p.marginBottom as number) || 0.4) * 96,
+        left: ((p.marginLeft as number) || 0.4) * 96,
+        right: ((p.marginRight as number) || 0.4) * 96,
+      };
 
       const pdfBuffer = await wc.printToPDF(pdfOptions);
       const base64Data = pdfBuffer.toString('base64');
