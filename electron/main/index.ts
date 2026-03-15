@@ -299,22 +299,14 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
-  // Start CDP proxy (9333→9222) FIRST, then configure OpenClaw to use it.
-  // Proxy intercepts Target.activateTarget for tab switching in CrawBot UI.
+  // Direct CDP on port 9222 — no proxy needed.
+  // WebContentsView tabs are type: "page" natively.
   try {
-    const { startCdpProxy } = await import('../browser/cdp-proxy');
-    await startCdpProxy(9333, 9222);
     const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-    setOpenClawBrowserConfig(9333);
-    logger.info('CDP proxy on 9333, browser config set');
+    setOpenClawBrowserConfig(9222);
+    logger.info('Browser config set: direct CDP on port 9222');
   } catch (err) {
-    // Fallback: direct CDP if proxy fails
-    try {
-      const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-      setOpenClawBrowserConfig(9222);
-      logger.info('Fallback: direct CDP on 9222');
-    } catch { /* */ }
-    logger.warn('CDP proxy failed, using direct:', err);
+    logger.warn('Browser config failed:', err);
   }
 
   // Start Gateway automatically

@@ -47,10 +47,10 @@ function writeConfig(config: Record<string, unknown>): void {
 export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
   const config = readConfig();
 
-  // Use CDP proxy to intercept Target.activateTarget for tab switching.
-  // WebContentsView tabs natively appear as type: "page" — no type rewriting needed.
-  // Proxy on port 9333 relays to real CDP 9222 with tab activation interception.
-  const cdpPort = 9333;
+  // Direct CDP connection to Electron (port 9222). No proxy needed.
+  // WebContentsView tabs natively appear as type: "page".
+  // Tab focus sync handled via webContents events in main process.
+  const cdpPort = 9222;
 
   config.browser = {
     enabled: true,

@@ -142,7 +142,17 @@ class AutomationViewManager {
 
     // When this tab's webContents gets focus (e.g., from CDP/Playwright bringToFront),
     // sync the active tab to renderer
+    // Detect when Playwright brings this tab to front
+    // webContents 'focus' fires on Page.bringToFront CDP command
     view.webContents.on('focus', () => {
+      if (this.activeTabId !== tabId) {
+        this.setActiveTab(tabId);
+        this.notifyRenderer('browser:tab:activated', tabId);
+      }
+    });
+
+    // Also detect via did-start-navigation (agent navigated this tab)
+    view.webContents.on('did-start-navigation', () => {
       if (this.activeTabId !== tabId) {
         this.setActiveTab(tabId);
         this.notifyRenderer('browser:tab:activated', tabId);
