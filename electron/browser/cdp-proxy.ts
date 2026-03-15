@@ -214,9 +214,6 @@ export class CdpFilterProxy {
 
     const realWs = new WebSocket(realWsUrl);
 
-    // Track Page.printToPDF requests to intercept error responses
-    const pendingPdfRequests = new Map<number, { params: Record<string, unknown>; targetPath: string }>();
-
     // Buffer messages from client until real WS is open
     const pendingMessages: { data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }[] = [];
     let realWsReady = false;
@@ -284,13 +281,11 @@ export class CdpFilterProxy {
             return; // Don't forward to real CDP
           }
 
-          // Page.printToPDF: track the request ID so we can intercept
-          // the error response from real CDP and replace it with
-          // Electron's webContents.printToPDF() result
-          if (msg.method === 'Page.printToPDF') {
-            pendingPdfRequests.set(msg.id, { params: msg.params || {}, targetPath });
-            // Forward to real CDP (don't intercept — Playwright tracks state)
-          }
+          // Page.printToPDF: DO NOT intercept. Let CDP handle it.
+          // Intercepting causes Playwright CRSession assertion errors because
+          // Playwright uses flattened sessions (browser-level WS with sessionId)
+          // and our response on page-level WS doesn't match the session tracking.
+          // If CDP returns error (headed mode), agent handles gracefully.
         } catch {
           // Not JSON, forward as-is
         }
@@ -311,19 +306,6 @@ export class CdpFilterProxy {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
-
-          // Intercept Page.printToPDF error response — replace with Electron API result
-          if (msg.error && pendingPdfRequests.has(msg.id)) {
-            const pdfReq = pendingPdfRequests.get(msg.id)!;
-            pendingPdfRequests.delete(msg.id);
-            logger.info(`${LOG_TAG} Page.printToPDF failed in CDP, retrying via Electron API`);
-            this.handlePrintToPdf({ id: msg.id, params: pdfReq.params }, clientWs, pdfReq.targetPath);
-            return; // Don't forward the error
-          }
-          // Clean up successful PDF responses
-          if (msg.result && pendingPdfRequests.has(msg.id)) {
-            pendingPdfRequests.delete(msg.id);
-          }
 
           // Filter Target.getTargets response — hide main app window
           if (msg.result?.targetInfos) {

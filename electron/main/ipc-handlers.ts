@@ -3786,6 +3786,31 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
     return { success: true, detached: false };
   });
 
+  // ── PDF export (Electron API — works in headed mode unlike CDP) ──
+
+  ipcMain.handle('browser:printToPDF', async (_, tabId?: string) => {
+    try {
+      let wc: Electron.WebContents | undefined;
+      if (tabId) {
+        const tab = automationViews.getTab(tabId);
+        if (tab) wc = tab.view.webContents;
+      }
+      if (!wc) {
+        const activeId = automationViews.getActiveTabId();
+        if (activeId) {
+          const tab = automationViews.getTab(activeId);
+          if (tab) wc = tab.view.webContents;
+        }
+      }
+      if (!wc) return { success: false, error: 'No active tab for PDF' };
+
+      const buffer = await wc.printToPDF({ printBackground: true });
+      return { success: true, data: buffer.toString('base64'), size: buffer.length };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
   // ── Cookie management ──
 
   ipcMain.handle('browser:cookies:get', async (_, partition: string, url: string) => {

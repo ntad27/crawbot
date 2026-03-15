@@ -251,6 +251,7 @@ const electronAPI = {
         'browser:panel:attach',
         'browser:panel:isDetached',
         'browser:panel:setBounds',
+        'browser:printToPDF',
 
         // WebAuth
         'webauth:provider:add',
