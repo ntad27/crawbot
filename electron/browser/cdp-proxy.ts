@@ -590,32 +590,27 @@ export class CdpFilterProxy {
 
       logger.info(`${LOG_TAG} printToPDF: wc=${wc.id} url=${wc.getURL().substring(0, 50)} params=${JSON.stringify(msg.params).substring(0, 200)}`);
 
-      // CRITICAL: Force WebContentsView to full visible size before printing.
-      // Electron printToPDF renders based on view's ACTUAL rendered content.
-      // If view is hidden/offscreen/tiny, PDF will be blank.
-      const tab = automationViews.getAllTabs().find(t => t.view.webContents === wc);
-      const view = tab?.view;
-      const savedBounds = view?.getBounds() || { x: 0, y: 0, width: 0, height: 0 };
+      // Use a hidden offscreen BrowserWindow to render PDF
+      // (avoids flashing the WebContentsView to full screen)
+      const pdfUrl = wc.getURL();
+      const pdfTitle = wc.getTitle();
+      logger.info(\`\${LOG_TAG} Creating hidden window for PDF: \${pdfUrl.substring(0, 50)}\`);
 
-      const parentWindow = BrowserWindow.getAllWindows()[0];
-      if (view && parentWindow) {
-        // Force view to full visible area
-        view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
-        view.setVisible(true);
-        // Ensure it's on top (re-add to parent)
-        try { parentWindow.contentView.removeChildView(view); } catch { /* */ }
-        parentWindow.contentView.addChildView(view);
-      }
+      const hiddenWin = new BrowserWindow({
+        width: 1280,
+        height: 900,
+        show: false, // HIDDEN — user never sees it
+        webPreferences: {
+          offscreen: true,
+          nodeIntegration: false,
+          contextIsolation: true,
+        },
+      });
 
-      // Reset zoom to 100%
-      const originalZoom = wc.getZoomFactor();
-      wc.setZoomFactor(1.0);
-
-      // Wait for full re-render at correct size
-      await new Promise(r => setTimeout(r, 2000));
-      // Force layout + paint
-      await wc.executeJavaScript('void(document.body.offsetHeight)').catch(() => {});
-      await new Promise(r => setTimeout(r, 500));
+      // Load same URL and wait for it to finish
+      await hiddenWin.loadURL(pdfUrl);
+      // Wait for rendering to complete
+      await new Promise(r => setTimeout(r, 1500));
 
       // Use fixed A4 page size and standard margins
       // Ignore CDP paperWidth/paperHeight — they cause dimension issues
@@ -633,15 +628,10 @@ export class CdpFilterProxy {
         },
       };
 
-      const pdfBuffer = await wc.printToPDF(pdfOptions);
+      const pdfBuffer = await hiddenWin.webContents.printToPDF(pdfOptions);
 
-      // Restore original view bounds/zoom after printing
-      if (view) {
-        wc.setZoomFactor(originalZoom);
-        if (savedBounds.width > 0) {
-          view.setBounds(savedBounds);
-        }
-      }
+      // Destroy hidden window
+      hiddenWin.destroy();
 
       const base64Data = pdfBuffer.toString('base64');
 
