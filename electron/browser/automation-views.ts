@@ -82,7 +82,20 @@ class AutomationViewManager {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        zoomFactor: 0.6, // Default zoom for panel display
       },
+    });
+
+    // Set device emulation so websites see a desktop-sized viewport
+    // even when the panel is narrow. This prevents mobile responsive layouts
+    // and ensures screenshots are desktop-quality.
+    view.webContents.enableDeviceEmulation({
+      screenPosition: 'desktop',
+      screenSize: { width: 1920, height: 1080 },
+      viewSize: { width: 1920, height: 1080 },
+      viewPosition: { x: 0, y: 0 },
+      deviceScaleFactor: 1,
+      scale: 1,
     });
 
     const tab: AutomationTab = { id: tabId, view, url, title: 'New Tab', partition };
