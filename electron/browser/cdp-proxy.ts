@@ -590,27 +590,28 @@ export class CdpFilterProxy {
 
       logger.info(`${LOG_TAG} printToPDF: wc=${wc.id} url=${wc.getURL().substring(0, 50)} params=${JSON.stringify(msg.params).substring(0, 200)}`);
 
-      // Use a hidden offscreen BrowserWindow to render PDF
-      // (avoids flashing the WebContentsView to full screen)
-      const pdfUrl = wc.getURL();
-      const pdfTitle = wc.getTitle();
-      logger.info(\`\${LOG_TAG} Creating hidden window for PDF: \${pdfUrl.substring(0, 50)}\`);
+      // Temporarily expand view to full size for PDF rendering,
+      // but position it OFFSCREEN so user doesn't see the flash.
+      // We keep the SAME webContents (preserving page state/forms/scroll).
+      const tab = automationViews.getAllTabs().find(t => t.view.webContents === wc);
+      const view = tab?.view;
+      const savedBounds = view?.getBounds() || { x: 0, y: 0, width: 0, height: 0 };
+      const savedVisible = true;
 
-      const hiddenWin = new BrowserWindow({
-        width: 1280,
-        height: 900,
-        show: false, // HIDDEN — user never sees it
-        webPreferences: {
-          offscreen: true,
-          nodeIntegration: false,
-          contextIsolation: true,
-        },
-      });
+      if (view) {
+        // Move offscreen but with real dimensions (Electron still renders)
+        view.setBounds({ x: -2000, y: -2000, width: 1280, height: 900 });
+        view.setVisible(true);
+      }
 
-      // Load same URL and wait for it to finish
-      await hiddenWin.loadURL(pdfUrl);
-      // Wait for rendering to complete
-      await new Promise(r => setTimeout(r, 1500));
+      // Reset zoom to 100%
+      const originalZoom = wc.getZoomFactor();
+      wc.setZoomFactor(1.0);
+
+      // Wait for re-render at new size
+      await new Promise(r => setTimeout(r, 2000));
+      await wc.executeJavaScript('void(document.body.offsetHeight)').catch(() => {});
+      await new Promise(r => setTimeout(r, 500));
 
       // Use fixed A4 page size and standard margins
       // Ignore CDP paperWidth/paperHeight — they cause dimension issues
@@ -628,10 +629,15 @@ export class CdpFilterProxy {
         },
       };
 
-      const pdfBuffer = await hiddenWin.webContents.printToPDF(pdfOptions);
+      const pdfBuffer = await wc.printToPDF(pdfOptions);
 
-      // Destroy hidden window
-      hiddenWin.destroy();
+      // Restore original bounds and zoom
+      if (view) {
+        wc.setZoomFactor(originalZoom);
+        if (savedBounds.width > 0) {
+          view.setBounds(savedBounds);
+        }
+      }
 
       const base64Data = pdfBuffer.toString('base64');
 
