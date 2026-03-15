@@ -61,7 +61,7 @@ describe('browser-config', () => {
       expect(config.browser).toBeDefined();
       expect(config.browser.attachOnly).toBe(true);
       expect(config.browser.defaultProfile).toBe('crawbot');
-      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9222');
+      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9333');
 
       // Existing config preserved
       expect(config.agents.defaults.model.primary).toBe('anthropic/claude-3');
@@ -76,11 +76,11 @@ describe('browser-config', () => {
       expect(config.browser.enabled).toBe(true);
     });
 
-    it('sets correct cdpUrl with direct CDP port 9222', () => {
-      setOpenClawBrowserConfig(9222);
+    it('sets correct cdpUrl with CDP proxy port 9333', () => {
+      setOpenClawBrowserConfig(9333);
 
       const config = JSON.parse(mockFs[CONFIG_PATH]);
-      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9222');
+      expect(config.browser.profiles.crawbot.cdpUrl).toBe('http://127.0.0.1:9333');
     });
 
     it('overwrites existing browser config', () => {

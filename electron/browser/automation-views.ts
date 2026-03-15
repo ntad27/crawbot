@@ -149,30 +149,6 @@ class AutomationViewManager {
       }
     });
 
-  /** Activate a tab by matching its webContents ID */
-  activateByWebContentsId(webContentsId: number): boolean {
-    for (const [tabId, tab] of this.tabs) {
-      if (tab.view.webContents.id === webContentsId) {
-        if (this.activeTabId !== tabId) {
-          this.setActiveTab(tabId);
-          this.notifyRenderer('browser:tab:activated', tabId);
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Find webContents ID by CDP targetId (hex string from /json/list) */
-  findWebContentsIdByUrl(url: string): number | null {
-    for (const tab of this.tabs.values()) {
-      if (tab.view.webContents.getURL() === url) {
-        return tab.view.webContents.id;
-      }
-    }
-    return null;
-  }
-
     // Inject anti-detection
     view.webContents.on('dom-ready', () => {
       view.webContents.executeJavaScript(`
@@ -290,6 +266,30 @@ class AutomationViewManager {
         tab.view.setBounds(this.panelBounds);
       }
     }
+  }
+
+  /** Activate a tab by matching its webContents ID */
+  activateByWebContentsId(webContentsId: number): boolean {
+    for (const [tabId, tab] of this.tabs) {
+      if (tab.view.webContents.id === webContentsId) {
+        if (this.activeTabId !== tabId) {
+          this.setActiveTab(tabId);
+          this.notifyRenderer('browser:tab:activated', tabId);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Find webContents ID by URL */
+  findWebContentsIdByUrl(url: string): number | null {
+    for (const tab of this.tabs.values()) {
+      if (tab.view.webContents.getURL() === url) {
+        return tab.view.webContents.id;
+      }
+    }
+    return null;
   }
 
   dispose(): void {

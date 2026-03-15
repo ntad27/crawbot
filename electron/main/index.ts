@@ -299,18 +299,22 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
-  // Configure OpenClaw to use Electron's real CDP directly (port 9222)
-  // WebContentsView tabs appear as type: "page" natively — no proxy needed
+  // Start CDP proxy (9333→9222) FIRST, then configure OpenClaw to use it.
+  // Proxy intercepts Target.activateTarget for tab switching in CrawBot UI.
   try {
-    const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-    setOpenClawBrowserConfig(9222);
-    logger.info('Browser config set: direct CDP on port 9222');
-
-    // Start CDP filter proxy on 9333 for future filtered access
     const { startCdpProxy } = await import('../browser/cdp-proxy');
-    startCdpProxy(9333, 9222).catch(() => {});
+    await startCdpProxy(9333, 9222);
+    const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+    setOpenClawBrowserConfig(9333);
+    logger.info('CDP proxy on 9333, browser config set');
   } catch (err) {
-    logger.warn('Browser config failed:', err);
+    // Fallback: direct CDP if proxy fails
+    try {
+      const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+      setOpenClawBrowserConfig(9222);
+      logger.info('Fallback: direct CDP on 9222');
+    } catch { /* */ }
+    logger.warn('CDP proxy failed, using direct:', err);
   }
 
   // Start Gateway automatically
