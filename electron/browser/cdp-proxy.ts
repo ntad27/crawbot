@@ -214,6 +214,9 @@ export class CdpFilterProxy {
 
     const realWs = new WebSocket(realWsUrl);
 
+    // Track printToPDF requests to intercept error responses
+    const pendingPdfRequests = new Map<number, { params: Record<string, unknown>; sessionId?: string; targetPath: string }>();
+
     // Buffer messages from client until real WS is open
     const pendingMessages: { data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }[] = [];
     let realWsReady = false;
@@ -281,11 +284,21 @@ export class CdpFilterProxy {
             return; // Don't forward to real CDP
           }
 
-          // Page.printToPDF: DO NOT intercept. Let CDP handle it.
-          // Intercepting causes Playwright CRSession assertion errors because
-          // Playwright uses flattened sessions (browser-level WS with sessionId)
-          // and our response on page-level WS doesn't match the session tracking.
-          // If CDP returns error (headed mode), agent handles gracefully.
+          // Track Page.printToPDF requests by id+sessionId so we can
+          // intercept the ERROR response from real CDP and replace with
+          // Electron's webContents.printToPDF() result (which works in headed mode).
+          // IMPORTANT: we forward the request to real CDP (so Playwright's
+          // internal state tracking stays consistent), then intercept the
+          // error response and replace it with our success response.
+          if (msg.method === 'Page.printToPDF') {
+            logger.info(`${LOG_TAG} Tracking Page.printToPDF id=${msg.id} sessionId=${msg.sessionId || 'none'}`);
+            pendingPdfRequests.set(msg.id, {
+              params: msg.params || {},
+              sessionId: msg.sessionId,
+              targetPath,
+            });
+            // Forward to real CDP — don't intercept the request
+          }
         } catch {
           // Not JSON, forward as-is
         }
@@ -306,6 +319,30 @@ export class CdpFilterProxy {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString());
+
+          // Intercept Page.printToPDF ERROR response — replace with Electron API result
+          if (msg.id && msg.error && pendingPdfRequests.has(msg.id)) {
+            const pdfReq = pendingPdfRequests.get(msg.id)!;
+            pendingPdfRequests.delete(msg.id);
+            logger.info(`${LOG_TAG} printToPDF CDP error intercepted, using Electron API`);
+
+            // Use Electron's printToPDF which works in headed mode
+            this.handlePrintToPdf(
+              { id: msg.id, params: pdfReq.params },
+              clientWs,
+              pdfReq.targetPath,
+              pdfReq.sessionId // Pass sessionId for correct Playwright session
+            ).catch((err) => {
+              logger.error(`${LOG_TAG} Electron printToPDF also failed:`, err);
+              // Forward original CDP error if our fallback also fails
+              clientWs.send(data, { binary: isBinary });
+            });
+            return; // Don't forward the CDP error
+          }
+          // Clean up successful PDF responses (CDP somehow worked)
+          if (msg.id && msg.result && pendingPdfRequests.has(msg.id)) {
+            pendingPdfRequests.delete(msg.id);
+          }
 
           // Filter Target.getTargets response — hide main app window
           if (msg.result?.targetInfos) {
@@ -502,7 +539,8 @@ export class CdpFilterProxy {
   private async handlePrintToPdf(
     msg: { id: number; params?: Record<string, unknown> },
     clientWs: WebSocket,
-    targetPath: string
+    targetPath: string,
+    sessionId?: string
   ): Promise<void> {
     try {
       // Find webContents by matching CDP targetId to real CDP /json/list
@@ -574,20 +612,27 @@ export class CdpFilterProxy {
       const pdfBuffer = await wc.printToPDF(pdfOptions);
       const base64Data = pdfBuffer.toString('base64');
 
+      const response: Record<string, unknown> = {
+        id: msg.id,
+        result: { data: base64Data },
+      };
+      // Include sessionId if present (flattened CDP session from Playwright)
+      if (sessionId) response.sessionId = sessionId;
+
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify({
-          id: msg.id,
-          result: { data: base64Data },
-        }));
+        clientWs.send(JSON.stringify(response));
       }
-      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB`);
+      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB sessionId=${sessionId || 'none'}`);
     } catch (err) {
       logger.error(`${LOG_TAG} printToPDF failed:`, err);
+      const errResponse: Record<string, unknown> = {
+        id: msg.id,
+        error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
+      };
+      if (sessionId) errResponse.sessionId = sessionId;
+
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify({
-          id: msg.id,
-          error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
-        }));
+        clientWs.send(JSON.stringify(errResponse));
       }
     }
   }
