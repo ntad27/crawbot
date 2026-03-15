@@ -170,8 +170,18 @@ export class CdpFilterProxy {
         // Mark active tab by matching URL to active automation tab
         if (activeTabId) {
           const activeTab = automationViews.getTab(activeTabId);
-          if (activeTab && result.url === activeTab.view.webContents.getURL()) {
-            result.title = `[Active] ${result.title || ''}`;
+          if (activeTab) {
+            try {
+              const activeUrl = activeTab.view.webContents.getURL();
+              if (result.url === activeUrl) {
+                result.title = `[Active] ${result.title || ''}`;
+              }
+            } catch {
+              // webContents may be destroyed — clean up stale tab
+              logger.warn(`${LOG_TAG} Active tab ${activeTabId} has destroyed webContents, cleaning up`);
+              automationViews.closeTab(activeTabId);
+              browserManager.closeTab(activeTabId);
+            }
           }
         }
         return result;
@@ -201,6 +211,37 @@ export class CdpFilterProxy {
       const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/protocol');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(realRes);
+    } else if (normalizedUrl.startsWith('/json/close/')) {
+      // Close a CDP target and clean up CrawBot internal state
+      const targetId = normalizedUrl.split('/json/close/')[1];
+      logger.info(`${LOG_TAG} Closing target: ${targetId}`);
+
+      // Find and clean up the matching automation tab before forwarding
+      if (targetId) {
+        const matchingTab = automationViews.getAllTabs().find((tab) => {
+          try {
+            return String(tab.view.webContents.id) === targetId;
+          } catch {
+            return false;
+          }
+        });
+        if (matchingTab) {
+          logger.info(`${LOG_TAG} Cleaning up automation tab ${matchingTab.id} for target ${targetId}`);
+          automationViews.closeTab(matchingTab.id);
+          browserManager.closeTab(matchingTab.id);
+        }
+      }
+
+      // Forward the close request to real CDP
+      try {
+        const realRes = await this.fetchFromRealCdp(realCdpPort, url);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(realRes);
+      } catch {
+        // Target may already be gone — still return success
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'string', value: 'Target is closing' }));
+      }
     } else {
       // Pass-through unknown endpoints
       try {
@@ -572,7 +613,12 @@ export class CdpFilterProxy {
           // Filter Target.getTargets response — hide internal targets + mark active tab
           if (msg.result?.targetInfos) {
             const activeId = automationViews.getActiveTabId();
-            const activeUrl = activeId ? automationViews.getTab(activeId)?.view.webContents.getURL() : null;
+            let activeUrl: string | null = null;
+            if (activeId) {
+              try {
+                activeUrl = automationViews.getTab(activeId)?.view.webContents.getURL() ?? null;
+              } catch { /* webContents may be destroyed */ }
+            }
 
             msg.result.targetInfos = msg.result.targetInfos
               .filter((t: { url?: string }) => !this.isInternalTarget(t.url))

@@ -202,6 +202,25 @@ class AutomationViewManager {
       `).catch(() => {});
     });
 
+    // Auto-cleanup when webContents is destroyed externally (e.g., via CDP /json/close)
+    view.webContents.on('destroyed', () => {
+      if (this.tabs.has(tabId)) {
+        logger.info(`${LOG_TAG} webContents destroyed externally for tab ${tabId}, cleaning up`);
+        this.tabs.delete(tabId);
+        if (this.activeTabId === tabId) {
+          this.activeTabId = null;
+          const remaining = [...this.tabs.keys()];
+          if (remaining.length > 0) {
+            this.setActiveTab(remaining[remaining.length - 1]);
+          }
+        }
+        if (this.mainWindow) {
+          try { this.mainWindow.contentView.removeChildView(view); } catch { /* already removed */ }
+        }
+        this.notifyRenderer('browser:tab:closed', tabId);
+      }
+    });
+
     // Navigate
     if (url && url !== 'about:blank') {
       view.webContents.loadURL(url).catch((err) => {
@@ -222,11 +241,15 @@ class AutomationViewManager {
     if (!tab) return;
 
     if (this.mainWindow) {
-      this.mainWindow.contentView.removeChildView(tab.view);
+      try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* already removed */ }
     }
 
-    // Destroy the webContents
-    (tab.view.webContents as { destroy?: () => void })?.destroy?.();
+    // Destroy the webContents (may already be destroyed if closed via CDP)
+    try {
+      if (!tab.view.webContents.isDestroyed()) {
+        (tab.view.webContents as { destroy?: () => void })?.destroy?.();
+      }
+    } catch { /* already destroyed */ }
     this.tabs.delete(tabId);
 
     if (this.activeTabId === tabId) {

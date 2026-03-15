@@ -294,4 +294,16 @@ if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
       }
     }
   });
+
+  // When main process closes a tab (e.g., via CDP /json/close or webContents destroyed)
+  window.electron.ipcRenderer.on('browser:tab:closed', (tabId: unknown) => {
+    if (typeof tabId === 'string') {
+      const { tabs, activeTabId } = useBrowserStore.getState();
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      const newActiveId = activeTabId === tabId
+        ? (newTabs.length > 0 ? newTabs[newTabs.length - 1].id : null)
+        : activeTabId;
+      useBrowserStore.setState({ tabs: newTabs, activeTabId: newActiveId });
+    }
+  });
 }
