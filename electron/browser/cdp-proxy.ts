@@ -321,9 +321,19 @@ export class CdpFilterProxy {
             return;
           }
 
-          // Page.captureScreenshot: forward as-is to real CDP.
-          // Screenshot captures current viewport (panel width + zoom level).
-          // Agent can use browser act:resize for desktop-size screenshots.
+          // Fix Page.captureScreenshot: OpenClaw hardcodes captureBeyondViewport=true
+          // which captures the entire page content instead of just the viewport.
+          // Override to false when no clip is specified (viewport-only screenshot).
+          if (msg.method === 'Page.captureScreenshot' && msg.params) {
+            if (!msg.params.clip && msg.params.captureBeyondViewport) {
+              msg.params.captureBeyondViewport = false;
+              const modified = JSON.stringify(msg);
+              if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                realWs.send(modified, { binary: false });
+              }
+              return; // Don't forward original
+            }
+          }
 
           // Intercept Page.printToPDF — DO NOT forward to real CDP.
           // Electron headed mode doesn't support CDP printToPDF, but
