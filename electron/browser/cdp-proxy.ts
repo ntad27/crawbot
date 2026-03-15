@@ -618,6 +618,14 @@ export class CdpFilterProxy {
 
       logger.info(`${LOG_TAG} printToPDF: using webContents id=${wc.id} url=${wc.getURL().substring(0, 50)}`);
 
+      // Reset zoom to 100% for proper PDF rendering (tabs default to 60%)
+      const originalZoom = wc.getZoomFactor();
+      if (originalZoom !== 1.0) {
+        wc.setZoomFactor(1.0);
+        // Wait for re-render at new zoom
+        await new Promise(r => setTimeout(r, 500));
+      }
+
       // Convert CDP params to Electron's printToPDF options
       const p = msg.params || {};
       const pdfOptions: Electron.PrintToPDFOptions = {
@@ -658,6 +666,11 @@ export class CdpFilterProxy {
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify(response));
       }
+      // Restore original zoom
+      if (originalZoom !== 1.0) {
+        wc.setZoomFactor(originalZoom);
+      }
+
       logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB stream=${streamHandle}`);
     } catch (err) {
       logger.error(`${LOG_TAG} printToPDF failed:`, err);
