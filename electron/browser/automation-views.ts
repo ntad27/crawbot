@@ -142,8 +142,7 @@ class AutomationViewManager {
 
     // When this tab's webContents gets focus (e.g., from CDP/Playwright bringToFront),
     // sync the active tab to renderer
-    // Detect when Playwright brings this tab to front
-    // webContents 'focus' fires on Page.bringToFront CDP command
+    // Detect when Playwright interacts with this tab
     view.webContents.on('focus', () => {
       if (this.activeTabId !== tabId) {
         this.setActiveTab(tabId);
@@ -151,12 +150,35 @@ class AutomationViewManager {
       }
     });
 
-    // Also detect via did-start-navigation (agent navigated this tab)
     view.webContents.on('did-start-navigation', () => {
       if (this.activeTabId !== tabId) {
         this.setActiveTab(tabId);
         this.notifyRenderer('browser:tab:activated', tabId);
       }
+    });
+
+    // Use CDP session to detect Page.bringToFront from Playwright.
+    // Electron allows us to use the debugger protocol API in "send only" mode
+    // while Playwright holds the session — we listen for protocol events.
+    // Alternative: inject JS that detects visibility change.
+    view.webContents.on('dom-ready', () => {
+      // Inject visibility change detector
+      view.webContents.executeJavaScript(`
+        if (!window.__crawbotFocusDetector) {
+          window.__crawbotFocusDetector = true;
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              // Page became visible — possibly from bringToFront
+              // We can't directly signal main process from here without preload,
+              // but the focus event on webContents should fire.
+            }
+          });
+          // More reliable: listen for window focus
+          window.addEventListener('focus', () => {
+            // This fires when Playwright calls Page.bringToFront
+          });
+        }
+      `).catch(() => {});
     });
 
     // Inject anti-detection
@@ -261,6 +283,15 @@ class AutomationViewManager {
 
   getAllTabs(): AutomationTab[] {
     return [...this.tabs.values()];
+  }
+
+  getActiveTabId(): string | null {
+    return this.activeTabId;
+  }
+
+  /** Public wrapper for focus monitor to notify renderer */
+  notifyRendererPublic(channel: string, ...args: unknown[]): void {
+    this.notifyRenderer(channel, ...args);
   }
 
   /** Notify renderer of tab state changes */

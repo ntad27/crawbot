@@ -305,6 +305,10 @@ async function initialize(): Promise<void> {
     const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
     setOpenClawBrowserConfig(9222);
     logger.info('Browser config set: direct CDP on port 9222');
+
+    // Start CDP focus monitor to sync tab switches from Playwright/agent
+    const { startCdpFocusMonitor } = await import('../browser/cdp-focus-monitor');
+    startCdpFocusMonitor(9222).catch(() => {});
   } catch (err) {
     logger.warn('Browser config failed:', err);
   }
