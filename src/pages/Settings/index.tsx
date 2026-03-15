@@ -71,6 +71,8 @@ export function Settings() {
     setToolsAutoApprove,
     sessionDmScope,
     setSessionDmScope,
+    screenshotMaxSide,
+    setScreenshotMaxSide,
     syncFromMain,
   } = useSettingsStore();
 
@@ -748,6 +750,29 @@ export function Settings() {
             <p className="text-xs text-muted-foreground/70">
               {t(`openclaw.dmScopeHints.${sessionDmScope}`)}
             </p>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex-1 mr-4">
+                <Label>Screenshot Max Resolution</Label>
+                <p className="text-sm text-muted-foreground">
+                  Maximum width/height in pixels for browser screenshots. Higher values produce sharper images but larger files. Requires gateway restart.
+                </p>
+              </div>
+              <Select
+                className="w-[140px]"
+                value={String(screenshotMaxSide)}
+                onChange={(e) => setScreenshotMaxSide(parseInt(e.target.value, 10))}
+              >
+                <option value="2000">2000px</option>
+                <option value="4000">4000px</option>
+                <option value="8000">8000px</option>
+                <option value="16000">16000px</option>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>

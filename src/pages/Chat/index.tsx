@@ -87,6 +87,16 @@ export function Chat() {
     }
   }, [sending, streamingTimestamp]);
 
+  // Hide the native WebContentsView when navigating away from Chat page.
+  // Must be before any early returns to satisfy React hooks rules.
+  useEffect(() => {
+    return () => {
+      window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
+        x: -9999, y: 0, width: 0, height: 0,
+      });
+    };
+  }, []);
+
   // Gateway not running
   if (!isGatewayRunning) {
     return (

@@ -330,49 +330,41 @@ export class CdpFilterProxy {
           // CDP captures the full content area defined by clip.
           if (msg.method === 'Page.captureScreenshot' && msg.params) {
             if (!msg.params.clip) {
-              // Viewport-only: crop to visible area using zoom correction.
-              // Same approach as full-page: multiply CSS dimensions by zoom
-              // factor to compensate for viewport inflation at zoom < 1.
+              // Viewport-only: use Electron's capturePage() instead of CDP.
+              // After a full-page screenshot, setDeviceMetricsOverride persists
+              // and inflates the CSS viewport. CDP screenshot captures the
+              // inflated viewport. capturePage() captures the actual visible
+              // pixels in the WebContentsView, bypassing CDP viewport state.
               const activeTabId2 = automationViews.getActiveTabId();
               const activeTab2 = activeTabId2 ? automationViews.getTab(activeTabId2) : null;
               if (activeTab2) {
                 const wc2 = activeTab2.view.webContents;
-                const viewportData = data;
-                const viewportMsg = msg;
                 (async () => {
                   try {
-                    const zoom = wc2.getZoomFactor() || 1;
-                    const zoomCorrection = zoom < 1 ? zoom : 1;
-                    const dims = await wc2.executeJavaScript(
-                      '({ w: document.documentElement.clientWidth || window.innerWidth, h: window.innerHeight })'
-                    );
-                    viewportMsg.params.captureBeyondViewport = false;
-                    if (dims && dims.w > 0) {
-                      viewportMsg.params.clip = {
-                        x: 0,
-                        y: 0,
-                        width: Math.round(dims.w * zoomCorrection),
-                        height: Math.round(dims.h * zoomCorrection),
-                        scale: 2,
-                      };
-                      logger.info(`${LOG_TAG} Viewport screenshot: clip ${viewportMsg.params.clip.width}x${viewportMsg.params.clip.height} (css=${dims.w}x${dims.h}, zoom=${zoom})`);
+                    const image = await wc2.capturePage();
+                    const pngBase64 = image.toPNG().toString('base64');
+                    // Send CDP response directly to client (bypass realWs)
+                    const response: Record<string, unknown> = {
+                      id: msg.id,
+                      result: { data: pngBase64 },
+                    };
+                    if (msg.sessionId) response.sessionId = msg.sessionId;
+                    if (clientWs.readyState === WebSocket.OPEN) {
+                      clientWs.send(JSON.stringify(response), { binary: false });
                     }
-                    const modData = JSON.stringify(viewportMsg);
-                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
-                      realWs.send(modData, { binary: false });
-                    } else {
-                      pendingMessages.push({ data: Buffer.from(modData), isBinary: false });
-                    }
+                    logger.info(`${LOG_TAG} Viewport screenshot via capturePage: ${image.getSize().width}x${image.getSize().height}`);
                   } catch (err) {
-                    logger.error(`${LOG_TAG} Viewport screenshot failed:`, err);
+                    logger.error(`${LOG_TAG} capturePage failed:`, err);
+                    // Fallback: forward to CDP
+                    msg.params.captureBeyondViewport = false;
                     if (realWsReady && realWs.readyState === WebSocket.OPEN) {
-                      realWs.send(viewportData, { binary: false });
+                      realWs.send(data, { binary: false });
                     }
                   }
                 })();
-                return; // Async handler will forward
+                return; // Don't forward — async handler responds directly
               }
-              // No active tab — forward with captureBeyondViewport=false
+              // No active tab — forward to CDP with captureBeyondViewport=false
               msg.params.captureBeyondViewport = false;
             } else {
               // Full page with clip: auto-scroll to trigger animations,

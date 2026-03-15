@@ -99,6 +99,8 @@ import {
   getToolsAutoApproveFromConfig,
   setSessionDmScope as setSessionDmScopeConfig,
   getSessionDmScopeFromConfig,
+  setScreenshotMaxSide as setScreenshotMaxSideConfig,
+  getScreenshotMaxSideFromConfig,
 } from '../utils/agent-config';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { zaloUserLoginManager } from '../utils/zalouser-login';
@@ -2695,7 +2697,20 @@ function registerAppHandlers(gatewayManager: GatewayManager): void {
       setSessionDmScopeConfig(sessionDmScope);
     }
 
-    return { toolsAutoApprove, sessionDmScope };
+    const screenshotMaxSide = getScreenshotMaxSideFromConfig() ?? 2000;
+
+    return { toolsAutoApprove, sessionDmScope, screenshotMaxSide };
+  });
+
+  // Set screenshot max side — persist to openclaw.json + restart gateway
+  ipcMain.handle('app:setScreenshotMaxSide', async (_, value: number) => {
+    await setSetting('screenshotMaxSide', value);
+    setScreenshotMaxSideConfig(value);
+    if (gatewayManager.isConnected()) {
+      void gatewayManager.restart().catch((err) => {
+        logger.warn('Gateway restart after screenshot max side change failed:', err);
+      });
+    }
   });
 }
 
