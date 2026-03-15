@@ -301,14 +301,22 @@ async function initialize(): Promise<void> {
 
   // Start CDP proxy (9333) → intercepts Target.createTarget + Page.printToPDF
   // then relays everything else to Electron's real CDP (9222)
+  // Only set browser config if useBuiltinBrowser is enabled (default: true)
   try {
     const { startCdpProxy } = await import('../browser/cdp-proxy');
     await startCdpProxy(9333, 9222);
     logger.info('CDP proxy started on port 9333 → real CDP 9222');
 
-    const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
-    setOpenClawBrowserConfig(9333);
-    logger.info('Browser config set: CDP proxy on port 9333');
+    const { getUseBuiltinBrowserFromConfig } = await import('../utils/agent-config');
+    const useBuiltinBrowser = getUseBuiltinBrowserFromConfig();
+
+    if (useBuiltinBrowser) {
+      const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+      setOpenClawBrowserConfig(9333);
+      logger.info('Browser config set: CDP proxy on port 9333');
+    } else {
+      logger.info('Builtin browser disabled — skipping browser config (using Chrome / extension)');
+    }
 
     // Start CDP focus monitor to sync tab switches from Playwright/agent
     const { startCdpFocusMonitor } = await import('../browser/cdp-focus-monitor');

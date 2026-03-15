@@ -448,6 +448,29 @@ export function setScreenshotMaxSide(value: number): void {
   logger.info('Screenshot max side updated', { value });
 }
 
+// ── Use Builtin Browser config helper ──────────────────────────────
+
+/**
+ * Read useBuiltinBrowser from crawbot-settings.json.
+ * Returns true (default) if not configured.
+ */
+export function getUseBuiltinBrowserFromConfig(): boolean {
+  const settings = readCrawbotSettings();
+  const value = settings.useBuiltinBrowser;
+  if (typeof value === 'boolean') return value;
+  return true; // default: use builtin browser
+}
+
+/**
+ * Set useBuiltinBrowser in crawbot-settings.json.
+ */
+export function setUseBuiltinBrowser(enabled: boolean): void {
+  const settings = readCrawbotSettings();
+  settings.useBuiltinBrowser = enabled;
+  writeCrawbotSettings(settings);
+  logger.info('Use builtin browser updated', { enabled });
+}
+
 // ── Generic file-browser helpers ──────────────────────────────────
 
 const MAX_READ_SIZE = 1 * 1024 * 1024; // 1 MB guard

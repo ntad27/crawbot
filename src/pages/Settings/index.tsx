@@ -71,6 +71,8 @@ export function Settings() {
     setToolsAutoApprove,
     sessionDmScope,
     setSessionDmScope,
+    useBuiltinBrowser,
+    setUseBuiltinBrowser,
     screenshotMaxSide,
     setScreenshotMaxSide,
     syncFromMain,
@@ -750,6 +752,21 @@ export function Settings() {
             <p className="text-xs text-muted-foreground/70">
               {t(`openclaw.dmScopeHints.${sessionDmScope}`)}
             </p>
+          </div>
+
+          <Separator />
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Browser Tool: Use Builtin Browser</Label>
+              <p className="text-sm text-muted-foreground">
+                When enabled, the Browser Tool uses CrawBot&apos;s built-in browser. When disabled, it uses Chrome on your machine or the Chrome extension. Requires gateway restart.
+              </p>
+            </div>
+            <Switch
+              checked={useBuiltinBrowser}
+              onCheckedChange={setUseBuiltinBrowser}
+            />
           </div>
 
           <Separator />

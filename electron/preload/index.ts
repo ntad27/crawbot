@@ -46,6 +46,7 @@ const electronAPI = {
         'app:setToolsAutoApprove',
         'app:setSessionDmScope',
         'app:setScreenshotMaxSide',
+        'app:setUseBuiltinBrowser',
         'app:getOpenclawSettings',
         // Window controls
         'window:minimize',

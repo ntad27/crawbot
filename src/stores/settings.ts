@@ -35,6 +35,7 @@ interface SettingsState {
   sessionDmScope: DmScope;
 
   // Browser / Screenshot
+  useBuiltinBrowser: boolean;
   screenshotMaxSide: number;
 
   // Setup
@@ -54,6 +55,7 @@ interface SettingsState {
   setDevModeUnlocked: (value: boolean) => void;
   setToolsAutoApprove: (value: boolean) => void;
   setSessionDmScope: (value: DmScope) => void;
+  setUseBuiltinBrowser: (value: boolean) => void;
   setScreenshotMaxSide: (value: number) => void;
   syncFromMain: () => Promise<void>;
   markSetupComplete: () => void;
@@ -79,6 +81,7 @@ const defaultSettings = {
   toolsAutoApprove: true,
   sessionDmScope: 'main' as DmScope,
   setupComplete: false,
+  useBuiltinBrowser: true,
   screenshotMaxSide: 2000,
 };
 
@@ -112,6 +115,10 @@ export const useSettingsStore = create<SettingsState>()(
         window.electron.ipcRenderer.invoke('app:setSessionDmScope', sessionDmScope);
         set({ sessionDmScope });
       },
+      setUseBuiltinBrowser: (useBuiltinBrowser) => {
+        window.electron.ipcRenderer.invoke('app:setUseBuiltinBrowser', useBuiltinBrowser);
+        set({ useBuiltinBrowser });
+      },
       setScreenshotMaxSide: (screenshotMaxSide) => {
         window.electron.ipcRenderer.invoke('app:setScreenshotMaxSide', screenshotMaxSide);
         set({ screenshotMaxSide });
@@ -122,11 +129,13 @@ export const useSettingsStore = create<SettingsState>()(
             toolsAutoApprove: boolean;
             sessionDmScope: DmScope;
             screenshotMaxSide?: number;
+            useBuiltinBrowser?: boolean;
           };
           set({
             toolsAutoApprove: result.toolsAutoApprove,
             sessionDmScope: result.sessionDmScope,
             ...(result.screenshotMaxSide ? { screenshotMaxSide: result.screenshotMaxSide } : {}),
+            ...(typeof result.useBuiltinBrowser === 'boolean' ? { useBuiltinBrowser: result.useBuiltinBrowser } : {}),
           });
         } catch {
           // IPC may not be ready yet on very early calls — ignore

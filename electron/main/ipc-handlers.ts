@@ -101,6 +101,8 @@ import {
   getSessionDmScopeFromConfig,
   setScreenshotMaxSide as setScreenshotMaxSideConfig,
   getScreenshotMaxSideFromConfig,
+  setUseBuiltinBrowser as setUseBuiltinBrowserConfig,
+  getUseBuiltinBrowserFromConfig,
 } from '../utils/agent-config';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { zaloUserLoginManager } from '../utils/zalouser-login';
@@ -2698,8 +2700,37 @@ function registerAppHandlers(gatewayManager: GatewayManager): void {
     }
 
     const screenshotMaxSide = getScreenshotMaxSideFromConfig() ?? 2000;
+    const useBuiltinBrowser = getUseBuiltinBrowserFromConfig();
 
-    return { toolsAutoApprove, sessionDmScope, screenshotMaxSide };
+    return { toolsAutoApprove, sessionDmScope, screenshotMaxSide, useBuiltinBrowser };
+  });
+
+  // Set use builtin browser — persist to crawbot-settings.json + update openclaw.json browser config + restart gateway
+  ipcMain.handle('app:setUseBuiltinBrowser', async (_, enabled: boolean) => {
+    await setSetting('useBuiltinBrowser', enabled);
+    setUseBuiltinBrowserConfig(enabled);
+    if (enabled) {
+      // Restore browser config pointing to CDP proxy
+      try {
+        const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+        setOpenClawBrowserConfig(9333);
+      } catch (err) {
+        logger.warn('Failed to set browser config:', err);
+      }
+    } else {
+      // Remove browser config so OpenClaw uses Chrome / extension
+      try {
+        const { removeOpenClawBrowserConfig } = await import('../utils/browser-config');
+        removeOpenClawBrowserConfig();
+      } catch (err) {
+        logger.warn('Failed to remove browser config:', err);
+      }
+    }
+    if (gatewayManager.isConnected()) {
+      void gatewayManager.restart().catch((err) => {
+        logger.warn('Gateway restart after use builtin browser change failed:', err);
+      });
+    }
   });
 
   // Set screenshot max side — persist to openclaw.json + restart gateway
