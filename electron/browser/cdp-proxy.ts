@@ -330,7 +330,49 @@ export class CdpFilterProxy {
           // CDP captures the full content area defined by clip.
           if (msg.method === 'Page.captureScreenshot' && msg.params) {
             if (!msg.params.clip) {
-              // Viewport-only: disable beyond viewport
+              // Viewport-only: crop to visible area using zoom correction.
+              // Same approach as full-page: multiply CSS dimensions by zoom
+              // factor to compensate for viewport inflation at zoom < 1.
+              const activeTabId2 = automationViews.getActiveTabId();
+              const activeTab2 = activeTabId2 ? automationViews.getTab(activeTabId2) : null;
+              if (activeTab2) {
+                const wc2 = activeTab2.view.webContents;
+                const viewportData = data;
+                const viewportMsg = msg;
+                (async () => {
+                  try {
+                    const zoom = wc2.getZoomFactor() || 1;
+                    const zoomCorrection = zoom < 1 ? zoom : 1;
+                    const dims = await wc2.executeJavaScript(
+                      '({ w: document.documentElement.clientWidth || window.innerWidth, h: window.innerHeight })'
+                    );
+                    viewportMsg.params.captureBeyondViewport = false;
+                    if (dims && dims.w > 0) {
+                      viewportMsg.params.clip = {
+                        x: 0,
+                        y: 0,
+                        width: Math.round(dims.w * zoomCorrection),
+                        height: Math.round(dims.h * zoomCorrection),
+                        scale: 2,
+                      };
+                      logger.info(`${LOG_TAG} Viewport screenshot: clip ${viewportMsg.params.clip.width}x${viewportMsg.params.clip.height} (css=${dims.w}x${dims.h}, zoom=${zoom})`);
+                    }
+                    const modData = JSON.stringify(viewportMsg);
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(modData, { binary: false });
+                    } else {
+                      pendingMessages.push({ data: Buffer.from(modData), isBinary: false });
+                    }
+                  } catch (err) {
+                    logger.error(`${LOG_TAG} Viewport screenshot failed:`, err);
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(viewportData, { binary: false });
+                    }
+                  }
+                })();
+                return; // Async handler will forward
+              }
+              // No active tab — forward with captureBeyondViewport=false
               msg.params.captureBeyondViewport = false;
             } else {
               // Full page with clip: auto-scroll to trigger animations,
