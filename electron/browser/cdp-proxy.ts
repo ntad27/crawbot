@@ -333,36 +333,24 @@ export class CdpFilterProxy {
           }
 
           // Fix Emulation.setDeviceMetricsOverride — Playwright uses this for
-          // page.setViewportSize(). After it completes, restore WebContentsView
-          // bounds to panel position so the page doesn't stay "méo"/distorted.
+          // page.setViewportSize(). Restore WebContentsView bounds after a delay.
           if (msg.method === 'Emulation.setDeviceMetricsOverride') {
-            // Track this to restore bounds after response
-            const restoreId = msg.id;
-            const restoreHandler = (rData: Buffer | ArrayBuffer | Buffer[]) => {
-              try {
-                const resp = JSON.parse(rData.toString());
-                if (resp.id === restoreId) {
-                  // After viewport change completes, re-report panel bounds
-                  // so WebContentsView snaps back to panel area
-                  const activeId = automationViews.getActiveTabId();
-                  if (activeId) {
-                    const activeTab = automationViews.getTab(activeId);
-                    if (activeTab) {
-                      // Slight delay to let layout settle
-                      setTimeout(() => {
-                        const panelBounds = automationViews.getPanelBounds();
-                        if (panelBounds && panelBounds.width > 0) {
-                          activeTab.view.setBounds(panelBounds);
-                        }
-                      }, 500);
-                    }
+            logger.info(`${LOG_TAG} Detected viewport resize, will restore bounds in 5s`);
+            setTimeout(() => {
+              const activeId = automationViews.getActiveTabId();
+              if (activeId) {
+                const activeTab = automationViews.getTab(activeId);
+                if (activeTab) {
+                  const panelBounds = automationViews.getPanelBounds();
+                  if (panelBounds && panelBounds.width > 0) {
+                    activeTab.view.setBounds(panelBounds);
+                    activeTab.view.webContents.setZoomFactor(0.6);
+                    logger.info(`${LOG_TAG} Restored view bounds after resize`);
                   }
-                  realWs.removeListener('message', restoreHandler);
                 }
-              } catch { /* */ }
-            };
-            realWs.on('message', restoreHandler);
-            // Forward the command normally (don't return)
+              }
+            }, 5000);
+            // Forward normally (don't return)
           }
 
           // Intercept Page.printToPDF — DO NOT forward to real CDP.
