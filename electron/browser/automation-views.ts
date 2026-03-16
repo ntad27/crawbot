@@ -202,6 +202,14 @@ class AutomationViewManager {
       `).catch(() => {});
     });
 
+    // Prevent popups — navigate in the same view instead of opening new window
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      if (url && url !== 'about:blank') {
+        view.webContents.loadURL(url).catch(() => {});
+      }
+      return { action: 'deny' };
+    });
+
     // Auto-cleanup when webContents is destroyed externally (e.g., via CDP /json/close)
     view.webContents.on('destroyed', () => {
       if (this.tabs.has(tabId)) {

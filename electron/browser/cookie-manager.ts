@@ -14,6 +14,7 @@ export interface CookieData {
   path: string;
   secure: boolean;
   httpOnly: boolean;
+  sameSite?: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
   expirationDate?: number;
 }
 
@@ -97,6 +98,24 @@ export async function importCookies(
   for (const cookie of cookies) {
     try {
       const url = `http${cookie.secure ? 's' : ''}://${cookie.domain.replace(/^\./, '')}${cookie.path}`;
+      // Map sameSite values for Electron's ses.cookies.set()
+      // Chrome extension often returns sameSite=undefined for cookies that are actually SameSite=None.
+      // Per spec: SameSite=None requires Secure=true. If a secure cookie has unspecified sameSite,
+      // it's likely SameSite=None (especially for Google auth cookies like SID, __Secure-1PSID).
+      let sameSite: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
+      if (cookie.sameSite === 'no_restriction') {
+        sameSite = 'no_restriction';
+      } else if (cookie.sameSite === 'lax') {
+        sameSite = 'lax';
+      } else if (cookie.sameSite === 'strict') {
+        sameSite = 'strict';
+      } else if (cookie.secure) {
+        // Secure cookies with unspecified sameSite → treat as SameSite=None
+        sameSite = 'no_restriction';
+      } else {
+        sameSite = 'unspecified';
+      }
+
       await ses.cookies.set({
         url,
         name: cookie.name,
@@ -105,6 +124,7 @@ export async function importCookies(
         path: cookie.path,
         secure: cookie.secure,
         httpOnly: cookie.httpOnly,
+        sameSite,
         expirationDate: cookie.expirationDate,
       });
       imported++;

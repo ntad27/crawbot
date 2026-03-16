@@ -170,9 +170,10 @@ function App() {
 
         {/* Global toast notifications */}
         <Toaster
-          position="bottom-right"
+          position="bottom-left"
           richColors
           closeButton
+          style={{ zIndex: 99999 }}
         />
       </TooltipProvider>
     </ErrorBoundary>

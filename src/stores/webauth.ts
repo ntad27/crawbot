@@ -1,6 +1,10 @@
 /**
  * WebAuth Providers State Store
  * Manages web login session providers (zero-token feature)
+ *
+ * WebAuth tabs auto-start on app launch for all configured providers.
+ * They appear in the browser tab bar with [WebAuth] prefix and Lock icon.
+ * They cannot be closed from the tab bar — only removed via Settings.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -80,7 +84,6 @@ export const useWebAuthStore = create<WebAuthState>()(
       providers: [],
       proxyPort: null,
       proxyRunning: false,
-
       setProviders: (providers) => set({ providers }),
 
       updateProvider: (id, updates) =>
@@ -148,3 +151,7 @@ export const useWebAuthStore = create<WebAuthState>()(
     }
   )
 );
+
+// WebAuth tabs are NOT auto-started globally.
+// They are created on-demand when the user opens Settings and clicks Login.
+// Tab management is handled by useWebAuthBrowserStore (webauth-browser.ts).

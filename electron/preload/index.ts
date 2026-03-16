@@ -247,6 +247,7 @@ const electronAPI = {
         'browser:cookies:clear',
         'browser:cookies:export',
         'browser:cookies:import',
+        'browser:cookies:import-from-chrome',
         'browser:cdp:getPort',
         'browser:cdp:status',
         'browser:panel:detach',
@@ -255,7 +256,19 @@ const electronAPI = {
         'browser:panel:setBounds',
         'browser:printToPDF',
 
-        // WebAuth
+        // WebAuth Browser (independent from Chat browser)
+        'webauth:browser:tab:create',
+        'webauth:browser:tab:close',
+        'webauth:browser:tab:navigate',
+        'webauth:browser:tab:goBack',
+        'webauth:browser:tab:goForward',
+        'webauth:browser:tab:reload',
+        'webauth:browser:tab:setZoom',
+        'webauth:browser:tab:setActive',
+        'webauth:browser:panel:setBounds',
+        'webauth:browser:google-login-done',
+
+        // WebAuth Providers
         'webauth:provider:add',
         'webauth:provider:remove',
         'webauth:provider:login',
@@ -306,6 +319,11 @@ const electronAPI = {
         'browser:tab:created',
         'browser:tab:closed',
         'browser:tab:activated',
+        'webauth:browser:tab:created',
+        'webauth:browser:tab:updated',
+        'webauth:browser:tab:activated',
+        'webauth:browser:tab:closed',
+        'webauth:browser:google-login',
         'webauth:provider:status-changed',
         'webauth:provider:session-expired',
       ];

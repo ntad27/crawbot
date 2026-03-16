@@ -13,6 +13,8 @@ describe('useBrowserStore', () => {
       detached: false,
       tabs: [],
       activeTabId: null,
+      activeAutomationTabId: null,
+      activeWebauthTabId: null,
     });
     vi.clearAllMocks();
   });

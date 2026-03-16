@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { openExternalInDefaultProfile } from '../utils/open-external';
 import { browserManager } from '../browser/manager';
 import { automationViews } from '../browser/automation-views';
+import { webauthViews } from '../browser/webauth-views';
 import {
   getCookies, removeCookie, clearPartition, exportCookies, importCookies,
   type CookieData,
@@ -206,6 +207,9 @@ export function registerIpcHandlers(
 
   // Built-in browser handlers
   registerBuiltinBrowserHandlers(mainWindow);
+
+  // WebAuth browser handlers (independent from Chat browser)
+  registerWebAuthBrowserHandlers(mainWindow);
 
   // WebAuth provider handlers
   registerWebAuthHandlers();
@@ -3883,6 +3887,115 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
     const count = await importCookies(partition, cookies);
     return { success: true, imported: count };
   });
+
+  // Import cookies from Chrome browser via the relay extension's CDP endpoint
+  ipcMain.handle(
+    'browser:cookies:import-from-chrome',
+    async (_, partition: string, url: string) => {
+      try {
+        const token = await getSetting('gatewayToken');
+        const gatewayPort = (await getSetting('gatewayPort')) || 18789;
+        const relayPort = gatewayPort + 3;
+
+        if (!token) {
+          return { success: false, error: 'Gateway token not available. Is the gateway running?' };
+        }
+
+        // Derive relay token (same HMAC-SHA256 algorithm as extension background-utils.js)
+        const hmac = crypto.createHmac('sha256', token);
+        hmac.update(`openclaw-extension-relay-v1:${relayPort}`);
+        const relayToken = hmac.digest('hex');
+
+        // Connect to the relay's CDP WebSocket endpoint (not /extension)
+        // CDP clients send standard { id, method, params } and receive { id, result/error }
+        const cdpWsUrl = `ws://127.0.0.1:${relayPort}/cdp?token=${encodeURIComponent(relayToken)}`;
+
+        const { default: WebSocket } = await import('ws');
+
+        const cookies = await new Promise<CookieData[]>((resolveP, rejectP) => {
+          const ws = new WebSocket(cdpWsUrl);
+          const requestId = 1;
+          let settled = false;
+
+          const timeout = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              try { ws.close(); } catch { /* */ }
+              rejectP(new Error('Timeout waiting for cookies from Chrome extension. Is the extension connected?'));
+            }
+          }, 10000);
+
+          ws.on('error', (err: Error) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeout);
+              rejectP(new Error(`Relay connection error: ${err.message}`));
+            }
+          });
+
+          ws.on('close', () => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeout);
+              rejectP(new Error('Relay connection closed before receiving cookies'));
+            }
+          });
+
+          ws.on('open', () => {
+            // Send custom CDP command — the relay forwards unknown methods to the extension
+            ws.send(JSON.stringify({
+              id: requestId,
+              method: 'CrawBot.getCookies',
+              params: { url },
+            }));
+          });
+
+          ws.on('message', (data: Buffer | string) => {
+            try {
+              const msg = JSON.parse(String(data));
+
+              // CDP response to our command
+              if (typeof msg?.id === 'number' && msg.id === requestId) {
+                clearTimeout(timeout);
+                settled = true;
+
+                if (msg.error) {
+                  try { ws.close(); } catch { /* */ }
+                  const errMsg = typeof msg.error === 'object' ? msg.error.message : String(msg.error);
+                  rejectP(new Error(`Extension error: ${errMsg}`));
+                  return;
+                }
+
+                const chromeCookies: CookieData[] = (msg.result?.cookies || []).map(
+                  (c: Record<string, unknown>) => ({
+                    name: String(c.name || ''),
+                    value: String(c.value || ''),
+                    domain: String(c.domain || ''),
+                    path: String(c.path || '/'),
+                    secure: Boolean(c.secure),
+                    httpOnly: Boolean(c.httpOnly),
+                    sameSite: (c.sameSite as CookieData['sameSite']) || 'unspecified',
+                    expirationDate: typeof c.expirationDate === 'number' ? c.expirationDate : undefined,
+                  }),
+                );
+                try { ws.close(); } catch { /* */ }
+                resolveP(chromeCookies);
+              }
+              // Ignore other messages (Target.attachedToTarget events, etc.)
+            } catch { /* ignore parse errors */ }
+          });
+        });
+
+        // Import cookies into the Electron session partition
+        const count = await importCookies(partition, cookies);
+        logger.info(`[browser:cookies:import-from-chrome] Imported ${count} cookies from Chrome for ${url} into ${partition}`);
+        return { success: true, imported: count };
+      } catch (error) {
+        logger.error(`[browser:cookies:import-from-chrome] ${String(error)}`);
+        return { success: false, error: String(error) };
+      }
+    },
+  );
 }
 
 /**
@@ -3963,5 +4076,71 @@ function registerWebAuthHandlers(): void {
       running: proxy?.isRunning ?? false,
       port: proxy?.port ?? null,
     };
+  });
+}
+
+/**
+ * WebAuth Browser IPC handlers (independent from Chat browser)
+ * Tab management, navigation, zoom — operates via WebAuthViewManager
+ */
+function registerWebAuthBrowserHandlers(mainWindow: BrowserWindow): void {
+  webauthViews.setMainWindow(mainWindow);
+
+  ipcMain.handle(
+    'webauth:browser:tab:create',
+    (_, params: { id: string; url: string; partition: string }) => {
+      try {
+        const tab = webauthViews.createTab(params.id, params.url, params.partition);
+        return { success: true, tab: { id: tab.id, url: tab.url, title: tab.title } };
+      } catch (err) {
+        return { success: false, error: String(err) };
+      }
+    }
+  );
+
+  ipcMain.handle('webauth:browser:tab:close', (_, tabId: string) => {
+    webauthViews.closeTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:navigate', (_, tabId: string, url: string) => {
+    webauthViews.navigateTab(tabId, url);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:goBack', (_, tabId: string) => {
+    webauthViews.goBack(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:goForward', (_, tabId: string) => {
+    webauthViews.goForward(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:reload', (_, tabId: string) => {
+    webauthViews.reload(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:setZoom', (_, tabId: string, factor: number) => {
+    webauthViews.setZoom(tabId, factor);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:setActive', (_, tabId: string) => {
+    webauthViews.setActiveTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:panel:setBounds', (_, bounds: { x: number; y: number; width: number; height: number }) => {
+    webauthViews.setPanelBounds(bounds);
+    return { success: true };
+  });
+
+  // Google login completed in renderer <webview> — reload WebContentsView
+  ipcMain.handle('webauth:browser:google-login-done', (_, tabId: string, providerUrl: string) => {
+    webauthViews.reloadAfterGoogleLogin(tabId, providerUrl);
+    return { success: true };
   });
 }

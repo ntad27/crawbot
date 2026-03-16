@@ -337,6 +337,7 @@ async function onRelayMessage(text) {
       sendToRelay({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
     }
   }
+
 }
 
 // ── Tab announce (NO debugger attach — lazy only) ─────────────────────────────
@@ -739,6 +740,66 @@ async function handleForwardCdpCommand(msg) {
     if (tab?.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {})
     if (toActivate) await chrome.tabs.update(toActivate, { active: true }).catch(() => {})
     return {}
+  }
+
+  // Custom: get cookies from Chrome for a URL + its parent domains
+  // e.g., for "https://gemini.google.com/app" → gets cookies for:
+  //   gemini.google.com, .gemini.google.com, google.com, .google.com
+  if (method === 'CrawBot.getCookies') {
+    const url = typeof params?.url === 'string' ? params.url : ''
+    if (!url) throw new Error('Missing url parameter')
+
+    // Extract hostname and build domain list including parent domains
+    let hostname
+    try { hostname = new URL(url).hostname } catch { throw new Error('Invalid URL') }
+
+    const domains = new Set()
+    const parts = hostname.split('.')
+    for (let i = 0; i < parts.length - 1; i++) {
+      const domain = parts.slice(i).join('.')
+      domains.add(domain)
+      domains.add('.' + domain) // dot-prefix form used by cookies
+    }
+
+    // Fetch cookies for all domains in parallel
+    const allCookies = new Map() // dedupe by name+domain+path
+    for (const domain of domains) {
+      try {
+        const domainCookies = await chrome.cookies.getAll({ domain })
+        for (const c of domainCookies) {
+          const key = `${c.name}|${c.domain}|${c.path}`
+          if (!allCookies.has(key)) allCookies.set(key, c)
+        }
+      } catch { /* some domains may fail */ }
+    }
+
+    // Also get by URL directly (catches cookies set for exact URL)
+    try {
+      const urlCookies = await chrome.cookies.getAll({ url })
+      for (const c of urlCookies) {
+        const key = `${c.name}|${c.domain}|${c.path}`
+        if (!allCookies.has(key)) allCookies.set(key, c)
+      }
+    } catch { /* */ }
+
+    const cookies = [...allCookies.values()]
+    return {
+      cookies: cookies.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        // Map Chrome's sameSite to Electron's format
+        // Chrome: "unspecified"|"no_restriction"|"lax"|"strict"
+        sameSite: c.sameSite === 'no_restriction' ? 'no_restriction'
+          : c.sameSite === 'lax' ? 'lax'
+          : c.sameSite === 'strict' ? 'strict'
+          : 'unspecified',
+        expirationDate: c.expirationDate,
+      }))
+    }
   }
 
   // On-demand tab discovery: if no tab found by session/targetId, try to find

@@ -9,8 +9,11 @@ import {
   ZoomIn,
   ZoomOut,
   Lock,
+  Cookie,
+  Loader2,
 } from 'lucide-react';
 import { useBrowserStore, type BrowserTab } from '@/stores/browser';
+import { toast } from 'sonner';
 
 export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
   const navigate = useBrowserStore((s) => s.navigate);
@@ -22,6 +25,7 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
   const [urlInput, setUrlInput] = useState(tab.url);
   const [isEditing, setIsEditing] = useState(false);
   const justNavigatedRef = useRef(false);
+  const [isImporting, setIsImporting] = useState(false);
 
   // Sync URL bar from tab when NOT editing (e.g., webview navigated internally)
   useEffect(() => {
@@ -90,6 +94,29 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
     setIsEditing(false);
   }, [tab.url]);
 
+  const handleImportCookies = useCallback(async () => {
+    if (isImporting || !tab.url || tab.url === 'about:blank') return;
+    setIsImporting(true);
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'browser:cookies:import-from-chrome',
+        tab.partition,
+        tab.url,
+      ) as { success: boolean; imported?: number; error?: string };
+      if (result.success) {
+        toast.success(`Imported ${result.imported} cookies from Chrome`);
+        // Reload the tab so it picks up the new cookies
+        reload();
+      } else {
+        toast.error(`Failed to import cookies: ${result.error}`);
+      }
+    } catch (err) {
+      toast.error(`Import cookies failed: ${String(err)}`);
+    } finally {
+      setIsImporting(false);
+    }
+  }, [isImporting, tab.url, tab.partition, reload]);
+
   const isSecure = tab.url.startsWith('https://');
 
   return (
@@ -144,6 +171,19 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
         title="Zoom in"
       >
         <ZoomIn className="h-3.5 w-3.5" />
+      </NavButton>
+
+      {/* Import cookies from Chrome */}
+      <NavButton
+        onClick={handleImportCookies}
+        disabled={isImporting || !tab.url || tab.url === 'about:blank'}
+        title="Import cookies from Chrome"
+      >
+        {isImporting ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Cookie className="h-3.5 w-3.5" />
+        )}
       </NavButton>
     </div>
   );
