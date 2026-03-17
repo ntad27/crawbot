@@ -98,23 +98,15 @@ export async function importCookies(
   for (const cookie of cookies) {
     try {
       const url = `http${cookie.secure ? 's' : ''}://${cookie.domain.replace(/^\./, '')}${cookie.path}`;
-      // Map sameSite values for Electron's ses.cookies.set()
-      // Chrome extension often returns sameSite=undefined for cookies that are actually SameSite=None.
-      // Per spec: SameSite=None requires Secure=true. If a secure cookie has unspecified sameSite,
-      // it's likely SameSite=None (especially for Google auth cookies like SID, __Secure-1PSID).
-      let sameSite: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
-      if (cookie.sameSite === 'no_restriction') {
-        sameSite = 'no_restriction';
-      } else if (cookie.sameSite === 'lax') {
-        sameSite = 'lax';
-      } else if (cookie.sameSite === 'strict') {
-        sameSite = 'strict';
-      } else if (cookie.secure) {
-        // Secure cookies with unspecified sameSite → treat as SameSite=None
-        sameSite = 'no_restriction';
-      } else {
-        sameSite = 'unspecified';
-      }
+      // Map sameSite from Chrome extension to Electron's ses.cookies.set().
+      // CRITICAL: When Chrome returns sameSite=undefined, we MUST pass 'unspecified'
+      // explicitly. If omitted, Electron defaults to 'lax' which breaks Google auth.
+      // Chrome SQLite: -1=unspecified, 0=no_restriction, 1=lax, 2=strict
+      const sameSite: 'unspecified' | 'no_restriction' | 'lax' | 'strict' =
+        cookie.sameSite === 'no_restriction' ? 'no_restriction'
+        : cookie.sameSite === 'lax' ? 'lax'
+        : cookie.sameSite === 'strict' ? 'strict'
+        : 'unspecified'; // explicit unspecified = SQLite -1, NOT default lax
 
       await ses.cookies.set({
         url,

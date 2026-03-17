@@ -49,8 +49,9 @@ export function WebAuthSettings() {
   const configuredIds = new Set(providers.map((p) => p.id));
   const availableToAdd = AVAILABLE_PROVIDERS.filter((p) => !configuredIds.has(p.id));
 
-  // Auto-create tabs for all configured providers when Settings page mounts
-  // Each provider gets its own tab pointing to its loginUrl with its partition
+  const setProxyStatus = useWebAuthStore((s) => s.setProxyStatus);
+
+  // Auto-create tabs + sync proxy status on mount
   useEffect(() => {
     for (const provider of providers) {
       const exists = tabs.some((t) => t.partition === provider.partition);
@@ -58,7 +59,15 @@ export function WebAuthSettings() {
         addTab(provider.loginUrl, provider.partition);
       }
     }
-    // Only run on mount and when providers list changes
+    // Query proxy status (pipeline may have started before Settings mounted)
+    window.electron?.ipcRenderer?.invoke('webauth:proxy:status')
+      .then((r: unknown) => {
+        const res = r as { success?: boolean; running?: boolean; port?: number };
+        if (res?.running && res?.port) {
+          setProxyStatus(true, res.port);
+        }
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers.length]);
 

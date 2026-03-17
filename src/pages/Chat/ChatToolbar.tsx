@@ -81,10 +81,11 @@ export function ChatToolbar() {
   };
 
   // Set of provider types the user has configured
-  const configuredProviderTypes = useMemo(
-    () => new Set<string>(configuredProviders.map((p) => p.type)),
-    [configuredProviders],
-  );
+  const configuredProviderTypes = useMemo(() => {
+    const types = new Set<string>(configuredProviders.map((p) => p.type));
+    types.add('webauth');
+    return types;
+  }, [configuredProviders]);
 
   // Filter models to only configured providers, then group by provider
   const groupedModels = useMemo(() => {

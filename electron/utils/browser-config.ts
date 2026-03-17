@@ -77,9 +77,7 @@ export function setOpenClawBrowserConfig(cdpProxyPort: number): void {
         attachOnly: true,
         color: '#3B82F6',
       },
-      // Extension relay profile — enables the relay WebSocket server for Chrome extension.
-      // Relay port = 18792 (gatewayPort 18789 + 3), matching crawbot-config.json.
-      'chrome-extension': {
+      'chrome-relay': {
         cdpUrl: 'http://127.0.0.1:18792',
         driver: 'extension',
         attachOnly: true,
@@ -122,7 +120,7 @@ export function setOpenClawWebAuthConfig(proxyPort: number, models: Array<{ id: 
     baseUrl: `http://127.0.0.1:${proxyPort}/v1`,
     api: 'openai-completions',
     apiKey: 'dummy-webauth-key',
-    models,
+    models: models.map((m) => ({ id: m.id, name: m.name })),
   };
 
   modelsConfig.providers = providers;

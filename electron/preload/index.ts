@@ -274,6 +274,7 @@ const electronAPI = {
         'webauth:provider:login',
         'webauth:provider:check',
         'webauth:provider:check-all',
+        'webauth:pipeline:refresh',
         'webauth:proxy:start',
         'webauth:proxy:stop',
         'webauth:proxy:status',
@@ -326,6 +327,7 @@ const electronAPI = {
         'webauth:browser:google-login',
         'webauth:provider:status-changed',
         'webauth:provider:session-expired',
+        'webauth:proxy:started',
       ];
 
       if (validChannels.includes(channel)) {

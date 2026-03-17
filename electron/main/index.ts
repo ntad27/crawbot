@@ -340,6 +340,20 @@ async function initialize(): Promise<void> {
         logger.warn('Failed to inject CrawBot context:', err);
       }
     }, 5000);
+
+    // Auto-start WebAuth pipeline after Gateway is ready
+    setTimeout(async () => {
+      try {
+        const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+        const pipeline = getWebAuthPipeline();
+        pipeline.setMainWindow(mainWindow!);
+        pipeline.setGatewayRestartFn(() => gatewayManager.restart());
+        await pipeline.initialize();
+        logger.info('WebAuth pipeline auto-start succeeded');
+      } catch (err) {
+        logger.error('[WebAuth] Pipeline init failed:', err);
+      }
+    }, 3000);
   } catch (error) {
     logger.error('Gateway auto-start failed:', error);
     mainWindow?.webContents.send('gateway:error', String(error));
@@ -433,6 +447,11 @@ app.on('before-quit', async () => {
   try {
     const { removeOpenClawBrowserConfig } = await import('../utils/browser-config');
     removeOpenClawBrowserConfig();
+  } catch { /* ignore */ }
+  // Stop WebAuth pipeline
+  try {
+    const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+    await getWebAuthPipeline().shutdown();
   } catch { /* ignore */ }
   // Stop CDP proxy
   try {

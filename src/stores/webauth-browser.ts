@@ -105,7 +105,7 @@ export const useWebAuthBrowserStore = create<WebAuthBrowserState>()(
         isLoading: false,
         canGoBack: false,
         canGoForward: false,
-        zoomFactor: 0.8,
+        zoomFactor: 0.6,
       };
       set((s) => ({
         tabs: [...s.tabs, tab],

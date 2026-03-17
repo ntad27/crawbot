@@ -152,6 +152,20 @@ export const useWebAuthStore = create<WebAuthState>()(
   )
 );
 
+// ── IPC listeners for pipeline status updates ──
+
+window.electron.ipcRenderer.on('webauth:provider:status-changed', (providerId: unknown, status: unknown) => {
+  if (typeof providerId === 'string' && typeof status === 'string') {
+    useWebAuthStore.getState().updateProvider(providerId, { status: status as WebAuthStatus, lastChecked: Date.now() });
+  }
+});
+
+window.electron.ipcRenderer.on('webauth:proxy:started', (port: unknown) => {
+  if (typeof port === 'number') {
+    useWebAuthStore.getState().setProxyStatus(true, port);
+  }
+});
+
 // WebAuth tabs are NOT auto-started globally.
 // They are created on-demand when the user opens Settings and clicks Login.
 // Tab management is handled by useWebAuthBrowserStore (webauth-browser.ts).

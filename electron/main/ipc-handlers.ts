@@ -1112,7 +1112,8 @@ function registerGatewayHandlers(
         const data = result as { models?: Array<{ provider: string }> };
         if (Array.isArray(data.models)) {
           const configured = await getAllProviders();
-          const configuredTypes = new Set(configured.map((p) => p.type));
+          const configuredTypes = new Set<string>(configured.map((p) => p.type));
+          configuredTypes.add('webauth'); // Always include WebAuth models
           if (configuredTypes.size > 0) {
             data.models = data.models.filter((m) => configuredTypes.has(m.provider));
           }
@@ -3986,9 +3987,43 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
           });
         });
 
-        // Import cookies into the Electron session partition
+        // Clear existing cookies for the domains being imported,
+        // then import fresh ones — ensures no stale/corrupt cookies remain
+        const ses = (await import('electron')).session.fromPartition(partition);
+        const importDomains = new Set(cookies.map((c: CookieData) => c.domain));
+        for (const domain of importDomains) {
+          const existing = await ses.cookies.get({ domain });
+          for (const c of existing) {
+            const cookieUrl = `http${c.secure ? 's' : ''}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+            await ses.cookies.remove(cookieUrl, c.name).catch(() => {});
+          }
+        }
+
+        // Import fresh cookies from Chrome into the requested partition
         const count = await importCookies(partition, cookies);
-        logger.info(`[browser:cookies:import-from-chrome] Imported ${count} cookies from Chrome for ${url} into ${partition}`);
+        logger.info(`[browser:cookies:import-from-chrome] Imported ${count} cookies into ${partition}`);
+
+        // Also sync to related partitions so login works everywhere:
+        // - If importing from Chat browser (browser-shared) → also import to matching webauth partition
+        // - If importing from WebAuth browser (webauth-*) → also import to browser-shared
+        const { WEBAUTH_PROVIDER_PARTITIONS } = await import('../browser/providers/registry');
+        const allPartitions = new Set([partition, 'persist:browser-shared', ...Object.values(WEBAUTH_PROVIDER_PARTITIONS)]);
+        // Find which webauth partitions match the imported domains
+        for (const otherPartition of allPartitions) {
+          if (otherPartition === partition) continue; // Already imported
+          // Only sync if the URL domain matches a webauth provider's login domain
+          const otherSes = (await import('electron')).session.fromPartition(otherPartition);
+          // Clear old cookies for imported domains in this partition too
+          for (const domain of importDomains) {
+            const existing = await otherSes.cookies.get({ domain });
+            for (const c of existing) {
+              const cookieUrl = `http${c.secure ? 's' : ''}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+              await otherSes.cookies.remove(cookieUrl, c.name).catch(() => {});
+            }
+          }
+          await importCookies(otherPartition, cookies);
+        }
+        logger.info(`[browser:cookies:import-from-chrome] Synced cookies to all ${allPartitions.size} partitions`);
         return { success: true, imported: count };
       } catch (error) {
         logger.error(`[browser:cookies:import-from-chrome] ${String(error)}`);
@@ -4002,9 +4037,17 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
  * WebAuth provider IPC handlers
  */
 function registerWebAuthHandlers(): void {
-  ipcMain.handle('webauth:provider:add', (_, _providerId: string) => {
+  ipcMain.handle('webauth:provider:add', async (_, _providerId: string) => {
     // Provider registration is handled in renderer store
-    // Main process will create webview when renderer requests it
+    // Trigger pipeline re-check after a delay (cookies may not be imported yet)
+    setTimeout(async () => {
+      try {
+        const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+        const pipeline = getWebAuthPipeline();
+        if (!pipeline.isProxyRunning()) await pipeline.initialize();
+        else await pipeline.checkAllProviders();
+      } catch { /* ignore */ }
+    }, 2000);
     return { success: true };
   });
 
@@ -4034,24 +4077,54 @@ function registerWebAuthHandlers(): void {
 
   ipcMain.handle('webauth:provider:login', (_, _providerId: string) => {
     // Login is handled via browser panel in renderer (opens webview tab)
+    // After user finishes login and imports cookies, re-check auth
     return { success: true };
   });
 
-  ipcMain.handle('webauth:provider:check', (_, _providerId: string) => {
-    // Auth check is done via webview.executeJavaScript in renderer
-    return { success: true, status: 'not-configured' };
+  // Trigger pipeline re-check after cookie import (called from BrowserToolbar import button)
+  // This ensures provider status + models update immediately after import
+  ipcMain.handle('webauth:pipeline:refresh', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const pipeline = getWebAuthPipeline();
+      if (!pipeline.isProxyRunning()) {
+        pipeline.setMainWindow(BrowserWindow.getAllWindows()[0]);
+        await pipeline.initialize();
+      } else {
+        await pipeline.checkAllProviders();
+      }
+      return { success: true, port: pipeline.getProxyPort() };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   });
 
-  ipcMain.handle('webauth:provider:check-all', () => {
-    return { success: true, providers: [] };
+  ipcMain.handle('webauth:provider:check', async (_, providerId: string) => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const result = await getWebAuthPipeline().checkProvider(providerId);
+      return { success: true, status: result.status };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:provider:check-all', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      await getWebAuthPipeline().checkAllProviders();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   });
 
   ipcMain.handle('webauth:proxy:start', async () => {
     try {
-      const { createWebAuthProxy } = await import('../browser/webauth-proxy');
-      const proxy = createWebAuthProxy();
-      const port = await proxy.start();
-      return { success: true, port };
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const pipeline = getWebAuthPipeline();
+      await pipeline.initialize();
+      return { success: true, port: pipeline.getProxyPort() };
     } catch (err) {
       return { success: false, error: String(err) };
     }
@@ -4059,9 +4132,8 @@ function registerWebAuthHandlers(): void {
 
   ipcMain.handle('webauth:proxy:stop', async () => {
     try {
-      const { getWebAuthProxy } = await import('../browser/webauth-proxy');
-      const proxy = getWebAuthProxy();
-      if (proxy) await proxy.stop();
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      await getWebAuthPipeline().shutdown();
       return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };
@@ -4069,12 +4141,12 @@ function registerWebAuthHandlers(): void {
   });
 
   ipcMain.handle('webauth:proxy:status', async () => {
-    const { getWebAuthProxy } = await import('../browser/webauth-proxy');
-    const proxy = getWebAuthProxy();
+    const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+    const pipeline = getWebAuthPipeline();
     return {
       success: true,
-      running: proxy?.isRunning ?? false,
-      port: proxy?.port ?? null,
+      running: pipeline.isProxyRunning(),
+      port: pipeline.getProxyPort(),
     };
   });
 }

@@ -107,6 +107,8 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
         toast.success(`Imported ${result.imported} cookies from Chrome`);
         // Reload the tab so it picks up the new cookies
         reload();
+        // Trigger WebAuth pipeline refresh (updates provider status + models)
+        window.electron.ipcRenderer.invoke('webauth:pipeline:refresh').catch(() => {});
       } else {
         toast.error(`Failed to import cookies: ${result.error}`);
       }

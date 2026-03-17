@@ -412,6 +412,14 @@ class WebAuthViewManager {
     return this.activeTabId;
   }
 
+  /** Find existing tab by partition */
+  getViewForPartition(partition: string): WebAuthTab | undefined {
+    for (const tab of this.tabs.values()) {
+      if (tab.partition === partition) return tab;
+    }
+    return undefined;
+  }
+
   /** Notify renderer of tab state changes */
   private notifyRenderer(channel: string, ...args: unknown[]): void {
     this.mainWindow?.webContents.send(channel, ...args);
