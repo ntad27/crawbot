@@ -265,7 +265,25 @@ export class GeminiWebProvider implements WebProvider {
     }
   }
 
+  private cachedPageUrl: string | null = null;
+
   private async apiChat(webview: WebviewLike, message: string): Promise<string> {
+    // Check if page URL changed (account switch or model change)
+    // If so, invalidate cached template so we recapture with new settings
+    try {
+      const currentUrl = await webview.executeJavaScript('location.href') as string;
+      if (this.cachedTemplate && this.cachedPageUrl) {
+        // Detect account change: /app vs /u/2/app
+        const oldAccount = this.cachedPageUrl.match(/\/u\/(\d+)\//)?.[1] || '0';
+        const newAccount = currentUrl.match(/\/u\/(\d+)\//)?.[1] || '0';
+        if (oldAccount !== newAccount) {
+          console.log(`[Gemini] Account changed (u/${oldAccount} → u/${newAccount}), invalidating template`);
+          this.cachedTemplate = null;
+        }
+      }
+      this.cachedPageUrl = currentUrl;
+    } catch { /* page might not be ready */ }
+
     if (!this.cachedTemplate) {
       console.log('[Gemini] No cached template, capturing...');
       this.cachedTemplate = await this.captureTemplate(webview);
@@ -346,8 +364,16 @@ export class GeminiWebProvider implements WebProvider {
         patterns: [{ urlPattern: '*StreamGenerate*', requestStage: 'Request' }],
       });
 
-      // Navigate to /app
-      await webview.executeJavaScript(`window.location.href = 'https://gemini.google.com/app'`);
+      // Navigate to clean /app for current account
+      // Preserve /u/N/ prefix if user switched to non-default account
+      await webview.executeJavaScript(`
+        (function() {
+          const url = location.href;
+          const accountMatch = url.match(/\\/u\\/(\\d+)\\//);
+          const accountPrefix = accountMatch ? '/u/' + accountMatch[1] : '';
+          window.location.href = 'https://gemini.google.com' + accountPrefix + '/app';
+        })()
+      `);
 
       // Wait for input
       for (let i = 0; i < 40; i++) {

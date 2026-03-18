@@ -527,7 +527,14 @@ kill $DEV_PID
    - Use `<system_instruction>` tag (not `<system>` — Gemini rejects it)
    - Model outputs tool calls as markdown code blocks → proxy parses → OpenAI format
 
-9. **Response parsing for Batchexecute** — answer text location varies
+9. **Multi-account / model switching** — cached templates are account+model specific
+   - Gemini URLs use `/u/N/` prefix for non-default accounts (e.g., `/u/2/app`)
+   - Template captured on account 0 won't work for account 2 (`f.sid` differs)
+   - Solution: detect URL prefix change before each call → invalidate template → recapture
+   - Model (Fast/Pro/Thinking) is baked into the template via Gemini's Angular state
+   - User must switch model in WebAuth browser panel UI → next call recaptures template
+
+10. **Response parsing for Batchexecute** — answer text location varies
    - Gemini: `data[4][0][1]` = `["answer text"]` (array of strings, NOT nested arrays)
    - Common mistake: `parts.map(x => x[0])` gets first CHARACTER, not first string
    - Correct: `parts.filter(x => typeof x === 'string').join('')`
@@ -547,6 +554,9 @@ kill $DEV_PID
 - **Input elements:** textarea (clean /app page) OR contenteditable (conversation page, Quill editor)
 - **Send button:** `button[aria-label="Send message"]` (stable aria-label, NOT CSS class)
 - **Tool calls:** Text-based ````tool_call` blocks — Gemini Web guardrails block native tool formats
+- **Multi-account:** Google accounts use URL prefix `/u/N/` (e.g., `/u/2/app` for 3rd account). Cached template must be invalidated when account changes. Navigate to `gemini.google.com/u/N/app` (preserve prefix) during template capture.
+- **Model selection:** Gemini web API uses whatever model is active in the UI (Fast/Thinking/Pro). The model is captured as part of the template. Switching model on the web UI → invalidates template → next API call recaptures with new model.
+- **Template invalidation:** Invalidate cached template when: (1) account URL prefix changes, (2) API returns 400/401, (3) user switches model via UI. Template is recaptured automatically on next call.
 
 ### Claude (SSE API)
 - **Endpoint:** `https://claude.ai/api/organizations/{orgId}/chat_conversations/{convId}/completion`
