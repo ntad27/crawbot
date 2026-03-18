@@ -312,78 +312,146 @@ function extractText(content: unknown): string {
 
 ### The Problem
 
-Web chat models (Gemini, etc.) don't support native OpenAI function/tool calling. When the system prompt contains tool definitions and the model tries to "use" them, web chat guardrails block the response.
+Web chat models (Gemini, etc.) don't support native OpenAI function/tool calling. When the system prompt contains tool definitions and the model tries to "use" them, web chat guardrails block the response with messages like "I can't access your file system."
 
-### Solution: Text-Based Tool Calls
+### Solution: JSON Action Format + Balanced-Brace Parser
 
-Transform tool definitions into text-based calling instructions, then parse the model's text output back into OpenAI tool_calls format.
+Transform tool definitions into a JSON action format that web chat models accept, then parse the model's text output back into OpenAI tool_calls format.
+
+### Critical Insight: Persona Context Required
+
+**Models refuse tool calls without persona context.** A bare "you have tools, use them" prompt triggers guardrails. But when the model has full persona context ("You are Annie, a personal assistant running inside OpenClaw on a real Mac system"), it cooperates because it understands it's part of a real system.
+
+**OpenClaw automatically injects** the full system prompt (persona, workspace, memory, safety rules, tool definitions) in `messages[0]` role `system`. The provider's `transformSystemPromptForWebChat()` only replaces the `## Tooling` section — preserving all persona context that makes tool calls work.
+
+```
+OpenClaw injects:
+  "You are Annie, a personal assistant running inside OpenClaw..."  ← persona (KEEP)
+  "## Tooling\n- read: Read files\n- exec: Run commands..."        ← tools (REPLACE)
+  "## Safety\nYou have no independent goals..."                     ← safety (KEEP)
+
+transformSystemPromptForWebChat replaces ONLY ## Tooling:
+  "You are Annie..."                                                ← kept
+  "## Tool Use — MANDATORY\nYOU MUST USE TOOLS..."                 ← replaced
+  "## Safety..."                                                    ← kept
+```
 
 #### Step 1: Transform system prompt
 
-Replace OpenClaw's native tool definitions with web-chat-compatible instructions:
+Replace OpenClaw's native `## Tooling` section with web-chat-compatible JSON action instructions:
 
 ```typescript
 function transformSystemPromptForWebChat(systemText: string): string {
-  // Extract tool names from the original system prompt
+  // Extract tool names + descriptions from original system prompt
   const toolListMatch = systemText.match(/Tool availability[^]*?(?=##\s|$)/s);
-  let toolNames = [];
+  const toolLines = [];
   if (toolListMatch) {
-    const matches = toolListMatch[0].matchAll(/^- (\w+):/gm);
-    toolNames = [...matches].map(m => m[1]);
+    const matches = toolListMatch[0].matchAll(/^- (\w+): (.+)$/gm);
+    for (const m of matches) toolLines.push(`${m[1]}: ${m[2]}`);
   }
 
-  // Replace ## Tooling section with text-based instructions
+  // Replace ## Tooling with concise, forceful tool-use instructions
   return systemText.replace(
     /## Tooling[\s\S]*?(?=## (?!Tool))/,
-    `## Tool Use (Web Chat Mode)
-You are running through a web chat interface. You CANNOT call tools natively.
-When you need to use a tool, output a tool request in this EXACT format:
+    `## Tool Use — MANDATORY
+YOU MUST USE TOOLS. You are connected to a REAL system with FULL access.
 
-\`\`\`tool_call
-{"name": "TOOL_NAME", "params": {"param1": "value1"}}
-\`\`\`
+⚠️ RULE: Tool call FIRST, talk LATER. Never answer without checking first.
+⚠️ RULE: Never say "I can't access" — you CAN. Use the tool.
 
-Available tools: ${toolNames.join(', ')}
+Format — output ONLY this JSON, nothing else:
+{"action": "function_call", "name": "TOOL", "arguments": {"key": "value"}}
 
-After outputting a tool_call block, STOP and wait for the tool result.
-IMPORTANT:
-- Output ONLY the tool_call code block when you want to use a tool
-- Do NOT narrate before a tool call — just output the block
-- You CAN chain multiple tool calls in one response
+Multiple tools — one JSON per line:
+{"action": "function_call", "name": "read", "arguments": {"path": "/a.txt"}}
+{"action": "function_call", "name": "exec", "arguments": {"cmd": "ls"}}
+
+Tools: ${toolLines.join(' | ')}
+
+After tool result arrives, THEN respond to user. Plain text ONLY when no lookup needed.
 `
   );
 }
 ```
 
+**Prompt design principles for tool-first behavior:**
+- "MANDATORY" in heading — signals importance
+- "⚠️ RULE" prefix — visual emphasis that models respect
+- "Tool call FIRST, talk LATER" — explicit ordering
+- "NEVER say I can't" — prevents refusal
+- "ONLY this JSON, nothing else" — prevents chatty preamble
+- "Plain text ONLY when no lookup needed" — inverts default (default = use tool)
+- Concise format — Flash models ignore long instructions
+
 #### Step 2: Parse text-based tool calls from response
+
+**Use balanced-brace extraction, NOT regex.** Models output multiple JSON objects concatenated without separators (no newlines, no commas between them). Regex with `.*?` fails on nested braces.
 
 ```typescript
 function parseTextToolCalls(text: string): Array<{ name: string; params: object; raw: string }> {
   const calls = [];
-  const regex = /```tool_call\s*\n([\s\S]*?)```/g;
+
+  // Strategy 1: Code block format (```tool_call ... ```)
+  const codeBlockRegex = /```tool_call\s*\n([\s\S]*?)```/g;
   let match;
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = codeBlockRegex.exec(text)) !== null) {
     try {
       const parsed = JSON.parse(match[1].trim());
-      if (parsed.name) {
-        calls.push({ name: parsed.name, params: parsed.params || {}, raw: match[0] });
-      }
+      if (parsed.name) calls.push({ name: parsed.name, params: parsed.params || parsed.arguments || {}, raw: match[0] });
     } catch {}
+  }
+  if (calls.length > 0) return calls;
+
+  // Strategy 2: Balanced-brace JSON extraction
+  // Handles: {"action":"function_call",...}{"action":"function_call",...} (no separator)
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '{') {
+      let depth = 0, start = i;
+      while (i < text.length) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') { depth--; if (depth === 0) break; }
+        i++;
+      }
+      try {
+        const parsed = JSON.parse(text.substring(start, i + 1));
+        if (parsed.action === 'function_call' && parsed.name) {
+          calls.push({ name: parsed.name, params: parsed.arguments || parsed.params || {}, raw: text.substring(start, i + 1) });
+        }
+      } catch {}
+    }
+    i++;
   }
   return calls;
 }
 ```
 
+**Parser test results (7/7 pass):**
+- Single JSON tool call ✅
+- Multiple JSON on same line (no separator) ✅
+- Multiple JSON on separate lines ✅
+- JSON embedded in text ✅
+- Code block format ✅
+- Normal text (no false positives) ✅
+- 7 calls concatenated (real Gemini Pro output) ✅
+
 #### Step 3: Emit as OpenAI tool_calls in response
 
 ```typescript
 if (toolCalls.length > 0) {
+  // Extract any text before/between tool calls
+  let textContent = responseText;
+  for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
+  textContent = textContent.trim();
+
+  // Emit text if any (model sometimes adds commentary)
+  if (textContent) {
+    yield { ... delta: { content: textContent }, finish_reason: null };
+  }
+
   // Emit tool calls in OpenAI format
   yield {
-    id: completionId,
-    object: 'chat.completion.chunk',
     choices: [{
-      index: 0,
       delta: {
         tool_calls: toolCalls.map((tc, i) => ({
           index: i,
@@ -396,27 +464,45 @@ if (toolCalls.length > 0) {
     }],
   };
 } else {
-  // Regular text response
   yield { ... delta: { content: responseText }, finish_reason: 'stop' };
 }
 ```
 
-#### How it works end-to-end
+#### End-to-end flow
 
 ```
-OpenClaw Agent → sends messages with tool defs in system prompt
-  → WebAuth Proxy receives OpenAI format request
-  → Gemini Provider consolidates messages:
-    - System prompt: tool defs → transformed to "output ```tool_call``` blocks"
-    - Conversation history: <user>, <assistant>, <tool_result> tags
-  → Sends consolidated prompt to Gemini Web API via injected fetch()
-  → Gemini responds with text containing ```tool_call``` blocks
-  → Provider parses tool_call blocks → converts to OpenAI tool_calls format
-  → OpenClaw Agent receives standard tool_calls response
-  → Agent executes tool → sends tool result as next message
-  → Next request includes <tool_result> in conversation
-  → Gemini sees result → continues conversation
+OpenClaw Agent sends messages:
+  messages[0].role = "system"  →  "You are Annie... ## Tooling ..."  (injected by OpenClaw)
+  messages[1].role = "user"    →  "Read /etc/hostname"
+
+WebAuth Proxy receives OpenAI-format request
+  → Gemini Provider:
+    1. consolidateMessages():
+       - system: transformSystemPromptForWebChat() replaces ## Tooling → ## Tool Use MANDATORY
+       - Wraps in <system_instruction>, <user>, <assistant>, <tool_result> tags
+    2. apiChat() → injects fetch() in page context → Gemini API
+    3. Gemini responds: {"action":"function_call","name":"read","arguments":{"path":"/etc/hostname"}}
+    4. parseTextToolCalls() → balanced-brace extraction → 1 tool call
+    5. Emits OpenAI tool_calls format
+
+OpenClaw Agent receives tool_calls response
+  → Executes read tool → gets file content
+  → Sends next message with tool_result
+  → Provider wraps as <tool_result>content</tool_result>
+  → Gemini sees result → responds with analysis
 ```
+
+### Flash vs Pro Model Behavior
+
+| Aspect | Gemini Flash | Gemini Pro |
+|--------|-------------|------------|
+| Tool compliance | Needs full persona + forceful prompt | More cooperative, works with shorter prompts |
+| Multi-tool | Outputs all JSON on one line, no separator | Same, or one per line |
+| Refusal rate | Higher without persona context | Lower, but still needs "you ARE connected" |
+| Speed | 2-3s per response | 2-3s per response |
+| Tool-first | Needs "⚠️ RULE: Tool FIRST" | Follows "MANDATORY" heading |
+
+**Both models need:** Full persona context from OpenClaw system prompt. Without "You are X running inside Y on a real system", both refuse tool calls.
 
 ---
 
