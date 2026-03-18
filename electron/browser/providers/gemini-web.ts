@@ -33,12 +33,70 @@ function extractText(content: unknown): string {
  * the entire conversation context (system prompt, history, tools) into
  * one coherent message.
  */
+/**
+ * Transform system prompt for WebAuth models that don't support native tool calling.
+ *
+ * Replaces OpenClaw's tool definitions with text-based tool calling instructions.
+ * The model outputs tool calls as XML-like tags that the proxy can parse.
+ */
+function transformSystemPromptForWebChat(systemText: string): string {
+  // Replace the ## Tooling section with web-chat-compatible instructions
+  // Keep everything else (persona, workspace, memory, etc.)
+
+  // Extract tool names from the "Tool names are case-sensitive" section
+  const toolListMatch = systemText.match(/Tool availability[^]*?(?=##\s|$)/s);
+  let toolNames: string[] = [];
+  if (toolListMatch) {
+    const matches = toolListMatch[0].matchAll(/^- (\w+):/gm);
+    toolNames = [...matches].map(m => m[1]);
+  }
+
+  // Replace the ## Tooling section
+  let transformed = systemText.replace(
+    /## Tooling[\s\S]*?(?=## (?!Tool))/,
+    `## Tool Use (Web Chat Mode)
+You are running through a web chat interface. You CANNOT call tools natively.
+When you need to use a tool, output a tool request in this EXACT format:
+
+\`\`\`tool_call
+{"name": "TOOL_NAME", "params": {"param1": "value1"}}
+\`\`\`
+
+Available tools: ${toolNames.join(', ')}
+
+After outputting a tool_call block, STOP and wait for the tool result.
+The tool result will appear in the next message as <tool_result>.
+
+IMPORTANT:
+- Output ONLY the tool_call code block when you want to use a tool
+- Do NOT describe what you're going to do — just output the tool_call block
+- Do NOT say "let me" or "I'll" before a tool call — just call it
+- You CAN chain multiple tool calls in one response if needed
+- Each tool_call must be in its own code block
+
+`
+  );
+
+  // Also replace ## Tool Call Style section
+  transformed = transformed.replace(
+    /## Tool Call Style[\s\S]*?(?=## )/,
+    ''
+  );
+
+  return transformed;
+}
+
 function consolidateMessages(messages: Array<{ role: string; content: unknown }>): string {
   const parts: string[] = [];
 
   for (const msg of messages) {
-    const text = extractText(msg.content);
+    let text = extractText(msg.content);
     if (!text.trim()) continue;
+
+    // Transform system prompt for web chat compatibility
+    if (msg.role === 'system') {
+      text = transformSystemPromptForWebChat(text);
+    }
 
     switch (msg.role) {
       case 'system':
@@ -69,6 +127,35 @@ function consolidateMessages(messages: Array<{ role: string; content: unknown }>
   }
 
   return parts.join('\n\n');
+}
+
+/**
+ * Parse text-based tool calls from Gemini's response.
+ * Looks for ```tool_call\n{...}\n``` patterns.
+ */
+function parseTextToolCalls(text: string): Array<{ name: string; params: Record<string, unknown>; raw: string }> {
+  const calls: Array<{ name: string; params: Record<string, unknown>; raw: string }> = [];
+
+  // Match ```tool_call\n{...}\n``` blocks
+  const regex = /```tool_call\s*\n([\s\S]*?)```/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const json = match[1].trim();
+      const parsed = JSON.parse(json);
+      if (parsed.name) {
+        calls.push({
+          name: parsed.name,
+          params: parsed.params || parsed.arguments || {},
+          raw: match[0],
+        });
+      }
+    } catch {
+      // Not valid JSON, skip
+    }
+  }
+
+  return calls;
 }
 
 interface CapturedTemplate {
@@ -112,17 +199,70 @@ export class GeminiWebProvider implements WebProvider {
       throw new Error('Gemini: no response. Ensure you are logged in.');
     }
 
-    yield {
-      id: `chatcmpl-${Date.now()}`,
-      object: 'chat.completion.chunk',
-      created: Math.floor(Date.now() / 1000),
-      model: request.model,
-      choices: [{
-        index: 0,
-        delta: { content: responseText },
-        finish_reason: 'stop',
-      }],
-    };
+    const completionId = `chatcmpl-${Date.now()}`;
+
+    // Check if response contains text-based tool calls
+    const toolCalls = parseTextToolCalls(responseText);
+
+    if (toolCalls.length > 0) {
+      // Extract any text before/between tool calls
+      let textContent = responseText;
+      for (const tc of toolCalls) {
+        textContent = textContent.replace(tc.raw, '');
+      }
+      textContent = textContent.trim();
+
+      // Emit text content if any
+      if (textContent) {
+        yield {
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: request.model,
+          choices: [{
+            index: 0,
+            delta: { content: textContent },
+            finish_reason: null,
+          }],
+        };
+      }
+
+      // Emit tool calls in OpenAI format
+      yield {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: toolCalls.map((tc, i) => ({
+              index: i,
+              id: `call_${Date.now()}_${i}`,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.params),
+              },
+            })),
+          } as unknown as { content: string },
+          finish_reason: 'tool_calls',
+        }],
+      } as unknown as OpenAIChatChunk;
+    } else {
+      // Regular text response
+      yield {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{
+          index: 0,
+          delta: { content: responseText },
+          finish_reason: 'stop',
+        }],
+      };
+    }
   }
 
   private async apiChat(webview: WebviewLike, message: string): Promise<string> {
