@@ -802,6 +802,127 @@ async function handleForwardCdpCommand(msg) {
     }
   }
 
+  // Custom: get localStorage from Chrome for a URL
+  // Opens/finds a tab on the domain, executes script to read localStorage
+  if (method === 'CrawBot.getStorage') {
+    const url = typeof params?.url === 'string' ? params.url : ''
+    if (!url) throw new Error('Missing url parameter')
+
+    let hostname
+    try { hostname = new URL(url).hostname } catch { throw new Error('Invalid URL') }
+
+    // Find existing tab on this domain or create one
+    const allTabs = await chrome.tabs.query({})
+    let targetTab = allTabs.find(t => t.url && new URL(t.url).hostname === hostname)
+    let createdTab = false
+
+    if (!targetTab) {
+      targetTab = await chrome.tabs.create({ url, active: false })
+      createdTab = true
+      // Wait for page to fully load
+      await new Promise((resolve) => {
+        const onComplete = (details) => {
+          if (details.tabId === targetTab.id) {
+            chrome.webNavigation.onCompleted.removeListener(onComplete)
+            resolve()
+          }
+        }
+        chrome.webNavigation.onCompleted.addListener(onComplete)
+        // Timeout fallback
+        setTimeout(() => {
+          chrome.webNavigation.onCompleted.removeListener(onComplete)
+          resolve()
+        }, 10000)
+      })
+    }
+
+    try {
+      // Read all browser storages via executeScript
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: targetTab.id },
+        func: async () => {
+          // localStorage
+          const ls = {}
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i)
+            if (key) ls[key] = localStorage.getItem(key)
+          }
+
+          // sessionStorage
+          const ss = {}
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i)
+            if (key) ss[key] = sessionStorage.getItem(key)
+          }
+
+          // IndexedDB — read database names and basic key-value data
+          const idb = {}
+          try {
+            const dbs = await indexedDB.databases()
+            for (const dbInfo of dbs) {
+              if (!dbInfo.name) continue
+              try {
+                const db = await new Promise((resolve, reject) => {
+                  const req = indexedDB.open(dbInfo.name, dbInfo.version)
+                  req.onsuccess = () => resolve(req.result)
+                  req.onerror = () => reject(req.error)
+                  // Don't trigger upgrade
+                  req.onupgradeneeded = (e) => { e.target.transaction.abort() }
+                })
+                const storeNames = [...db.objectStoreNames]
+                const dbData = {}
+                for (const storeName of storeNames) {
+                  try {
+                    const tx = db.transaction(storeName, 'readonly')
+                    const store = tx.objectStore(storeName)
+                    const allItems = await new Promise((resolve, reject) => {
+                      const req = store.getAll()
+                      req.onsuccess = () => resolve(req.result)
+                      req.onerror = () => reject(req.error)
+                    })
+                    const allKeys = await new Promise((resolve, reject) => {
+                      const req = store.getAllKeys()
+                      req.onsuccess = () => resolve(req.result)
+                      req.onerror = () => reject(req.error)
+                    })
+                    // Only include if reasonable size (< 1MB total)
+                    const serialized = JSON.stringify(allItems)
+                    if (serialized.length < 1024 * 1024) {
+                      dbData[storeName] = { keys: allKeys, values: allItems }
+                    }
+                  } catch { /* skip store */ }
+                }
+                db.close()
+                if (Object.keys(dbData).length > 0) {
+                  idb[dbInfo.name] = { version: dbInfo.version, stores: dbData }
+                }
+              } catch { /* skip db */ }
+            }
+          } catch { /* indexedDB.databases() not supported */ }
+
+          return { localStorage: ls, sessionStorage: ss, indexedDB: idb }
+        },
+      })
+
+      const storageResult = results?.[0]?.result || {}
+      const localStorage = storageResult.localStorage || {}
+      const sessionStorage = storageResult.sessionStorage || {}
+      const indexedDBData = storageResult.indexedDB || {}
+
+      // Clean up if we created the tab
+      if (createdTab && targetTab.id) {
+        chrome.tabs.remove(targetTab.id).catch(() => {})
+      }
+
+      return { localStorage, sessionStorage, indexedDB: indexedDBData, hostname }
+    } catch (e) {
+      if (createdTab && targetTab?.id) {
+        chrome.tabs.remove(targetTab.id).catch(() => {})
+      }
+      throw new Error('Failed to read storage: ' + e.message)
+    }
+  }
+
   // On-demand tab discovery: if no tab found by session/targetId, try to find
   // the Chrome tab by targetId and announce it now (lazy announcement).
   if (!tabId && targetId) {

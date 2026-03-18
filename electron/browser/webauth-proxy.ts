@@ -153,6 +153,10 @@ export class WebAuthProxy {
       return;
     }
 
+    // Log what OpenClaw sends
+    const roles = request.messages.map((m: { role: string; content: unknown }) => m.role);
+    logger.info(`${LOG_TAG} Chat: model=${request.model} msgs=${request.messages.length} roles=[${roles}]`);
+
     // Stream SSE response
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',

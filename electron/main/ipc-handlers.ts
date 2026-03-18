@@ -4024,6 +4024,112 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
           await importCookies(otherPartition, cookies);
         }
         logger.info(`[browser:cookies:import-from-chrome] Synced cookies to all ${allPartitions.size} partitions`);
+
+        // Also import localStorage from Chrome for this domain
+        try {
+          const storageResult = await new Promise<{ localStorage: Record<string, string>; sessionStorage: Record<string, string>; indexedDB: Record<string, unknown> }>((resolveS, rejectS) => {
+            const ws2 = new WebSocket(cdpWsUrl);
+            let settled2 = false;
+            const timeout2 = setTimeout(() => { if (!settled2) { settled2 = true; try { ws2.close(); } catch {} rejectS(new Error('timeout')); } }, 15000);
+            ws2.on('error', () => { if (!settled2) { settled2 = true; clearTimeout(timeout2); rejectS(new Error('relay error')); } });
+            ws2.on('open', () => {
+              ws2.send(JSON.stringify({ id: 1, method: 'CrawBot.getStorage', params: { url } }));
+            });
+            ws2.on('message', (data: Buffer | string) => {
+              if (settled2) return;
+              try {
+                const msg = JSON.parse(String(data));
+                if (msg.id === 1) {
+                  settled2 = true; clearTimeout(timeout2);
+                  try { ws2.close(); } catch {}
+                  if (msg.error) { rejectS(new Error('storage error')); return; }
+                  resolveS({
+                    localStorage: msg.result?.localStorage || {},
+                    sessionStorage: msg.result?.sessionStorage || {},
+                    indexedDB: msg.result?.indexedDB || {},
+                  });
+                }
+              } catch {}
+            });
+          });
+
+          const storageData = storageResult.localStorage;
+          const ssData = storageResult.sessionStorage;
+          const idbData = storageResult.indexedDB;
+          const lsKeys = Object.keys(storageData);
+
+          if (lsKeys.length > 0 || Object.keys(ssData).length > 0 || Object.keys(idbData).length > 0) {
+            const { automationViews } = await import('../browser/automation-views');
+            const { webauthViews } = await import('../browser/webauth-views');
+
+            const hostname = new URL(url).hostname;
+            const allTabs = [...automationViews.getAllTabs(), ...webauthViews.getAllTabs()];
+            for (const tab of allTabs) {
+              try {
+                const tabUrl = tab.view.webContents.getURL();
+                if (tabUrl.includes(hostname) && !tab.view.webContents.isDestroyed()) {
+                  // Import localStorage + sessionStorage
+                  await tab.view.webContents.executeJavaScript(`
+                    (function() {
+                      const ls = ${JSON.stringify(storageData)};
+                      for (const [k, v] of Object.entries(ls)) {
+                        try { localStorage.setItem(k, v); } catch {}
+                      }
+                      const ss = ${JSON.stringify(ssData)};
+                      for (const [k, v] of Object.entries(ss)) {
+                        try { sessionStorage.setItem(k, v); } catch {}
+                      }
+                      return { ls: Object.keys(ls).length, ss: Object.keys(ss).length };
+                    })()
+                  `);
+
+                  // Import IndexedDB data
+                  if (Object.keys(idbData).length > 0) {
+                    await tab.view.webContents.executeJavaScript(`
+                      (async function() {
+                        const idbData = ${JSON.stringify(idbData)};
+                        for (const [dbName, dbInfo] of Object.entries(idbData)) {
+                          try {
+                            const db = await new Promise((resolve, reject) => {
+                              const req = indexedDB.open(dbName, dbInfo.version || 1);
+                              req.onupgradeneeded = (e) => {
+                                const db = e.target.result;
+                                for (const storeName of Object.keys(dbInfo.stores || {})) {
+                                  if (!db.objectStoreNames.contains(storeName)) {
+                                    db.createObjectStore(storeName);
+                                  }
+                                }
+                              };
+                              req.onsuccess = () => resolve(req.result);
+                              req.onerror = () => reject(req.error);
+                            });
+                            for (const [storeName, storeData] of Object.entries(dbInfo.stores || {})) {
+                              try {
+                                const tx = db.transaction(storeName, 'readwrite');
+                                const store = tx.objectStore(storeName);
+                                const keys = storeData.keys || [];
+                                const values = storeData.values || [];
+                                for (let i = 0; i < values.length; i++) {
+                                  store.put(values[i], keys[i] !== undefined ? keys[i] : i);
+                                }
+                              } catch {}
+                            }
+                            db.close();
+                          } catch {}
+                        }
+                      })()
+                    `);
+                  }
+                }
+              } catch { /* tab might not be ready */ }
+            }
+            logger.info(`[browser:cookies:import-from-chrome] Imported storage: ${lsKeys.length} localStorage, ${Object.keys(ssData).length} sessionStorage, ${Object.keys(idbData).length} IndexedDB databases`);
+          }
+        } catch (storageErr) {
+          // localStorage import is best-effort — don't fail the whole import
+          logger.warn(`[browser:cookies:import-from-chrome] localStorage import skipped: ${String(storageErr)}`);
+        }
+
         return { success: true, imported: count };
       } catch (error) {
         logger.error(`[browser:cookies:import-from-chrome] ${String(error)}`);

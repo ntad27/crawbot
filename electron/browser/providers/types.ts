@@ -61,4 +61,8 @@ export interface WebviewLike {
   executeJavaScript(code: string): Promise<unknown>;
   addEventListener(event: string, listener: (...args: unknown[]) => void): void;
   removeEventListener(event: string, listener: (...args: unknown[]) => void): void;
+  /** Optional: send raw CDP command (available on WebContentsViewAdapter) */
+  sendCDPCommand?(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Optional: subscribe to CDP events */
+  onCDPEvent?(callback: (method: string, params: unknown) => void): void;
 }

@@ -1,12 +1,9 @@
 /**
- * Gemini Web Provider
- * Uses gemini.google.com web session (DOM-based interaction)
+ * Gemini Web Provider — API approach via Batchexecute
  *
- * Reference: /Users/xnohat/openclaw-zero-token/src/providers/gemini-web-client-browser.ts
- *
- * NOTE: Gemini uses complex Batchexecute/RPC format internally. This implementation
- * uses a DOM-polling approach via the webview: it types the message into the input,
- * clicks send, and polls for the assistant response text.
+ * Uses Gemini's internal StreamGenerate API instead of DOM simulation.
+ * First call captures the request template via CDP Network interception,
+ * subsequent calls replay it with different messages via fetch().
  */
 
 import type {
@@ -19,7 +16,6 @@ const MODELS: WebProviderModel[] = [
   { id: 'webauth-gemini-flash', name: 'Gemini Flash (WebAuth)', contextWindow: 1000000 },
 ];
 
-/** Extract plain text from OpenAI message content (string or array) */
 function extractText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -31,12 +27,64 @@ function extractText(content: unknown): string {
   return String(content);
 }
 
+/**
+ * Consolidate an OpenAI messages array into a single text prompt.
+ * Since Gemini web chat only accepts a single text input, we flatten
+ * the entire conversation context (system prompt, history, tools) into
+ * one coherent message.
+ */
+function consolidateMessages(messages: Array<{ role: string; content: unknown }>): string {
+  const parts: string[] = [];
+
+  for (const msg of messages) {
+    const text = extractText(msg.content);
+    if (!text.trim()) continue;
+
+    switch (msg.role) {
+      case 'system':
+        parts.push(`<system_instruction>\n${text}\n</system_instruction>`);
+        break;
+      case 'user':
+        parts.push(`<user>\n${text}\n</user>`);
+        break;
+      case 'assistant':
+        parts.push(`<assistant>\n${text}\n</assistant>`);
+        break;
+      case 'tool':
+        parts.push(`<tool_result>\n${text}\n</tool_result>`);
+        break;
+      default:
+        parts.push(`<${msg.role}>\n${text}\n</${msg.role}>`);
+    }
+  }
+
+  // If only one user message and no system/assistant context,
+  // just send the raw text (simpler for Gemini)
+  const hasSystem = messages.some((m) => m.role === 'system');
+  const hasAssistant = messages.some((m) => m.role === 'assistant');
+  const userMsgs = messages.filter((m) => m.role === 'user');
+
+  if (!hasSystem && !hasAssistant && userMsgs.length === 1) {
+    return extractText(userMsgs[0].content);
+  }
+
+  return parts.join('\n\n');
+}
+
+interface CapturedTemplate {
+  inner: unknown[];
+  atToken: string;
+  url: string;
+}
+
 export class GeminiWebProvider implements WebProvider {
   id = 'gemini-web';
   name = 'Gemini Web';
   loginUrl = 'https://gemini.google.com';
   partition = 'persist:webauth-gemini';
   models = MODELS;
+
+  private cachedTemplate: CapturedTemplate | null = null;
 
   async checkAuth(webview: WebviewLike): Promise<WebAuthCheckResult> {
     try {
@@ -53,186 +101,205 @@ export class GeminiWebProvider implements WebProvider {
     webview: WebviewLike,
     request: OpenAIChatRequest,
   ): AsyncGenerator<OpenAIChatChunk> {
-    const prompt = request.messages
-      .filter((m) => m.role === 'user')
-      .map((m) => extractText(m.content))
-      .join('\n\n');
+    // Consolidate ALL messages (system, user, assistant, tool) into a single prompt.
+    // Gemini web chat only accepts a single text input, so we must flatten the
+    // entire conversation context into one message.
+    const prompt = consolidateMessages(request.messages);
 
-    // Ensure on clean /app page
-    const currentUrl = await webview.executeJavaScript('location.href') as string;
-    if (!currentUrl.includes('gemini.google.com/app') || currentUrl.includes('/app/')) {
-      await webview.executeJavaScript(`window.location.href = 'https://gemini.google.com/app'`);
-    }
-
-    // Wait for textarea
-    for (let i = 0; i < 20; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const hasInput = await webview.executeJavaScript(
-        `!!document.querySelector('textarea, [contenteditable="true"], div[role="textbox"]')`
-      );
-      if (hasInput) break;
-    }
-
-    const responseText = await this.domSimulateChat(webview, prompt);
+    const responseText = await this.apiChat(webview, prompt);
 
     if (!responseText) {
-      throw new Error('Gemini: no response detected. Ensure you are logged in at gemini.google.com.');
+      throw new Error('Gemini: no response. Ensure you are logged in.');
     }
 
-    // Clean up Gemini DOM artifacts from response
-    let cleaned = responseText;
-    // Remove "Gemini said" prefix (from model-response container)
-    cleaned = cleaned.replace(/^\s*Gemini said\s*/i, '');
-    // Remove "You stopped this response" suffix
-    cleaned = cleaned.replace(/\s*You stopped this response\s*$/i, '');
-    cleaned = cleaned.trim();
-
-    const completionId = `chatcmpl-${Date.now()}`;
     yield {
-      id: completionId,
+      id: `chatcmpl-${Date.now()}`,
       object: 'chat.completion.chunk',
       created: Math.floor(Date.now() / 1000),
       model: request.model,
       choices: [{
         index: 0,
-        delta: { content: cleaned },
+        delta: { content: responseText },
         finish_reason: 'stop',
       }],
     };
   }
 
-  private async domSimulateChat(webview: WebviewLike, message: string): Promise<string> {
-    // Step 1: Type message and click send
-    const sendResult = await webview.executeJavaScript(`
-      (async function() {
-        const inputSelectors = [
-          'textarea',
-          '[contenteditable="true"]',
-          'div[role="textbox"]',
-          '[placeholder*="Gemini"]',
-          '[aria-label*="message"]',
-          '[aria-label*="prompt"]',
-        ];
-        let inputEl = null;
-        for (const sel of inputSelectors) {
-          const el = document.querySelector(sel);
-          if (el && el.offsetParent !== null) {
-            inputEl = el;
-            break;
-          }
-        }
-        if (!inputEl) return { ok: false, error: 'No input found' };
-
-        inputEl.focus();
-
-        // Use native setter for Angular/React change detection
-        const msg = ${JSON.stringify(message)};
-        if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-          const setter = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-          )?.set || Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value'
-          )?.set;
-          if (setter) setter.call(inputEl, msg);
-          else inputEl.value = msg;
-        } else {
-          inputEl.innerText = msg;
-        }
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Wait for framework to process
-        await new Promise(r => setTimeout(r, 500));
-
-        // Find send button — Gemini uses mat-icon.send-icon or arrow icon
-        const sendSelectors = [
-          'mat-icon.send-icon',
-          '.send-icon',
-          'button[aria-label*="Send"]',
-          'button[aria-label*="send"]',
-          'button[data-testid*="send"]',
-          'button[type="submit"]',
-        ];
-        const container = inputEl.closest('.initial-input-area-container, .initial-input-area, .input-area-container') || document;
-        let sendEl = null;
-        for (const sel of sendSelectors) {
-          const el = container.querySelector(sel) || document.querySelector(sel);
-          if (el) { sendEl = el; break; }
-        }
-        if (sendEl) {
-          sendEl.click();
-          return { ok: true, method: 'click', tag: sendEl.tagName };
-        }
-
-        // Fallback: Enter key
-        inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        inputEl.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        return { ok: true, method: 'enter' };
-      })()
-    `);
-
-    if (!(sendResult as { ok: boolean }).ok) {
-      throw new Error(`Gemini DOM send failed: ${(sendResult as { error?: string }).error}`);
+  private async apiChat(webview: WebviewLike, message: string): Promise<string> {
+    if (!this.cachedTemplate) {
+      console.log('[Gemini] No cached template, capturing...');
+      this.cachedTemplate = await this.captureTemplate(webview);
     }
 
-    // Step 2: Poll for response text
-    const maxWaitMs = 120000;
-    const pollIntervalMs = 2000;
-    let lastText = '';
-    let stableCount = 0;
+    if (!this.cachedTemplate) {
+      throw new Error('Failed to capture Gemini API template. Try reloading the Gemini tab.');
+    }
 
-    for (let elapsed = 0; elapsed < maxWaitMs; elapsed += pollIntervalMs) {
-      await new Promise((r) => setTimeout(r, pollIntervalMs));
+    // Clone template and set new message
+    const template = JSON.parse(JSON.stringify(this.cachedTemplate.inner));
+    template[0][0] = message;
+    template[2] = ['', '', '', null, null, null, null, null, null, ''];
 
-      const result = await webview.executeJavaScript(`
-        (function() {
-          const clean = (t) => t.replace(/[\\u200B-\\u200D\\uFEFF]/g, '').trim();
-          const modelSelectors = [
-            'message-content',
-            'model-response',
-            '.model-response-text',
-            '[data-message-author="model"]',
-            '[data-sender="model"]',
-            '[class*="model-turn"]',
-            '[class*="modelResponse"]',
-            '[class*="response-content"]',
-            "[class*='markdown']",
-            'article',
-          ];
+    const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(template)]))
+      + '&at=' + encodeURIComponent(this.cachedTemplate.atToken) + '&';
 
-          let text = '';
-          for (const sel of modelSelectors) {
-            const els = document.querySelectorAll(sel);
-            for (let i = els.length - 1; i >= 0; i--) {
-              const t = clean(els[i].textContent || '');
-              if (t.length >= 5) {
-                text = t;
-                break;
+    const resultStr = await webview.executeJavaScript(`
+      (async () => {
+        try {
+          const res = await fetch(${JSON.stringify(this.cachedTemplate!.url)}, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'X-Same-Domain': '1' },
+            credentials: 'include',
+            body: ${JSON.stringify(body)},
+          });
+          if (!res.ok) return JSON.stringify({ error: 'HTTP ' + res.status });
+          const text = await res.text();
+          let answer = '';
+          for (const line of text.split('\\n')) {
+            try {
+              const p = JSON.parse(line);
+              if (Array.isArray(p)) {
+                for (const item of p) {
+                  if (Array.isArray(item) && item[0] === 'wrb.fr') {
+                    const data = JSON.parse(item[2]);
+                    // Response text is at data[4][0][1] = ["full text"]
+                    if (data?.[4]?.[0]?.[1]) {
+                      const parts = data[4][0][1];
+                      const t = Array.isArray(parts) ? parts.filter(x => typeof x === 'string').join('') : String(parts);
+                      if (t.length > answer.length) answer = t;
+                    }
+                  }
+                }
               }
-            }
-            if (text) break;
+            } catch {}
           }
-
-          const stopBtn = document.querySelector('[aria-label*="Stop"], [aria-label*="stop"]');
-          return { text, isStreaming: !!stopBtn };
-        })()
-      `) as { text: string; isStreaming: boolean };
-
-      if (result.text && result.text.length >= 5) {
-        if (result.text !== lastText) {
-          lastText = result.text;
-          stableCount = 0;
-        } else {
-          stableCount++;
-          // Break when stable 3+ polls (6s) OR streaming stopped
-          if (stableCount >= 3 || (!result.isStreaming && stableCount >= 2)) {
-            break;
-          }
+          return JSON.stringify({ status: res.status, answer });
+        } catch(e) {
+          return JSON.stringify({ error: e.message });
         }
-      }
-    }
+      })()
+    `) as string;
 
-    return lastText;
+    const parsed = JSON.parse(resultStr);
+    if (parsed.error) {
+      if (parsed.error.includes('400') || parsed.error.includes('401')) {
+        this.cachedTemplate = null;
+        return this.apiChat(webview, message);
+      }
+      throw new Error(`Gemini API: ${parsed.error}`);
+    }
+    return parsed.answer || '';
+  }
+
+  /**
+   * Capture template by using CDP Fetch.requestPaused to intercept a real
+   * StreamGenerate request triggered via DOM interaction.
+   * CDP Fetch pauses the request so we can read its body before continuing.
+   */
+  private async captureTemplate(webview: WebviewLike): Promise<CapturedTemplate | null> {
+    if (!webview.sendCDPCommand) return null;
+    console.log('[Gemini] Capturing template via CDP Fetch...');
+
+    try {
+      // Enable Fetch interception for StreamGenerate
+      await webview.sendCDPCommand('Fetch.enable', {
+        patterns: [{ urlPattern: '*StreamGenerate*', requestStage: 'Request' }],
+      });
+
+      // Navigate to /app
+      await webview.executeJavaScript(`window.location.href = 'https://gemini.google.com/app'`);
+
+      // Wait for input
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 300));
+        const ready = await webview.executeJavaScript(
+          `!!document.querySelector('textarea, [contenteditable="true"]')`
+        );
+        if (ready) break;
+      }
+
+      // Set up capture promise BEFORE sending
+      let capturedBody: string | null = null;
+      let capturedUrl: string | null = null;
+      let capturedRequestId: string | null = null;
+
+      const capturePromise = new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => resolve(), 15000); // 15s max wait
+        webview.onCDPEvent!((method, params) => {
+          if (method === 'Fetch.requestPaused') {
+            const p = params as { requestId: string; request: { url: string; postData?: string } };
+            if (p.request.url.includes('StreamGenerate')) {
+              console.log('[Gemini] Fetch.requestPaused: StreamGenerate intercepted!');
+              capturedBody = p.request.postData || null;
+              capturedUrl = p.request.url;
+              capturedRequestId = p.requestId;
+              clearTimeout(timeout);
+              resolve();
+            }
+          }
+        });
+      });
+
+      // Type and click send
+      console.log('[Gemini] Sending via DOM to trigger StreamGenerate...');
+      await webview.executeJavaScript(`
+        (async () => {
+          const input = document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
+          if (!input) return;
+          input.focus();
+          if (input.tagName === 'TEXTAREA') {
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            if (setter) setter.call(input, 'Hello');
+            else input.value = 'Hello';
+          } else {
+            input.innerText = 'Hello';
+          }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 1000));
+          const btn = document.querySelector('button[aria-label="Send message"]');
+          if (btn && !btn.disabled) btn.click();
+        })()
+      `);
+
+      // Wait for interception
+      await capturePromise;
+
+      // Continue the paused request so Gemini UI doesn't break
+      if (capturedRequestId) {
+        await webview.sendCDPCommand('Fetch.continueRequest', { requestId: capturedRequestId }).catch(() => {});
+      }
+
+      // Disable fetch interception
+      await webview.sendCDPCommand('Fetch.disable').catch(() => {});
+
+      if (!capturedBody || !capturedUrl) {
+        console.error('[Gemini] Template capture failed: no StreamGenerate intercepted');
+        return null;
+      }
+
+      // Parse — postData is URL-encoded
+      const decoded = decodeURIComponent(capturedBody);
+      console.log('[Gemini] Decoded body starts:', decoded.substring(0, 30));
+      console.log('[Gemini] Decoded body length:', decoded.length);
+      // Use greedy match for f.req (content can contain &)
+      const freqMatch = decoded.match(/^f\.req=([\s\S]+?)&at=/);
+      const atMatch = decoded.match(/&at=([^&]+)/);
+      if (!freqMatch || !atMatch) {
+        console.error('[Gemini] Template parse failed: f.req=' + !!freqMatch + ' at=' + !!atMatch);
+        console.error('[Gemini] Body sample:', decoded.substring(0, 100));
+        return null;
+      }
+
+      const outer = JSON.parse(freqMatch[1]);
+      const inner = JSON.parse(outer[1]);
+      console.log(`[Gemini] Template captured: ${inner.length} elements`);
+
+      return { inner, atToken: atMatch[1], url: capturedUrl };
+    } catch (err) {
+      console.error('[Gemini] Template capture error:', err);
+      // Disable fetch interception on error
+      await webview.sendCDPCommand('Fetch.disable').catch(() => {});
+      return null;
+    }
   }
 }

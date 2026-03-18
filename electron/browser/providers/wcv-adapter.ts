@@ -70,6 +70,15 @@ export class WebContentsViewAdapter implements WebviewLike {
         this._ws.on('open', () => {
           this._wsReady = true;
           console.log(`[WCV-Adapter] CDP WebSocket connected to ${this._targetId}`);
+          // Attach any pending event callbacks
+          for (const cb of this._eventCallbacks) {
+            this._ws!.on('message', (data) => {
+              try {
+                const msg = JSON.parse(data.toString());
+                if (msg.method && !msg.id) cb(msg.method, msg.params);
+              } catch {}
+            });
+          }
           resolve();
         });
         this._ws.on('error', (err) => {
@@ -151,6 +160,42 @@ export class WebContentsViewAdapter implements WebviewLike {
       }));
     });
   }
+
+  /** Send raw CDP command and return result */
+  async sendCDPCommand(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    await this.ensureConnection();
+    const id = ++this._msgId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error(`CDP command timeout: ${method}`));
+      }, 30000);
+      this._pending.set(id, {
+        resolve: (result) => { clearTimeout(timer); resolve(result); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
+      this._ws!.send(JSON.stringify({ id, method, params }));
+    });
+  }
+
+  /** Subscribe to CDP events */
+  onCDPEvent(callback: (method: string, params: unknown) => void): void {
+    // Store callback — will be attached after connection
+    this._eventCallbacks.push(callback);
+    // If already connected, attach now
+    if (this._ws) {
+      this._ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.method && !msg.id) {
+            callback(msg.method, msg.params);
+          }
+        } catch {}
+      });
+    }
+  }
+
+  private _eventCallbacks: Array<(method: string, params: unknown) => void> = [];
 
   addEventListener(event: string, listener: (...args: unknown[]) => void): void {
     if (event === 'ipc-message') {
