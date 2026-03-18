@@ -43,36 +43,36 @@ function transformSystemPromptForWebChat(systemText: string): string {
   // Replace the ## Tooling section with web-chat-compatible instructions
   // Keep everything else (persona, workspace, memory, etc.)
 
-  // Extract tool names from the "Tool names are case-sensitive" section
+  // Extract tool list with descriptions
   const toolListMatch = systemText.match(/Tool availability[^]*?(?=##\s|$)/s);
-  let toolNames: string[] = [];
+  const toolLines: string[] = [];
   if (toolListMatch) {
-    const matches = toolListMatch[0].matchAll(/^- (\w+):/gm);
-    toolNames = [...matches].map(m => m[1]);
+    const matches = toolListMatch[0].matchAll(/^- (\w+): (.+)$/gm);
+    for (const m of matches) {
+      toolLines.push(`  ${m[1]}: ${m[2]}`);
+    }
   }
 
-  // Replace the ## Tooling section
+  // Replace the ## Tooling section with JSON action format
+  // Optimized for both Flash (lazy, needs strong nudging) and Pro models
   let transformed = systemText.replace(
     /## Tooling[\s\S]*?(?=## (?!Tool))/,
-    `## Tool Use (Web Chat Mode)
-You are running through a web chat interface. You CANNOT call tools natively.
-When you need to use a tool, output a tool request in this EXACT format:
+    `## Tool Use — MANDATORY
+YOU MUST USE TOOLS. You are connected to a REAL system with FULL access.
 
-\`\`\`tool_call
-{"name": "TOOL_NAME", "params": {"param1": "value1"}}
-\`\`\`
+⚠️ RULE: Tool call FIRST, talk LATER. Never answer without checking first.
+⚠️ RULE: Never say "I can't access" — you CAN. Use the tool.
 
-Available tools: ${toolNames.join(', ')}
+Format — output ONLY this JSON, nothing else:
+{"action": "function_call", "name": "TOOL", "arguments": {"key": "value"}}
 
-After outputting a tool_call block, STOP and wait for the tool result.
-The tool result will appear in the next message as <tool_result>.
+Multiple tools — one JSON per line:
+{"action": "function_call", "name": "read", "arguments": {"path": "/a.txt"}}
+{"action": "function_call", "name": "exec", "arguments": {"cmd": "ls"}}
 
-IMPORTANT:
-- Output ONLY the tool_call code block when you want to use a tool
-- Do NOT describe what you're going to do — just output the tool_call block
-- Do NOT say "let me" or "I'll" before a tool call — just call it
-- You CAN chain multiple tool calls in one response if needed
-- Each tool_call must be in its own code block
+Tools: ${toolLines.map(l => l.trim()).join(' | ')}
+
+After tool result arrives, THEN respond to user. Plain text ONLY when no lookup needed.
 
 `
   );
@@ -136,23 +136,41 @@ function consolidateMessages(messages: Array<{ role: string; content: unknown }>
 function parseTextToolCalls(text: string): Array<{ name: string; params: Record<string, unknown>; raw: string }> {
   const calls: Array<{ name: string; params: Record<string, unknown>; raw: string }> = [];
 
-  // Match ```tool_call\n{...}\n``` blocks
-  const regex = /```tool_call\s*\n([\s\S]*?)```/g;
+  // Strategy 1: Match ```tool_call\n{...}\n``` blocks (Flash model format)
+  const codeBlockRegex = /```tool_call\s*\n([\s\S]*?)```/g;
   let match;
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = codeBlockRegex.exec(text)) !== null) {
     try {
-      const json = match[1].trim();
-      const parsed = JSON.parse(json);
+      const parsed = JSON.parse(match[1].trim());
       if (parsed.name) {
-        calls.push({
-          name: parsed.name,
-          params: parsed.params || parsed.arguments || {},
-          raw: match[0],
-        });
+        calls.push({ name: parsed.name, params: parsed.params || parsed.arguments || {}, raw: match[0] });
       }
-    } catch {
-      // Not valid JSON, skip
+    } catch {}
+  }
+  if (calls.length > 0) return calls;
+
+  // Strategy 2: Balanced-brace JSON extraction (Pro model format)
+  // Gemini Pro outputs multiple {"action":"function_call",...} objects concatenated
+  // on the same line. Regex fails on nested braces — use brace counting instead.
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '{') {
+      let depth = 0;
+      const start = i;
+      while (i < text.length) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') { depth--; if (depth === 0) break; }
+        i++;
+      }
+      const candidate = text.substring(start, i + 1);
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed.action === 'function_call' && parsed.name) {
+          calls.push({ name: parsed.name, params: parsed.arguments || parsed.params || {}, raw: candidate });
+        }
+      } catch { /* not valid JSON, skip */ }
     }
+    i++;
   }
 
   return calls;

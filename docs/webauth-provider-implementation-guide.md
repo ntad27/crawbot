@@ -523,9 +523,12 @@ kill $DEV_PID
    - Gateway restart required after writing webauth config (hot-reload not supported)
 
 8. **Web chat guardrails** — models refuse tool-like requests when phrased as tool calls
-   - Solution: Transform tool defs to text-based format (````tool_call` blocks)
+   - Solution: Transform tool defs to JSON action format: `{"action":"function_call","name":"...","arguments":{...}}`
    - Use `<system_instruction>` tag (not `<system>` — Gemini rejects it)
-   - Model outputs tool calls as markdown code blocks → proxy parses → OpenAI format
+   - Parser uses balanced-brace extraction (NOT regex) — handles nested `{}` and multiple calls concatenated without separators
+   - **Flash vs Pro behavior:** Both work but need full persona context ("You are X running inside Y on a real system"). Without persona, Flash refuses tool calls. Pro is more cooperative.
+   - **Multi-tool parsing:** Gemini outputs multiple JSON objects on same line without separators. Balanced-brace counter extracts each correctly.
+   - **Prompt optimization for tool-first behavior:** Use "MANDATORY" + "⚠️ RULE: Tool call FIRST, talk LATER" + "NEVER say I can't" to push model to use tools before answering
 
 9. **Multi-account / model switching** — cached templates are account+model specific
    - Gemini URLs use `/u/N/` prefix for non-default accounts (e.g., `/u/2/app`)

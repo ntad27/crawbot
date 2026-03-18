@@ -422,7 +422,9 @@ class WebAuthViewManager {
 
   /** Notify renderer of tab state changes */
   private notifyRenderer(channel: string, ...args: unknown[]): void {
-    this.mainWindow?.webContents.send(channel, ...args);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send(channel, ...args);
+    }
   }
 
   private updateActiveViewBounds(): void {
