@@ -279,10 +279,11 @@ class AutomationViewManager {
     for (const [id, tab] of this.tabs) {
       if (id === tabId) {
         // Bring to front: remove and re-add so it's on top
-        if (this.mainWindow) {
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
           try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
           this.mainWindow.contentView.addChildView(tab.view);
         }
+        if (tab.view.webContents.isDestroyed()) continue;
         tab.view.setVisible(true);
         if (this.panelBounds.width > 0 && this.panelBounds.height > 0) {
           tab.view.setBounds(this.panelBounds);
@@ -341,7 +342,9 @@ class AutomationViewManager {
 
   /** Notify renderer of tab state changes */
   private notifyRenderer(channel: string, ...args: unknown[]): void {
-    this.mainWindow?.webContents.send(channel, ...args);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send(channel, ...args);
+    }
   }
 
   private updateActiveViewBounds(): void {
