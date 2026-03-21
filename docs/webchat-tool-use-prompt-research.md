@@ -273,6 +273,90 @@ Always validate with the full `/new` session startup flow.
 
 ---
 
+## Image Upload Support
+
+### ChatGPT — 3-Step Upload + `sediment://` Protocol
+
+ChatGPT web chat uses a 3-step file upload flow:
+
+1. **Create**: `POST /backend-api/files` (JSON + Authorization Bearer token)
+   - Body: `{"file_name": "img.jpg", "file_size": 127573, "use_case": "multimodal"}`
+   - Returns: `{file_id, upload_url, status}`
+
+2. **Upload blob**: `PUT upload_url` (Azure Blob Storage, XHR not fetch due to CORS)
+   - Headers: `Content-Type: image/jpeg`, `x-ms-blob-type: BlockBlob`
+   - Body: raw image blob
+   - Returns: 201 Created
+
+3. **Confirm**: `POST /backend-api/files/{file_id}/uploaded` (+ Authorization header)
+   - Body: `{}`
+   - Returns: `{status: "success", download_url}`
+
+**Critical discovery:** Image reference in conversation body uses `sediment://` prefix:
+```json
+{
+  "content_type": "multimodal_text",
+  "parts": [
+    {"content_type": "image_asset_pointer", "asset_pointer": "sediment://file_xxx", "size_bytes": 127573, "width": 1024, "height": 1024},
+    "Describe this image"
+  ]
+}
+```
+
+**Three things that MUST be correct** (wrong = "Error in message stream"):
+- Prefix: `sediment://` (NOT `file-service://`)
+- Order: image BEFORE text in `parts` array
+- `width`/`height`: must have real values (not 0)
+
+**How discovered:** Intercepted real ChatGPT UI upload via CDP `Network.requestWillBeSent`
+with `maxPostDataSize: 500000` to capture the full request body.
+
+### Gemini — Inline Base64
+
+Gemini batchexecute accepts inline base64 at `template[0][4]`:
+```javascript
+template[0][4] = [[[base64Data, "jpeg"], null]];
+```
+
+### OpenClaw Media Format
+
+OpenClaw embeds media as text in messages (not OpenAI `image_url` format):
+```
+[media attached: /Users/xnohat/.openclaw/media/outbound/uuid.jpg (image/jpeg) | /path/to/file.jpg]
+```
+
+`extractImages()` parses both OpenAI content parts AND this text-embedded format.
+
+---
+
+## CDP Event Listener Pitfalls
+
+### Listener Accumulation Bug
+
+`onCDPEvent()` in WCV adapter pushes callbacks and NEVER removes them. Each
+`sendAndCapture()` call adds a new listener. After N calls, N listeners all
+process every CDP event → stale listeners interfere with new ones.
+
+**Fix:** Use direct WebSocket `ws.on('message', handler)` + `ws.removeListener('message', handler)`
+in cleanup. Access raw WS via `(webview as any)._ws`.
+
+### Network.loadingFinished Never Fires for SSE
+
+GPT-5.4 Thinking's SSE stream sometimes stays open indefinitely (second+ messages).
+`Network.loadingFinished` never fires even though data is received.
+
+**Fix:** Poll `Network.getResponseBody` every 3s after `Network.dataReceived` fires.
+Check for `[DONE]` marker in accumulated body. CDP buffers response body even before
+stream closes, so `getResponseBody` returns partial data we can check.
+
+### Delta Encoding — Don't Reset Answer
+
+ChatGPT sends multiple assistant text messages in one response (tool calls + greeting).
+Parser must ACCUMULATE text across messages, not reset on each new one.
+Add `\n` separator between messages so last tool call JSON doesn't merge with greeting.
+
+---
+
 ## Files
 
 - Gemini transformer: `shared-utils.ts` → `transformSystemPromptForWebChat()`

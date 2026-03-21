@@ -719,6 +719,12 @@ kill $DEV_PID
 - **Auth cookies:** `__Secure-next-auth.session-token` (may be chunked as `.0`, `.1`, etc.)
 - **Navigation:** After sending, ChatGPT changes URL to `/c/{conversation-id}` via pushState (SPA, JS context preserved). Navigate back to `chatgpt.com/` for each new message to start clean chat.
 - **Cookie auth check:** Must check both `__Secure-next-auth.session-token` and `__Secure-next-auth.session-token.0` (chunked tokens for large session data)
+- **Image upload:** 3-step flow: POST `/backend-api/files` (JSON) → PUT `upload_url` (XHR blob, Azure Blob Storage) → POST `/backend-api/files/{id}/uploaded` (confirm). Image ref uses `sediment://` prefix (NOT `file-service://`). Images BEFORE text in `parts` array. Width/height must have real values.
+- **Tool use:** "Two environments" prompt injection — explain sandbox ❌ vs host ✅, blockquote `> JSON` format. See `docs/webchat-tool-use-prompt-research.md` for full research.
+- **CDP listener cleanup:** Use direct WS listener + `removeListener` (NOT `onCDPEvent` which accumulates). `Network.disable` + `re-enable` before each call.
+- **SSE polling fallback:** `Network.loadingFinished` may never fire for Thinking model SSE. Poll `getResponseBody` every 3s, check for `[DONE]` marker.
+- **Delta encoding accumulate:** Don't reset `answer` on new assistant text message — accumulate with `\n` separator. ChatGPT sends tool calls + greeting as separate text messages.
+- **OpenClaw media format:** Images embedded as text `[media attached: path (mime) | path]`, not OpenAI `image_url` content parts. `extractImages()` handles both formats.
 
 ### DeepSeek (Proof-of-Work)
 - **Endpoint:** `https://chat.deepseek.com/api/v0/chat/completion`
