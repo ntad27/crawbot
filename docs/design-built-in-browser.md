@@ -1097,14 +1097,14 @@ POST /v1/providers/{id}/check-auth → Check if session is still valid (custom)
 ```
 
 **Model naming convention:** `webauth-{provider}-{model}` e.g.:
-- `webauth-claude-sonnet-4` → Claude Web, Sonnet 4 model
-- `webauth-chatgpt-gpt-4o` → ChatGPT Web, GPT-4o model
+- `webauth-claude-sonnet` → Claude Web, Sonnet 4.6 model
+- `webauth-chatgpt-gpt` → ChatGPT Web, GPT-5.4 model
 - `webauth-deepseek-chat` → DeepSeek Web, V3 model
 
 **Request routing:**
 ```typescript
 // POST /v1/chat/completions
-// { model: "webauth-claude-sonnet-4", messages: [...] }
+// { model: "webauth-claude-sonnet", messages: [...] }
 //
 // 1. Parse model prefix → find provider ("claude" → claudeWebProvider)
 // 2. Find webview with provider's partition
@@ -1312,8 +1312,8 @@ Register the web provider proxy as an openai-compatible provider in CrawBot:
     api: 'openai-completions',
     apiKeyEnv: 'WEBAUTH_API_KEY',
     models: [
-      { id: 'webauth-claude-sonnet-4', name: 'Claude Sonnet 4 (Web)' },
-      { id: 'webauth-chatgpt-gpt-4o', name: 'GPT-4o (Web)' },
+      { id: 'webauth-claude-sonnet', name: 'Claude Sonnet 4.6 (Web)' },
+      { id: 'webauth-chatgpt-gpt', name: 'GPT-5.4 (Web)' },
       // dynamically populated based on authenticated providers
     ],
   },
@@ -1330,8 +1330,8 @@ Register the web provider proxy as an openai-compatible provider in CrawBot:
         "api": "openai-completions",
         "apiKey": "dummy-webauth-key",
         "models": [
-          { "id": "webauth-claude-sonnet-4", "name": "Claude Sonnet 4 (Web)" },
-          { "id": "webauth-chatgpt-gpt-4o", "name": "GPT-4o (Web)" }
+          { "id": "webauth-claude-sonnet", "name": "Claude Sonnet 4.6 (Web)" },
+          { "id": "webauth-chatgpt-gpt", "name": "GPT-5.4 (Web)" }
         ]
       }
     }

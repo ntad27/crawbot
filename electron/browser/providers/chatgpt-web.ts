@@ -21,9 +21,7 @@ import type {
 import { consolidateMessages, parseBlockquoteToolCalls, parseJsonToolCalls, transformSystemPromptForChatGPT, extractImages } from './shared-utils';
 
 const MODELS: WebProviderModel[] = [
-  { id: 'webauth-chatgpt-gpt-4o', name: 'GPT-4o (WebAuth)', contextWindow: 128000 },
-  { id: 'webauth-chatgpt-gpt-4o-mini', name: 'GPT-4o Mini (WebAuth)', contextWindow: 128000 },
-  { id: 'webauth-chatgpt-gpt-4', name: 'GPT-4 (WebAuth)', contextWindow: 8192 },
+  { id: 'webauth-chatgpt-gpt', name: 'GPT-4 (WebAuth)', contextWindow: 200000 },
 ];
 
 const PLACEHOLDER = '__CRAWBOT_MSG__';
@@ -68,18 +66,27 @@ export class ChatGPTWebProvider implements WebProvider {
       for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
       textContent = textContent.trim();
       if (textContent) {
-        yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
+        yield {
+          id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }]
+        };
       }
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{ index: 0, delta: { tool_calls: toolCalls.map((tc, i) => ({
-          index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
-          function: { name: tc.name, arguments: JSON.stringify(tc.params) },
-        })) } as unknown as { content: string }, finish_reason: 'tool_calls' }],
+      yield {
+        id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{
+          index: 0, delta: {
+            tool_calls: toolCalls.map((tc, i) => ({
+              index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
+              function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+            }))
+          } as unknown as { content: string }, finish_reason: 'tool_calls'
+        }],
       } as unknown as OpenAIChatChunk;
     } else {
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
+      yield {
+        id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }]
+      };
     }
   }
 
@@ -206,7 +213,7 @@ export class ChatGPTWebProvider implements WebProvider {
     `);
 
     // 3. Disable + re-enable Network to get clean event state
-    await webview.sendCDPCommand('Network.disable').catch(() => {});
+    await webview.sendCDPCommand('Network.disable').catch(() => { });
     await webview.sendCDPCommand('Network.enable');
 
     // Use direct WebSocket listener instead of onCDPEvent (which accumulates)
@@ -315,8 +322,8 @@ export class ChatGPTWebProvider implements WebProvider {
 
     // 6. Disable Network + clean up listener (prevent accumulation)
     adapter._ws?.removeListener('message', wsHandler);
-    await webview.sendCDPCommand('Network.disable').catch(() => {});
-    await webview.executeJavaScript('window.__crawbotMessage = null').catch(() => {});
+    await webview.sendCDPCommand('Network.disable').catch(() => { });
+    await webview.executeJavaScript('window.__crawbotMessage = null').catch(() => { });
 
     if (!rawResponse) return '';
 
@@ -366,7 +373,7 @@ export class ChatGPTWebProvider implements WebProvider {
             answer = parsed.message.content.parts[0];
           }
         }
-      } catch {}
+      } catch { }
     }
 
     return answer;
