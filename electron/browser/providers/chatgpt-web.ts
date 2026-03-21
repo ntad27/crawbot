@@ -61,32 +61,82 @@ export class ChatGPTWebProvider implements WebProvider {
     let toolCalls = parseBlockquoteToolCalls(responseText);
     if (toolCalls.length === 0) toolCalls = parseJsonToolCalls(responseText);
 
-    if (toolCalls.length > 0) {
+    // Intercept `image` tool calls — ChatGPT has built-in vision.
+    // Upload image → ChatGPT analyzes → feed analysis back as context → ChatGPT continues.
+    const imageCalls = toolCalls.filter((tc) => tc.name === 'image');
+    const otherCalls = toolCalls.filter((tc) => tc.name !== 'image');
+    // Convert image tool calls to read tool calls so OpenClaw UI shows the widget
+    // (read tool supports images — returns as attachment, no infinite loop)
+    for (const ic of imageCalls) {
+      const imgPath = (ic.params.path || ic.params.image || '') as string;
+      if (imgPath) {
+        otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
+      }
+    }
+
+    if (imageCalls.length > 0) {
+      // Step 1: Get image analysis from ChatGPT
+      const analyses: string[] = [];
+      for (const ic of imageCalls) {
+        const imgPath = (ic.params.path || ic.params.image || '') as string;
+        if (!imgPath) continue;
+        try {
+          const imgPrompt = (ic.params.prompt as string) || 'Describe this image in detail.';
+          const analysis = await this.sendAndCapture(webview, imgPrompt, [{ url: imgPath, mediaType: 'image/png' }]);
+          if (analysis) analyses.push(analysis);
+        } catch (err) {
+          console.error('[ChatGPT] Image analysis failed:', err);
+          analyses.push(`[Image analysis failed: ${err}]`);
+        }
+      }
+
+      // Step 2: Feed analysis back to ChatGPT as context → let it continue responding
+      if (analyses.length > 0) {
+        const contextMsg = `<tool_result>\nImage analysis result:\n${analyses.join('\n---\n')}\n</tool_result>\n\nNow continue with the user's request based on this image analysis. Respond naturally.`;
+        const finalResponse = await this.sendAndCapture(webview, contextMsg);
+
+        if (finalResponse) {
+          // Check if the final response also contains tool calls
+          let finalToolCalls = parseBlockquoteToolCalls(finalResponse);
+          if (finalToolCalls.length === 0) finalToolCalls = parseJsonToolCalls(finalResponse);
+
+          if (finalToolCalls.length > 0) {
+            otherCalls.push(...finalToolCalls);
+            let textContent = finalResponse;
+            for (const tc of finalToolCalls) textContent = textContent.replace(tc.raw, '');
+            textContent = textContent.trim();
+            if (textContent) {
+              yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+                choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
+            }
+          } else {
+            yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+              choices: [{ index: 0, delta: { content: finalResponse }, finish_reason: otherCalls.length > 0 ? null : 'stop' }] };
+          }
+        }
+      }
+    }
+
+    if (otherCalls.length > 0) {
       let textContent = responseText;
       for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
       textContent = textContent.trim();
-      if (textContent) {
-        yield {
-          id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }]
-        };
+      // Only emit text if no image analysis was already emitted
+      if (textContent && imageCalls.length === 0) {
+        yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
       }
-      yield {
-        id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{
-          index: 0, delta: {
-            tool_calls: toolCalls.map((tc, i) => ({
-              index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
-              function: { name: tc.name, arguments: JSON.stringify(tc.params) },
-            }))
-          } as unknown as { content: string }, finish_reason: 'tool_calls'
-        }],
+      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{ index: 0, delta: {
+          tool_calls: otherCalls.map((tc, i) => ({
+            index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+          }))
+        } as unknown as { content: string }, finish_reason: 'tool_calls' }],
       } as unknown as OpenAIChatChunk;
-    } else {
-      yield {
-        id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }]
-      };
+    } else if (imageCalls.length === 0) {
+      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
     }
   }
 

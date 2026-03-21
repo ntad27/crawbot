@@ -357,6 +357,69 @@ Add `\n` separator between messages so last tool call JSON doesn't merge with gr
 
 ---
 
+## Image Tool Interception
+
+### Problem
+OpenClaw's `image` tool sends images to a SEPARATE vision model (Gemini/GPT-4o) for
+analysis. But ChatGPT already has built-in vision — redundant and slower.
+
+### Solution: Intercept + Upload + Feed Back
+When ChatGPT calls `image` tool:
+1. Intercept the tool call (don't pass to OpenClaw's image tool)
+2. Upload image to ChatGPT via 3-step flow (sediment://)
+3. `sendAndCapture` with image → ChatGPT analyzes directly
+4. Feed analysis back: `sendAndCapture("<tool_result>analysis</tool_result>\nNow continue...")`
+5. ChatGPT responds naturally with the analysis context
+6. Also emit a `read` tool call (not `image`) for the same path → OpenClaw UI shows thumbnail
+
+**Why `read` not `image`:** Emitting `image` tool call causes infinite loop — OpenClaw
+executes image tool → sends result → agent calls image again. `read` tool handles images
+(returns as attachment) without triggering re-analysis.
+
+---
+
+## System Prompt Tool Schema — Lessons Learned
+
+### Every tool needs full schema in the prompt
+When `compat.supportsTools = true`, OpenClaw sends both:
+- `tools` API parameter (JSON schema) — for models with native tool calling
+- `## Tooling` in system prompt (name + one-line description) — always present
+
+For WebAuth models, only the system prompt matters (web chat ignores `tools` param).
+One-line descriptions are NOT enough — model needs parameter names, types, and examples.
+
+### Don't change proven prompt structure
+The "Two environments" structure was tested with 30+ variants and found working.
+ANY structural change (reordering, renaming sections, changing framing) risks breaking
+tool use completely. GPT-5.4 Thinking is extremely sensitive to prompt structure.
+
+Rule: **append new content, never restructure existing**.
+
+### Tool schema format that works
+Each tool needs:
+```
+### tool_name — One-line description
+Actions: action1, action2 (if applicable)
+Params: param1 (required), param2 (type, optional), param3 (enum values, optional)
+> {"action": "function_call", "name": "tool_name", "arguments": {"param1": "value"}}
+> {"action": "function_call", "name": "tool_name", "arguments": {"param1": "v", "param2": "v"}}
+```
+
+### Tools verified from OpenClaw source schemas
+All parameter names and types verified against actual TypeBox schemas in:
+- `~/openclaw/src/agents/tools/*.ts` (OpenClaw native tools)
+- `node_modules/@mariozechner/pi-coding-agent/dist/core/tools/*.js` (pi-coding-agent tools)
+
+Key corrections found during verification:
+- `scroll` is NOT a valid browser act kind (use `press` + `PageDown` or `evaluate` + `window.scrollBy`)
+- `edit` params are `oldText`/`newText` (camelCase), not `old_text`/`new_text`
+- `exec` timeout is in seconds (not ms) — param name is `timeout`
+- `process` has 10 actions (list/poll/log/write/send-keys/submit/paste/kill/clear/remove)
+- `sessions_spawn` is separate from `subagents` — spawn creates, subagents manages
+- Image tool interception requires `read` fallback (not re-emitting `image`)
+
+---
+
 ## Files
 
 - Gemini transformer: `shared-utils.ts` → `transformSystemPromptForWebChat()`

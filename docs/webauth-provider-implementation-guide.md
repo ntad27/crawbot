@@ -725,6 +725,10 @@ kill $DEV_PID
 - **SSE polling fallback:** `Network.loadingFinished` may never fire for Thinking model SSE. Poll `getResponseBody` every 3s, check for `[DONE]` marker.
 - **Delta encoding accumulate:** Don't reset `answer` on new assistant text message — accumulate with `\n` separator. ChatGPT sends tool calls + greeting as separate text messages.
 - **OpenClaw media format:** Images embedded as text `[media attached: path (mime) | path]`, not OpenAI `image_url` content parts. `extractImages()` handles both formats.
+- **Image tool interception:** `image` tool calls intercepted → upload image to ChatGPT → direct vision analysis → feed result back as context → emit `read` tool call (not `image`) for UI thumbnail. Avoids infinite loop (image→execute→image→...).
+- **Tool schema in prompt:** OpenClaw's `## Tooling` only has name + one-line description. Full param schemas (from TypeBox in source) must be included in transformed prompt for WebAuth models. Every tool needs blockquote examples with correct parameter names.
+- **Prompt structure sensitivity:** GPT-5.4 Thinking is extremely sensitive to prompt structure. NEVER restructure the proven "Two environments" section. Only APPEND new tools after it.
+- **Browser scroll:** No `scroll` act kind exists. Use `press` + `PageDown`/`PageUp` or `evaluate` + `window.scrollBy()`.
 
 ### DeepSeek (Proof-of-Work)
 - **Endpoint:** `https://chat.deepseek.com/api/v0/chat/completion`
