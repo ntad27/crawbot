@@ -154,9 +154,30 @@ export const useWebAuthStore = create<WebAuthState>()(
 
 // ── IPC listeners for pipeline status updates ──
 
-window.electron.ipcRenderer.on('webauth:provider:status-changed', (providerId: unknown, status: unknown) => {
-  if (typeof providerId === 'string' && typeof status === 'string') {
-    useWebAuthStore.getState().updateProvider(providerId, { status: status as WebAuthStatus, lastChecked: Date.now() });
+window.electron.ipcRenderer.on('webauth:provider:status-changed', (providerId: unknown, status: unknown, providerInfo: unknown) => {
+  if (typeof providerId !== 'string' || typeof status !== 'string') return;
+  const store = useWebAuthStore.getState();
+  const existing = store.providers.find((p) => p.id === providerId);
+
+  if (existing) {
+    store.updateProvider(providerId, { status: status as WebAuthStatus, lastChecked: Date.now() });
+  } else if (status === 'valid' && providerInfo && typeof providerInfo === 'object') {
+    // Auto-add provider that pipeline detected as authenticated
+    const info = providerInfo as { name?: string; partition?: string; loginUrl?: string; models?: Array<{ id: string; name: string }> };
+    const reg = AVAILABLE_PROVIDERS.find((p) => p.id === providerId);
+    if (reg || info.name) {
+      useWebAuthStore.setState((s) => ({
+        providers: [...s.providers, {
+          id: providerId,
+          name: info.name || reg?.name || providerId,
+          status: 'valid' as WebAuthStatus,
+          models: info.models || [],
+          partition: info.partition || reg?.partition || `persist:webauth-${providerId}`,
+          loginUrl: info.loginUrl || reg?.loginUrl || '',
+          lastChecked: Date.now(),
+        }],
+      }));
+    }
   }
 });
 

@@ -120,7 +120,11 @@ export function setOpenClawWebAuthConfig(proxyPort: number, models: Array<{ id: 
     baseUrl: `http://127.0.0.1:${proxyPort}/v1`,
     api: 'openai-completions',
     apiKey: 'dummy-webauth-key',
-    models: models.map((m) => ({ id: m.id, name: m.name })),
+    models: models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      compat: { supportsTools: true },
+    })),
   };
 
   modelsConfig.providers = providers;

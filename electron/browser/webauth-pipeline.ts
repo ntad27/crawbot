@@ -98,6 +98,17 @@ class WebAuthPipeline {
   }
 
   async checkAllProviders(): Promise<void> {
+    // Check if proxy is still alive — restart if it died
+    if (this.proxy && !this.proxy.isRunning) {
+      logger.warn(`${LOG_TAG} Proxy died, restarting...`);
+      try {
+        const port = await this.proxy.start(0);
+        logger.info(`${LOG_TAG} Proxy restarted on port ${port}`);
+      } catch (err) {
+        logger.error(`${LOG_TAG} Proxy restart failed:`, err);
+      }
+    }
+
     const authenticatedModels: Array<{ id: string; name: string }> = [];
 
     for (const [id, provider] of this.providers) {
@@ -113,8 +124,13 @@ class WebAuthPipeline {
         this.proxy?.removeWebview(id);
       }
 
-      // Notify renderer of status
-      this.notifyRenderer('webauth:provider:status-changed', id, status);
+      // Notify renderer of status — include full provider info so renderer can auto-add
+      this.notifyRenderer('webauth:provider:status-changed', id, status, {
+        name: provider.name,
+        partition: provider.partition,
+        loginUrl: provider.loginUrl,
+        models: provider.models,
+      });
     }
 
     // Update openclaw.json with authenticated models
@@ -164,7 +180,18 @@ class WebAuthPipeline {
     providerId: string,
     provider: WebProvider,
   ): Promise<void> {
-    if (this.adapters.has(providerId)) return; // Already provisioned
+    // Check if existing adapter is still valid (underlying view not destroyed)
+    const existingAdapter = this.adapters.get(providerId);
+    if (existingAdapter) {
+      const existingTab = webauthViews.getViewForPartition(provider.partition);
+      if (existingTab && !existingTab.view.webContents.isDestroyed()) {
+        return; // Already provisioned and valid
+      }
+      // Adapter is stale — remove it and re-provision
+      logger.info(`${LOG_TAG} Stale adapter for ${providerId}, re-provisioning...`);
+      this.adapters.delete(providerId);
+      this.proxy?.removeWebview(providerId);
+    }
 
     // Reuse existing tab (from WebAuth browser panel UI or previous cycle)
     const existing = webauthViews.getViewForPartition(provider.partition);
@@ -180,13 +207,21 @@ class WebAuthPipeline {
     // Keep it "visible" but off-screen — Chromium throttles truly hidden views
     // which causes executeJavaScript to hang.
     const tabId = `webauth-tab-${Date.now()}-${providerId}`;
+    // Mark as pipeline tab BEFORE createTab to prevent did-start-loading from activating it
+    webauthViews.markAsPipelineTab(tabId);
     const tab = webauthViews.createTab(tabId, provider.loginUrl, provider.partition);
 
-    // CRITICAL: Prevent Chromium from throttling this view.
-    // Without this, webContents.executeJavaScript() hangs indefinitely.
-    tab.view.setVisible(true);
-    tab.view.setBounds({ x: -9999, y: -9999, width: 800, height: 600 });
+    // Pipeline tabs are API-only — not for user interaction.
+    // Keep hidden + prevent throttling so CDP works.
+    tab.view.setVisible(false);
+    tab.view.setBounds({ x: -9999, y: -9999, width: 1, height: 1 });
     tab.view.webContents.setBackgroundThrottling(false);
+    // Remove from main window content view to prevent popup
+    try {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.contentView.removeChildView(tab.view);
+      }
+    } catch { /* already removed or not added */ }
 
     await new Promise<void>((resolve) => {
       if (tab.view.webContents.isLoading()) {

@@ -1,19 +1,24 @@
 /**
- * ChatGPT Web Provider
- * Uses chatgpt.com web session
+ * ChatGPT Web Provider — Hybrid approach
  *
- * Reference: /Users/xnohat/openclaw-zero-token/src/providers/chatgpt-web-client-browser.ts
+ * Request modification: In-page fetch monkey-patch (replaces placeholder with real message)
+ * Response capture: CDP Network domain (captures SSE body after stream completes)
  *
- * NOTE: ChatGPT has anti-bot sentinel/turnstile tokens.
- * This implementation attempts basic auth; if 403, user must re-login.
- * Full sentinel token support requires loading CDN scripts inside the webview.
+ * Flow:
+ * 1. Store real message in window.__crawbotMessage
+ * 2. Inject fetch monkey-patch that replaces __CRAWBOT_MSG__ placeholder in request body
+ * 3. Enable CDP Network.enable to capture response
+ * 4. Type short placeholder into ProseMirror editor → click Send
+ * 5. Fetch monkey-patch replaces placeholder with real message
+ * 6. CDP Network.loadingFinished → Network.getResponseBody captures full SSE body
+ * 7. Parse SSE with delta encoding v1 support
  */
 
 import type {
   WebProvider, WebProviderModel, WebAuthCheckResult,
   OpenAIChatRequest, OpenAIChatChunk, WebviewLike,
 } from './types';
-import { executeInWebview, streamFromWebview } from './base-provider';
+import { consolidateMessages, parseTextToolCalls } from './shared-utils';
 
 const MODELS: WebProviderModel[] = [
   { id: 'webauth-chatgpt-gpt-4o', name: 'GPT-4o (WebAuth)', contextWindow: 128000 },
@@ -21,11 +26,7 @@ const MODELS: WebProviderModel[] = [
   { id: 'webauth-chatgpt-gpt-4', name: 'GPT-4 (WebAuth)', contextWindow: 8192 },
 ];
 
-const MODEL_MAP: Record<string, string> = {
-  'webauth-chatgpt-gpt-4o': 'gpt-4o',
-  'webauth-chatgpt-gpt-4o-mini': 'gpt-4o-mini',
-  'webauth-chatgpt-gpt-4': 'gpt-4',
-};
+const PLACEHOLDER = '__CRAWBOT_MSG__';
 
 export class ChatGPTWebProvider implements WebProvider {
   id = 'chatgpt-web';
@@ -34,15 +35,12 @@ export class ChatGPTWebProvider implements WebProvider {
   partition = 'persist:webauth-chatgpt';
   models = MODELS;
 
-  private accessToken: string | null = null;
-  private deviceId: string | null = null;
-
   async checkAuth(webview: WebviewLike): Promise<WebAuthCheckResult> {
     try {
-      const hasCookie = await webview.executeJavaScript(
+      const hasSession = await webview.executeJavaScript(
         `document.cookie.split(';').some(c => c.trim().startsWith('__Secure-next-auth.session-token'))`
       );
-      return { authenticated: !!hasCookie };
+      return { authenticated: !!hasSession };
     } catch {
       return { authenticated: false };
     }
@@ -52,116 +50,203 @@ export class ChatGPTWebProvider implements WebProvider {
     webview: WebviewLike,
     request: OpenAIChatRequest,
   ): AsyncGenerator<OpenAIChatChunk> {
-    // 1. Get access token
-    if (!this.accessToken) {
-      await this.fetchAccessToken(webview);
+    const prompt = consolidateMessages(request.messages);
+    const responseText = await this.sendAndCapture(webview, prompt);
+
+    if (!responseText) {
+      throw new Error('ChatGPT: no response. Ensure you are logged in.');
     }
-
-    // 2. Build request
-    const chatgptModel = MODEL_MAP[request.model] || 'gpt-4o';
-    const messageId = crypto.randomUUID();
-    const parentId = crypto.randomUUID();
-
-    const body = JSON.stringify({
-      action: 'next',
-      messages: [{
-        id: messageId,
-        author: { role: 'user' },
-        content: {
-          content_type: 'text',
-          parts: [request.messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n')],
-        },
-      }],
-      parent_message_id: parentId,
-      model: chatgptModel,
-      timezone_offset_min: new Date().getTimezoneOffset(),
-      history_and_training_disabled: false,
-      conversation_mode: { kind: 'primary_assistant', plugin_ids: null },
-      force_paragen: false,
-      force_paragen_model_slug: '',
-      force_rate_limit: false,
-      reset_rate_limits: false,
-      force_use_sse: true,
-    });
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      'oai-language': 'en-US',
-      'Referer': 'https://chatgpt.com/',
-    };
-    if (this.accessToken) {
-      headers['Authorization'] = `Bearer ${this.accessToken}`;
-    }
-    if (this.deviceId) {
-      headers['oai-device-id'] = this.deviceId;
-    }
-
-    // 3. Stream
-    const { stream } = streamFromWebview(
-      webview,
-      'https://chatgpt.com/backend-api/conversation',
-      { method: 'POST', headers, body }
-    );
 
     const completionId = `chatcmpl-${Date.now()}`;
-    let buffer = '';
-    let lastContent = '';
+    const toolCalls = parseTextToolCalls(responseText);
 
-    for await (const chunk of stream) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data || data === '[DONE]') continue;
-
-        try {
-          const parsed = JSON.parse(data);
-          const msg = parsed.message;
-          if (msg?.content?.parts?.[0] && typeof msg.content.parts[0] === 'string') {
-            const fullContent = msg.content.parts[0];
-            // ChatGPT sends cumulative content, we need the delta
-            const delta = fullContent.slice(lastContent.length);
-            lastContent = fullContent;
-
-            if (delta) {
-              yield {
-                id: completionId,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: request.model,
-                choices: [{
-                  index: 0,
-                  delta: { content: delta },
-                  finish_reason: msg.status === 'finished_successfully' ? 'stop' : null,
-                }],
-              };
-            }
-          }
-        } catch {
-          // Skip malformed
-        }
+    if (toolCalls.length > 0) {
+      let textContent = responseText;
+      for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
+      textContent = textContent.trim();
+      if (textContent) {
+        yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
       }
+      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{ index: 0, delta: { tool_calls: toolCalls.map((tc, i) => ({
+          index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
+          function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+        })) } as unknown as { content: string }, finish_reason: 'tool_calls' }],
+      } as unknown as OpenAIChatChunk;
+    } else {
+      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
     }
   }
 
-  private async fetchAccessToken(webview: WebviewLike): Promise<void> {
-    try {
-      const res = await executeInWebview(
-        webview,
-        'https://chatgpt.com/api/auth/session',
-        { headers: { 'Accept': 'application/json' } }
-      );
-      if (res.status === 200) {
-        const data = JSON.parse(res.body);
-        this.accessToken = data.accessToken || null;
-        this.deviceId = data.oaiDeviceId || crypto.randomUUID();
+  private async sendAndCapture(webview: WebviewLike, message: string): Promise<string> {
+    if (!webview.sendCDPCommand) throw new Error('ChatGPT requires CDP support');
+
+    // Navigate to clean chat if on conversation page
+    const url = await webview.executeJavaScript('location.href') as string;
+    if (url.includes('/c/') || !url.includes('chatgpt.com')) {
+      await webview.executeJavaScript(`window.location.href = 'https://chatgpt.com/'`);
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 300));
+        const ready = await webview.executeJavaScript(`!!document.querySelector('#prompt-textarea')`);
+        if (ready) break;
       }
-    } catch {
-      // Will try without access token
     }
+
+    // 1. Store message in page context (safe — no string escaping issues)
+    await webview.executeJavaScript(
+      `window.__crawbotMessage = ${JSON.stringify(message)}`
+    );
+
+    // 2. Inject fetch monkey-patch for REQUEST MODIFICATION ONLY
+    await webview.executeJavaScript(`
+      (function() {
+        if (!window.__crawbotOriginalFetch) {
+          window.__crawbotOriginalFetch = window.fetch;
+        }
+        var _fetch = window.__crawbotOriginalFetch;
+
+        window.fetch = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var urlStr = '';
+          if (typeof args[0] === 'string') {
+            urlStr = args[0];
+          } else if (args[0] && args[0].url) {
+            urlStr = args[0].url;
+          }
+
+          if (urlStr.indexOf('/f/conversation') !== -1 && urlStr.indexOf('prepare') === -1) {
+            var init = args[1] || {};
+            var body = typeof init.body === 'string' ? init.body : '';
+
+            if (body.indexOf('${PLACEHOLDER}') !== -1 && window.__crawbotMessage) {
+              var escaped = JSON.stringify(window.__crawbotMessage).slice(1, -1);
+              body = body.replace('${PLACEHOLDER}', escaped);
+              init.body = body;
+              args[1] = init;
+              console.log('[ChatGPT-CrawBot] Placeholder replaced, body: ' + body.length + ' bytes');
+            }
+          }
+
+          return _fetch.apply(this, args);
+        };
+      })()
+    `);
+
+    // 3. Enable CDP Network domain to capture response
+    await webview.sendCDPCommand('Network.enable');
+
+    let responseResolveFn: ((body: string) => void) | null = null;
+    let targetRequestId: string | null = null;
+
+    webview.onCDPEvent!((method, params) => {
+      const p = params as Record<string, unknown>;
+
+      if (method === 'Network.responseReceived') {
+        const resp = p.response as { url?: string } | undefined;
+        const reqUrl = resp?.url || '';
+        if (reqUrl.includes('/f/conversation') && !reqUrl.includes('prepare')) {
+          targetRequestId = p.requestId as string;
+        }
+      }
+
+      if (method === 'Network.loadingFinished' && targetRequestId && p.requestId === targetRequestId) {
+        webview.sendCDPCommand!('Network.getResponseBody', { requestId: targetRequestId })
+          .then((result) => {
+            const r = result as { body?: string; base64Encoded?: boolean };
+            const body = r.base64Encoded
+              ? Buffer.from(r.body || '', 'base64').toString()
+              : (r.body || '');
+            responseResolveFn?.(body);
+          })
+          .catch(() => {
+            responseResolveFn?.('');
+          });
+      }
+
+      if (method === 'Network.loadingFailed' && targetRequestId && p.requestId === targetRequestId) {
+        responseResolveFn?.('');
+      }
+    });
+
+    // 4. Type placeholder + click send
+    await webview.executeJavaScript(`
+      (async function() {
+        var editor = document.querySelector('#prompt-textarea');
+        if (!editor) return;
+        editor.focus();
+        editor.innerHTML = '<p>${PLACEHOLDER}</p>';
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise(function(r) { setTimeout(r, 1000); });
+        var btn = document.querySelector('button[data-testid="send-button"]');
+        if (!btn) {
+          var buttons = document.querySelectorAll('button');
+          for (var i = 0; i < buttons.length; i++) {
+            var label = buttons[i].getAttribute('aria-label') || '';
+            if (label.indexOf('Send') !== -1) { btn = buttons[i]; break; }
+          }
+        }
+        if (btn && !btn.disabled) btn.click();
+      })()
+    `);
+
+    // 5. Wait for response (max 120s)
+    const rawResponse = await new Promise<string>((resolve) => {
+      responseResolveFn = resolve;
+      setTimeout(() => resolve(''), 120000);
+    });
+
+    // 6. Disable Network + clean up
+    await webview.sendCDPCommand('Network.disable').catch(() => {});
+    await webview.executeJavaScript('window.__crawbotMessage = null').catch(() => {});
+
+    if (!rawResponse) return '';
+
+    // 7. Parse SSE — delta encoding v1 + old cumulative fallback
+    let useDeltaEncoding = false;
+    let answer = '';
+    let currentMessageRole = '';
+    let currentContentType = '';
+
+    for (const line of rawResponse.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') continue;
+      if (data === '"v1"') {
+        useDeltaEncoding = true;
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(data);
+
+        if (useDeltaEncoding) {
+          if (parsed.v && parsed.v.message) {
+            const msg = parsed.v.message;
+            currentMessageRole = msg.author?.role || '';
+            currentContentType = msg.content?.content_type || '';
+            if (currentMessageRole === 'assistant' && currentContentType === 'text') {
+              const parts = msg.content?.parts;
+              answer = Array.isArray(parts) && parts[0] ? String(parts[0]) : '';
+            }
+          } else if (parsed.v && Array.isArray(parsed.v)) {
+            if (currentMessageRole === 'assistant' && currentContentType === 'text') {
+              for (const patch of parsed.v) {
+                if (patch.o === 'append' && patch.p === '/message/content/parts/0') {
+                  answer += patch.v;
+                }
+              }
+            }
+          }
+        } else {
+          if (parsed.message?.content?.parts?.[0] && parsed.message.role === 'assistant') {
+            answer = parsed.message.content.parts[0];
+          }
+        }
+      } catch {}
+    }
+
+    return answer;
   }
 }

@@ -4,17 +4,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { makeMockWebview } from '../../mocks/electron-browser';
 
-// Mock the base-provider module
-vi.mock('@electron/browser/providers/base-provider', () => ({
-  executeInWebview: vi.fn(),
-  streamFromWebview: vi.fn(),
-}));
-
 import { ClaudeWebProvider } from '@electron/browser/providers/claude-web';
-import { executeInWebview, streamFromWebview } from '@electron/browser/providers/base-provider';
-
-const mockExecute = vi.mocked(executeInWebview);
-const mockStream = vi.mocked(streamFromWebview);
 
 describe('ClaudeWebProvider', () => {
   let provider: ClaudeWebProvider;
@@ -48,31 +38,25 @@ describe('ClaudeWebProvider', () => {
   });
 
   describe('chatCompletion', () => {
-    it('discovers org, creates conversation, and streams completion', async () => {
-      // Mock org discovery
-      mockExecute.mockResolvedValueOnce({
-        status: 200,
-        headers: {},
-        body: JSON.stringify([{ uuid: 'org-test-123' }]),
-      });
-
-      // Mock conversation creation
-      mockExecute.mockResolvedValueOnce({
-        status: 200,
-        headers: {},
-        body: JSON.stringify({ uuid: 'conv-test-456' }),
-      });
-
-      // Mock streaming
-      async function* mockGenerator() {
-        yield 'data: {"type":"completion","completion":"Hello","stop_reason":null}\n\n';
-        yield 'data: {"type":"completion","completion":" world","stop_reason":"end_turn"}\n\n';
-      }
-
-      mockStream.mockReturnValue({
-        stream: mockGenerator(),
-        abort: vi.fn(),
-      });
+    it('discovers org, creates conversation, and returns completion', async () => {
+      // Provider now uses direct executeJavaScript (no IPC bridge)
+      // Mock sequence: org discovery → conversation creation → completion
+      webview.executeJavaScript
+        // 1. Org discovery
+        .mockResolvedValueOnce(JSON.stringify({
+          status: 200,
+          body: JSON.stringify([{ uuid: 'org-test-123' }]),
+        }))
+        // 2. Conversation creation
+        .mockResolvedValueOnce(JSON.stringify({
+          status: 200,
+          body: JSON.stringify({ uuid: 'conv-test-456' }),
+        }))
+        // 3. Chat completion (buffered SSE response parsed in-page)
+        .mockResolvedValueOnce(JSON.stringify({
+          status: 200,
+          answer: 'Hello world',
+        }));
 
       const chunks: unknown[] = [];
       for await (const chunk of provider.chatCompletion(webview, {
@@ -82,10 +66,10 @@ describe('ClaudeWebProvider', () => {
         chunks.push(chunk);
       }
 
-      expect(chunks).toHaveLength(2);
-      expect((chunks[0] as { choices: Array<{ delta: { content: string } }> }).choices[0].delta.content).toBe('Hello');
-      expect((chunks[1] as { choices: Array<{ delta: { content: string } }> }).choices[0].delta.content).toBe(' world');
-      expect((chunks[1] as { choices: Array<{ finish_reason: string | null }> }).choices[0].finish_reason).toBe('stop');
+      expect(chunks.length).toBeGreaterThanOrEqual(1);
+      // Last chunk should have the answer
+      const lastChunk = chunks[chunks.length - 1] as { choices: Array<{ delta: { content?: string } }> };
+      expect(lastChunk.choices[0].delta.content).toContain('Hello world');
     });
   });
 

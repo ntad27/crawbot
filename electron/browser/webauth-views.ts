@@ -33,6 +33,8 @@ class WebAuthViewManager {
   private tabs = new Map<string, WebAuthTab>();
   private activeTabId: string | null = null;
   private panelBounds = { x: 0, y: 0, width: 800, height: 600 };
+  /** Tabs created by the pipeline for API use only — must NEVER be shown in UI */
+  private pipelineTabs = new Set<string>();
 
   setMainWindow(win: BrowserWindow): void {
     this.mainWindow = win;
@@ -113,11 +115,12 @@ class WebAuthViewManager {
     const tab: WebAuthTab = { id: tabId, view, url, title: 'New Tab', partition };
     this.tabs.set(tabId, tab);
 
-    // Add to main window — start hidden until panel reports valid bounds
-    this.mainWindow.contentView.addChildView(view);
-    if (this.panelBounds.width <= 0 || this.panelBounds.height <= 0 || this.panelBounds.x < -9000) {
-      view.setVisible(false);
+    // Only add to main window if panel has valid bounds (Settings is visible).
+    // Otherwise keep detached — prevents WebContentsView from floating over Chat UI.
+    if (this.panelBounds.width > 0 && this.panelBounds.height > 0 && this.panelBounds.x > -9000) {
+      this.mainWindow.contentView.addChildView(view);
     }
+    view.setVisible(false);
 
     // Notify renderer to add tab to store
     this.notifyRenderer('webauth:browser:tab:created', {
@@ -129,8 +132,8 @@ class WebAuthViewManager {
     // Track navigation and loading events
     view.webContents.on('did-start-loading', () => {
       this.notifyRenderer('webauth:browser:tab:updated', tabId, { isLoading: true });
-      // Auto-activate tab when it starts loading
-      if (this.activeTabId !== tabId) {
+      // Auto-activate tab when it starts loading — but NOT for pipeline tabs
+      if (this.activeTabId !== tabId && !this.pipelineTabs.has(tabId)) {
         this.setActiveTab(tabId);
         this.notifyRenderer('webauth:browser:tab:activated', tabId);
       }
@@ -360,17 +363,27 @@ class WebAuthViewManager {
 
     for (const [id, tab] of this.tabs) {
       if (id === tabId) {
-        // Bring to front: remove and re-add so it's on top
-        if (this.mainWindow) {
+        // Pipeline tabs must NEVER be shown — they're for API use only
+        if (this.pipelineTabs.has(tabId)) {
+          tab.view.setVisible(false);
+          if (this.mainWindow) {
+            try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
+          }
+        // Only show if panel has valid bounds (Settings is open)
+        } else if (this.mainWindow && this.panelBounds.width > 0 && this.panelBounds.height > 0 && this.panelBounds.x > -9000) {
           try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
           this.mainWindow.contentView.addChildView(tab.view);
-        }
-        tab.view.setVisible(true);
-        if (this.panelBounds.width > 0 && this.panelBounds.height > 0) {
+          tab.view.setVisible(true);
           tab.view.setBounds(this.panelBounds);
+        } else {
+          tab.view.setVisible(false);
         }
       } else {
         tab.view.setVisible(false);
+        // Remove non-active tabs from window to prevent popup
+        if (this.mainWindow) {
+          try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
+        }
       }
     }
   }
@@ -410,6 +423,11 @@ class WebAuthViewManager {
 
   getActiveTabId(): string | null {
     return this.activeTabId;
+  }
+
+  /** Mark a tab as pipeline-only (API use, never shown in UI) */
+  markAsPipelineTab(tabId: string): void {
+    this.pipelineTabs.add(tabId);
   }
 
   /** Find existing tab by partition */

@@ -1,20 +1,20 @@
 /**
  * Qwen International Web Provider
- * Uses chat.qwen.ai web session
- *
- * Reference: /Users/xnohat/openclaw-zero-token/src/providers/qwen-web-client-browser.ts
+ * Uses chat.qwen.ai web session via direct executeJavaScript.
  *
  * Flow:
  * 1. POST /api/v2/chats/new -> chat_id
  * 2. POST /api/v2/chat/completions?chat_id={id} -> SSE stream
- * SSE data lines contain JSON with choices[].delta.content (incremental output).
+ *
+ * SSE format: near-OpenAI compatible — choices[].delta.content (incremental)
+ * Response is buffered in-page, parsed, and returned as a JSON string.
  */
 
 import type {
   WebProvider, WebProviderModel, WebAuthCheckResult,
   OpenAIChatRequest, OpenAIChatChunk, WebviewLike,
 } from './types';
-import { executeInWebview, streamFromWebview } from './base-provider';
+import { consolidateMessages, parseTextToolCalls } from './shared-utils';
 
 const MODELS: WebProviderModel[] = [
   { id: 'webauth-qwen-35-plus', name: 'Qwen 3.5 Plus (WebAuth)', contextWindow: 128000 },
@@ -56,16 +56,119 @@ export class QwenIntlWebProvider implements WebProvider {
     // 1. Create chat session
     const chatId = await this.createChat(webview);
 
-    // 2. Build prompt
-    const prompt = request.messages
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content)
-      .join('\n\n');
+    // 2. Consolidate all messages into a single prompt
+    const prompt = consolidateMessages(request.messages);
 
+    // 3. Send completion request (buffered in-page)
+    const responseText = await this.apiChat(webview, chatId, prompt, qwenModel);
+
+    if (!responseText) {
+      throw new Error('Qwen: no response. Ensure you are logged in.');
+    }
+
+    const completionId = `chatcmpl-${Date.now()}`;
+
+    // 4. Check for text-based tool calls
+    const toolCalls = parseTextToolCalls(responseText);
+
+    if (toolCalls.length > 0) {
+      let textContent = responseText;
+      for (const tc of toolCalls) {
+        textContent = textContent.replace(tc.raw, '');
+      }
+      textContent = textContent.trim();
+
+      if (textContent) {
+        yield {
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: request.model,
+          choices: [{
+            index: 0,
+            delta: { content: textContent },
+            finish_reason: null,
+          }],
+        };
+      }
+
+      yield {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: toolCalls.map((tc, i) => ({
+              index: i,
+              id: `call_${Date.now()}_${i}`,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.params),
+              },
+            })),
+          } as unknown as { content: string },
+          finish_reason: 'tool_calls',
+        }],
+      } as unknown as OpenAIChatChunk;
+    } else {
+      yield {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{
+          index: 0,
+          delta: { content: responseText },
+          finish_reason: 'stop',
+        }],
+      };
+    }
+  }
+
+  private async createChat(webview: WebviewLike): Promise<string> {
+    const resultStr = await webview.executeJavaScript(`
+      (async () => {
+        try {
+          const res = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          });
+          if (!res.ok) return JSON.stringify({ error: 'HTTP ' + res.status });
+          const body = await res.text();
+          return JSON.stringify({ status: res.status, body });
+        } catch(e) {
+          return JSON.stringify({ error: e.message });
+        }
+      })()
+    `) as string;
+
+    const parsed = JSON.parse(resultStr);
+    if (parsed.error) {
+      throw new Error(`Failed to create Qwen chat: ${parsed.error}`);
+    }
+
+    const data = JSON.parse(parsed.body);
+    const chatId = data.data?.id ?? data.chat_id ?? data.id ?? data.chatId;
+    if (!chatId) {
+      throw new Error('Failed to create Qwen chat: no chat_id in response');
+    }
+    return chatId;
+  }
+
+  private async apiChat(
+    webview: WebviewLike,
+    chatId: string,
+    prompt: string,
+    qwenModel: string,
+  ): Promise<string> {
     const fid = crypto.randomUUID();
 
-    // 3. Stream completion
-    const body = JSON.stringify({
+    const reqBody = JSON.stringify({
       stream: true,
       version: '2.1',
       incremental_output: true,
@@ -90,76 +193,46 @@ export class QwenIntlWebProvider implements WebProvider {
       ],
     });
 
-    const { stream } = streamFromWebview(
-      webview,
-      `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-        },
-        body,
-      }
-    );
-
-    const completionId = `chatcmpl-${Date.now()}`;
-    let buffer = '';
-
-    for await (const chunk of stream) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
-
+    const resultStr = await webview.executeJavaScript(`
+      (async () => {
         try {
-          const parsed = JSON.parse(data);
-          // Qwen SSE uses OpenAI-compatible format with choices[].delta.content
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) {
-            yield {
-              id: completionId,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: request.model,
-              choices: [{
-                index: 0,
-                delta: { content },
-                finish_reason: parsed.choices[0].finish_reason || null,
-              }],
-            };
+          const res = await fetch(${JSON.stringify(`https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`)}, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'text/event-stream',
+            },
+            body: ${JSON.stringify(reqBody)},
+          });
+          if (!res.ok) return JSON.stringify({ error: 'HTTP ' + res.status });
+          const text = await res.text();
+          // Parse SSE: Qwen uses OpenAI-compatible incremental format
+          // Concatenate all delta.content tokens
+          let answer = '';
+          for (const line of text.split('\\n')) {
+            if (!line.startsWith('data:')) continue;
+            const data = line.slice(5).trim();
+            if (!data || data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
+              if (content) {
+                answer += content;
+              }
+            } catch {}
           }
-        } catch {
-          // Skip malformed
+          return JSON.stringify({ status: res.status, answer });
+        } catch(e) {
+          return JSON.stringify({ error: e.message });
         }
-      }
-    }
-  }
+      })()
+    `) as string;
 
-  private async createChat(webview: WebviewLike): Promise<string> {
-    const res = await executeInWebview(
-      webview,
-      'https://chat.qwen.ai/api/v2/chats/new',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      }
-    );
-
-    if (res.status !== 200 && res.status !== 201) {
-      throw new Error(`Failed to create Qwen chat: HTTP ${res.status}`);
+    const parsed = JSON.parse(resultStr);
+    if (parsed.error) {
+      throw new Error(`Qwen API: ${parsed.error}`);
     }
-
-    const data = JSON.parse(res.body);
-    const chatId = data.data?.id ?? data.chat_id ?? data.id ?? data.chatId;
-    if (!chatId) {
-      throw new Error('Failed to create Qwen chat: no chat_id in response');
-    }
-    return chatId;
+    return parsed.answer || '';
   }
 }

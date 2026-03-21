@@ -28,7 +28,7 @@ const AUTH_SPECS: Record<string, CookieAuthSpec> = {
   'chatgpt-web': {
     partition: 'persist:webauth-chatgpt',
     domain: '.chatgpt.com',
-    cookieNames: ['__Secure-next-auth.session-token'],
+    cookieNames: ['__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0'],
   },
   'gemini-web': {
     partition: 'persist:webauth-gemini',
@@ -43,7 +43,7 @@ const AUTH_SPECS: Record<string, CookieAuthSpec> = {
   'qwen-intl-web': {
     partition: 'persist:webauth-qwen-intl',
     domain: '.qwen.ai',
-    cookieNames: ['ctoken'],
+    cookieNames: ['ctoken', 'token'],
   },
   'qwen-china-web': {
     partition: 'persist:webauth-qwen-china',

@@ -85,20 +85,44 @@ Key things to capture:
 
 ### Step 4: Capture the response
 
-For streaming responses, use `Fetch.enable` with `requestStage: 'Response'`:
+**Recommended: CDP `Network` domain** (works reliably for all response types including SSE):
 
 ```javascript
-await webview.sendCDPCommand('Fetch.enable', {
-  patterns: [{ urlPattern: '*StreamGenerate*', requestStage: 'Response' }]
+// Enable Network monitoring
+await webview.sendCDPCommand('Network.enable');
+
+webview.onCDPEvent((method, params) => {
+  // Track the target request
+  if (method === 'Network.responseReceived') {
+    const url = params.response?.url || '';
+    if (url.includes('/your-endpoint')) {
+      targetRequestId = params.requestId;
+    }
+  }
+
+  // When loading finishes (full body received, including SSE streams)
+  if (method === 'Network.loadingFinished' && params.requestId === targetRequestId) {
+    const result = await webview.sendCDPCommand('Network.getResponseBody', { requestId: targetRequestId });
+    const body = result.base64Encoded
+      ? Buffer.from(result.body, 'base64').toString()
+      : result.body;
+    // body now contains the FULL response (all SSE chunks concatenated)
+  }
 });
-
-// When paused at response stage:
-const body = await webview.sendCDPCommand('Fetch.getResponseBody', { requestId });
-// body.body = response text (or base64 if body.base64Encoded)
-
-// Fulfill the original request so page gets the response too
-await webview.sendCDPCommand('Fetch.fulfillRequest', { requestId, ... });
 ```
+
+**Why NOT `Fetch.getResponseBody` at Response stage:**
+- Fetch Response stage intercepts AFTER headers but BEFORE body arrives
+- For SSE streaming (30-90s), `getResponseBody` may return empty/partial data
+- CDP Network's `loadingFinished` fires AFTER the entire stream completes
+- `Network.getResponseBody` then returns the full concatenated body
+
+**Why NOT in-page `response.clone().text()`:**
+- `.text()` waits for the HTTP connection to fully close
+- SSE connections may stay open after `[DONE]`, causing `.text()` to hang indefinitely
+- `ReadableStream.getReader()` works but adds complexity
+
+**Important:** CDP `Network` domain does NOT conflict with in-page fetch monkey-patching (only conflicts with CDP `Fetch` domain). You can safely use both together: in-page patch for request modification, CDP Network for response capture.
 
 ### Step 5: Decode and document the format
 
@@ -629,6 +653,29 @@ kill $DEV_PID
    - Correct: `parts.filter(x => typeof x === 'string').join('')`
    - Multiple `wrb.fr` entries in response — keep the longest answer (streaming chunks)
 
+11. **ChatGPT delta encoding (2026+)** — SSE format changed from cumulative to delta
+   - Old: `data: {"message": {"content": {"parts": ["full text"]}, "role": "assistant"}}`
+   - New: `event: delta_encoding` / `data: "v1"` declares delta mode
+   - Full messages: `data: {"v": {"message": {...}}}` — sets context (role, content_type)
+   - Patches: `data: {"v": [{"p": "/message/content/parts/0", "o": "append", "v": "text chunk"}]}`
+   - Must track `currentMessageRole` + `currentContentType` across events
+   - Only accumulate `append` patches when current context is `assistant` + `text` content_type
+   - Other content_types to ignore: `model_edit`, `thoughts`, `reasoning_*`, `code`
+
+12. **SSE response capture methods compared**
+   - `Fetch.getResponseBody` at Response stage: intercepts BEFORE body → fails for SSE streams
+   - `response.clone().text()` in-page: waits for connection close → hangs if SSE keeps alive
+   - `response.clone().body.getReader()` in-page: works but complex, needs `[DONE]` detection
+   - **CDP `Network.loadingFinished` + `Network.getResponseBody`**: captures AFTER full body received → reliable for all formats including SSE ✅
+   - CDP Network does NOT conflict with in-page fetch monkey-patching (only conflicts with CDP Fetch)
+
+13. **In-page fetch monkey-patching** — for request modification when direct API calls aren't possible
+   - Store the original: `window.__crawbotOriginalFetch = window.fetch` (only once per page load)
+   - Restore on cleanup: keep reference to avoid stacking patches
+   - URL matching: use `indexOf` not regex (faster, no escaping issues)
+   - Body type: check `typeof init.body === 'string'` — some frameworks use Blob/FormData/ReadableStream
+   - Message escaping: `JSON.stringify(msg).slice(1, -1)` produces a string safe for JSON string value embedding
+
 ---
 
 ## Phase 6: Provider-Specific Notes
@@ -656,13 +703,22 @@ kill $DEV_PID
 - **Headers:** `anthropic-client-platform: web_claude_ai`, `anthropic-device-id: {uuid}`
 - **Uses `streamFromWebview()`** with IPC bridge for streaming
 
-### ChatGPT (Sentinel tokens)
-- **Endpoint:** `https://chatgpt.com/backend-api/conversation`
-- **Requires:** Sentinel/turnstile anti-bot tokens (complex dynamic import from oaistatic CDN)
-- **Access token:** From `/api/auth/session`
-- **Response:** SSE with `{"message":{"content":{"parts":["text"]}}}`
-- **DOM fallback:** On 403, switches to DOM simulation (type + click)
-- **Anti-bot complexity:** HIGH — sentinel token generation requires evaluating CDN scripts
+### ChatGPT (Placeholder + UI Automation + CDP Network)
+- **Endpoint:** `https://chatgpt.com/backend-api/f/conversation` (note the `/f/` prefix)
+- **Anti-bot:** Sentinel tokens (chat-requirements, proof-of-work, turnstile) are single-use, dynamically generated by ChatGPT's JS runtime. Cannot be replayed or generated externally. Must use UI automation to trigger each request.
+- **Approach:** Hybrid — in-page fetch monkey-patch for request modification + CDP Network for response capture
+- **Placeholder trick:** Type short `__CRAWBOT_MSG__` into ProseMirror editor → click Send → fetch monkey-patch replaces placeholder with real (potentially very long) message in the request body before it hits the network
+- **Response capture:** CDP `Network.responseReceived` + `Network.loadingFinished` + `Network.getResponseBody` — captures full SSE body after stream completes
+- **SSE format (2026+):** Delta encoding v1 (`event: delta_encoding` / `data: "v1"`)
+  - Full message: `{"v": {"message": {"author": {"role": "assistant"}, "content": {"content_type": "text", "parts": [""]}}}}`
+  - Delta patches: `{"v": [{"p": "/message/content/parts/0", "o": "append", "v": "answer text"}]}`
+  - Parser tracks `currentMessageRole` + `currentContentType`, accumulates `append` patches for assistant text messages
+  - Old format (pre-2026): `{"message": {"content": {"parts": ["cumulative text"]}, "role": "assistant"}}` — still supported as fallback
+- **Editor:** `#prompt-textarea` (ProseMirror div, NOT textarea). Set via `editor.innerHTML = '<p>__CRAWBOT_MSG__</p>'` + dispatch `input` event
+- **Send button:** `button[data-testid="send-button"]` or fallback to `aria-label` containing "Send"
+- **Auth cookies:** `__Secure-next-auth.session-token` (may be chunked as `.0`, `.1`, etc.)
+- **Navigation:** After sending, ChatGPT changes URL to `/c/{conversation-id}` via pushState (SPA, JS context preserved). Navigate back to `chatgpt.com/` for each new message to start clean chat.
+- **Cookie auth check:** Must check both `__Secure-next-auth.session-token` and `__Secure-next-auth.session-token.0` (chunked tokens for large session data)
 
 ### DeepSeek (Proof-of-Work)
 - **Endpoint:** `https://chat.deepseek.com/api/v0/chat/completion`
@@ -678,6 +734,199 @@ kill $DEV_PID
 - **Response:** NDJSON with `contentDelta` field
 - **DOM fallback:** On 403, switches to DOM simulation
 - **Device info:** Spoofed screen dimensions in request body
+
+---
+
+## Appendix A: Placeholder + UI Automation Pattern
+
+For providers with anti-bot protections (sentinel tokens, proof-of-work, turnstile) that prevent direct API calls, use the **Placeholder + UI Automation** pattern:
+
+### Why this pattern exists
+
+Some providers (ChatGPT, Grok) generate single-use anti-bot tokens dynamically via their JavaScript runtime. These tokens:
+- Cannot be replayed (one-time use, tied to the specific request)
+- Cannot be generated externally (require evaluating CDN scripts in the page context)
+- Are automatically attached to requests by the provider's JavaScript
+
+The only reliable way to trigger a request with valid tokens is to **let the provider's own JavaScript handle it** by interacting with the UI.
+
+### The Placeholder trick
+
+The challenge: the real message may be very long (thousands of chars with system prompt, tool definitions, conversation history). Typing this into a web editor would be slow and error-prone.
+
+Solution: type a short placeholder, then **intercept the network request** and replace the placeholder with the real message before it reaches the server.
+
+```
+Flow:
+1. Store real message: window.__crawbotMessage = "long consolidated prompt..."
+2. Inject fetch monkey-patch: intercepts /f/conversation, replaces __CRAWBOT_MSG__ → real message
+3. Type placeholder into editor: editor.innerHTML = '<p>__CRAWBOT_MSG__</p>'
+4. Click send button → triggers provider's JS → sentinel tokens generated → fetch called
+5. Fetch monkey-patch intercepts → replaces placeholder in request body
+6. CDP Network captures response after stream completes
+7. Parse response (delta encoding, SSE, etc.)
+```
+
+### Implementation
+
+```typescript
+// 1. Store message safely (JSON.stringify handles all escaping)
+await webview.executeJavaScript(`window.__crawbotMessage = ${JSON.stringify(message)}`);
+
+// 2. Inject fetch monkey-patch (request modification only)
+await webview.executeJavaScript(`
+  (function() {
+    if (!window.__crawbotOriginalFetch) window.__crawbotOriginalFetch = window.fetch;
+    var _fetch = window.__crawbotOriginalFetch;
+    window.fetch = function() {
+      var args = Array.prototype.slice.call(arguments);
+      var urlStr = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
+      if (urlStr.indexOf('/your-endpoint') !== -1) {
+        var init = args[1] || {};
+        var body = typeof init.body === 'string' ? init.body : '';
+        if (body.indexOf('__CRAWBOT_MSG__') !== -1 && window.__crawbotMessage) {
+          var escaped = JSON.stringify(window.__crawbotMessage).slice(1, -1);
+          body = body.replace('__CRAWBOT_MSG__', escaped);
+          init.body = body;
+          args[1] = init;
+        }
+      }
+      return _fetch.apply(this, args);
+    };
+  })()
+`);
+
+// 3. Enable CDP Network for response capture
+await webview.sendCDPCommand('Network.enable');
+// ... set up Network.responseReceived + Network.loadingFinished listeners ...
+
+// 4. Type placeholder + click send (uses provider's own UI flow → valid tokens)
+await webview.executeJavaScript(`
+  (async function() {
+    var editor = document.querySelector('#prompt-textarea');
+    editor.focus();
+    editor.innerHTML = '<p>__CRAWBOT_MSG__</p>';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 1000));
+    var btn = document.querySelector('button[data-testid="send-button"]');
+    if (btn && !btn.disabled) btn.click();
+  })()
+`);
+
+// 5. Wait for Network.loadingFinished → Network.getResponseBody
+```
+
+### When to use this pattern
+
+| Situation | Approach |
+|-----------|----------|
+| Provider has public/internal API (Gemini, Claude, Qwen) | Direct `fetch()` in page context |
+| Provider has anti-bot tokens (ChatGPT, Grok) | Placeholder + UI Automation |
+| Provider requires complex auth flow (DeepSeek PoW) | Direct API with PoW solver |
+
+### Key considerations
+
+- **Fetch monkey-patch scope:** Only patch for the specific endpoint URL. Other fetch calls must pass through unmodified.
+- **Message escaping:** Use `JSON.stringify(message).slice(1, -1)` to produce a string safe for embedding inside a JSON string value in the request body.
+- **Editor type:** Check if the editor is a `textarea` (use native setter) or `contenteditable` div (use `innerHTML` or `innerText`). ProseMirror editors (ChatGPT) use `innerHTML`.
+- **Re-injection after navigation:** If the page fully navigates (not pushState), the monkey-patch is lost. Re-inject after navigation completes.
+
+---
+
+## Appendix B: CDP Accessibility Tree for UI Element Discovery
+
+When DOM selectors are unreliable (CSS classes change, elements are deeply nested in shadow DOM, or the UI framework uses custom components), use CDP's **Accessibility Tree** to discover interactive elements.
+
+### Why accessibility tree
+
+- **Stable:** Accessibility labels (`aria-label`, roles) change less frequently than CSS classes
+- **Semantic:** Identifies elements by their PURPOSE (button, textbox, link) not their HTML structure
+- **Framework-agnostic:** Works with React, Angular, Web Components, Shadow DOM
+- **Discoverable:** CDP `Accessibility.getFullAXTree` returns ALL interactive elements at once
+
+### Capturing accessibility snapshot
+
+```javascript
+// Enable accessibility domain
+await webview.sendCDPCommand('Accessibility.enable');
+
+// Get full accessibility tree
+const tree = await webview.sendCDPCommand('Accessibility.getFullAXTree');
+// tree.nodes = array of AXNode objects
+
+// Find interactive elements
+const interactiveNodes = tree.nodes.filter(n => {
+  const role = n.role?.value;
+  return ['button', 'textbox', 'link', 'menuitem', 'combobox', 'searchbox'].includes(role);
+});
+
+// Each node has:
+// - role.value: "button", "textbox", etc.
+// - name.value: accessible name (aria-label, visible text, etc.)
+// - backendDOMNodeId: use with DOM.resolveNode to get JS reference
+// - properties: array of {name, value} pairs (focused, disabled, etc.)
+```
+
+### Using accessibility tree for element discovery
+
+```javascript
+// Find send button by accessible name
+const sendBtn = tree.nodes.find(n =>
+  n.role?.value === 'button' &&
+  (n.name?.value || '').toLowerCase().includes('send')
+);
+
+// Find text input
+const textInput = tree.nodes.find(n =>
+  ['textbox', 'searchbox'].includes(n.role?.value)
+);
+
+// Get DOM reference from accessibility node
+if (sendBtn) {
+  const domNode = await webview.sendCDPCommand('DOM.resolveNode', {
+    backendNodeId: sendBtn.backendDOMNodeId
+  });
+  // domNode.object.objectId can be used with Runtime.callFunctionOn to click
+  await webview.sendCDPCommand('Runtime.callFunctionOn', {
+    objectId: domNode.object.objectId,
+    functionDeclaration: 'function() { this.click(); }',
+  });
+}
+```
+
+### Practical workflow for new providers
+
+1. **Snapshot the accessibility tree** on the provider's chat page
+2. **Identify key elements:** input field, send button, model selector, stop button
+3. **Use stable names** (aria-label, role) instead of CSS selectors
+4. **Document the element map** for the provider (names may differ between providers)
+
+```javascript
+// Quick discovery script — run via CDP Runtime.evaluate
+const snapshot = await webview.sendCDPCommand('Accessibility.getFullAXTree');
+const summary = snapshot.nodes
+  .filter(n => ['button', 'textbox', 'link'].includes(n.role?.value))
+  .map(n => `${n.role.value}: "${n.name?.value || '(unnamed)'}"`)
+  .join('\n');
+console.log(summary);
+// Output:
+// button: "Send message"
+// button: "New chat"
+// textbox: "Send a message"
+// button: "Model selector"
+// ...
+```
+
+### When to use accessibility tree vs DOM selectors
+
+| Method | Best for | Limitations |
+|--------|----------|-------------|
+| `querySelector('#id')` | Stable IDs (rare in SPAs) | IDs change between builds |
+| `querySelector('[data-testid]')` | React apps with test IDs | Not all apps use test IDs |
+| `querySelector('[aria-label]')` | Known aria-labels | Label text may be localized |
+| `Accessibility.getFullAXTree` | Discovering unknown UIs, Shadow DOM | Slower, more verbose |
+
+**Recommendation:** Use accessibility tree for **initial discovery** of a new provider's UI elements, then use the discovered `aria-label` or `data-testid` values as stable selectors in the implementation.
 
 ---
 

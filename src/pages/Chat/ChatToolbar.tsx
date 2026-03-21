@@ -87,14 +87,48 @@ export function ChatToolbar() {
     return types;
   }, [configuredProviders]);
 
-  // Filter models to only configured providers, then group by provider
+  // Filter models to only configured providers, then group by provider.
+  // For webauth provider, collapse all models per provider prefix into a single entry
+  // since model selection is done in the web chat UI, not the dropdown.
   const groupedModels = useMemo(() => {
     const groups: Record<string, typeof models> = {};
+    const webauthSeen = new Set<string>(); // track collapsed webauth provider prefixes
     for (const model of models) {
       const provider = model.provider || 'other';
       if (!configuredProviderTypes.has(provider)) continue;
-      if (!groups[provider]) groups[provider] = [];
-      groups[provider].push(model);
+
+      if (provider === 'webauth' && model.id.startsWith('webauth-')) {
+        // Collapse webauth models: e.g. webauth-gemini-pro, webauth-gemini-flash -> "Gemini Web"
+        // Extract provider prefix: webauth-{provider}-{variant} -> {provider}
+        const parts = model.id.replace('webauth-', '').split('-');
+        // Provider name is the first segment (gemini, claude, chatgpt, qwen)
+        const providerPrefix = parts[0];
+        if (webauthSeen.has(providerPrefix)) continue;
+        webauthSeen.add(providerPrefix);
+
+        // Create a single representative entry using the first model's ID
+        // Display name is derived from provider prefix
+        const displayNames: Record<string, string> = {
+          gemini: 'Gemini Web',
+          claude: 'Claude Web',
+          chatgpt: 'ChatGPT Web',
+          qwen: 'Qwen Web',
+          deepseek: 'DeepSeek Web',
+          grok: 'Grok Web',
+          kimi: 'Kimi Web',
+          doubao: 'Doubao Web',
+          glm: 'GLM Web',
+          manus: 'Manus Web',
+        };
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push({
+          ...model,
+          name: displayNames[providerPrefix] || `${providerPrefix} Web`,
+        });
+      } else {
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push(model);
+      }
     }
     return groups;
   }, [models, configuredProviderTypes]);

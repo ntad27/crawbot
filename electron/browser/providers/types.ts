@@ -19,6 +19,8 @@ export interface OpenAIChatRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  tools?: Array<{ type: string; function: { name: string; description?: string; parameters?: unknown } }>;
+  tool_choice?: string | { type: string; function?: { name: string } };
 }
 
 export interface OpenAIChatChunk {

@@ -60,7 +60,23 @@ export class WebAuthProxy {
         resolve(this._port);
       });
 
-      this.server.on('error', reject);
+      this.server.on('error', (err) => {
+        if (!this._running) {
+          // Startup error
+          reject(err);
+        } else {
+          // Runtime error — log but keep running
+          logger.error(`${LOG_TAG} Server error (keeping alive):`, err);
+        }
+      });
+
+      // Handle unexpected close — mark as not running so pipeline can detect
+      this.server.on('close', () => {
+        if (this._running) {
+          logger.error(`${LOG_TAG} Server closed unexpectedly!`);
+          this._running = false;
+        }
+      });
     });
   }
 
