@@ -142,6 +142,10 @@ export class ChatGPTWebProvider implements WebProvider {
     let responseResolveFn: ((body: string) => void) | null = null;
     let targetRequestId: string | null = null;
 
+    // Track data received to detect [DONE] marker (fallback for when loadingFinished never fires)
+    let dataReceivedForTarget = false;
+    let doneDetected = false;
+
     webview.onCDPEvent!((method, params) => {
       const p = params as Record<string, unknown>;
 
@@ -150,9 +154,17 @@ export class ChatGPTWebProvider implements WebProvider {
         const reqUrl = resp?.url || '';
         if (reqUrl.includes('/f/conversation') && !reqUrl.includes('prepare')) {
           targetRequestId = p.requestId as string;
+          dataReceivedForTarget = false;
+          doneDetected = false;
         }
       }
 
+      // Track data chunks — detect [DONE] marker in SSE stream
+      if (method === 'Network.dataReceived' && targetRequestId && p.requestId === targetRequestId) {
+        dataReceivedForTarget = true;
+      }
+
+      // Primary: loadingFinished (stream closed normally)
       if (method === 'Network.loadingFinished' && targetRequestId && p.requestId === targetRequestId) {
         webview.sendCDPCommand!('Network.getResponseBody', { requestId: targetRequestId })
           .then((result) => {
@@ -193,10 +205,38 @@ export class ChatGPTWebProvider implements WebProvider {
       })()
     `);
 
-    // 5. Wait for response (max 120s)
+    // 5. Wait for response — primary: loadingFinished, fallback: poll getResponseBody
     const rawResponse = await new Promise<string>((resolve) => {
       responseResolveFn = resolve;
-      setTimeout(() => resolve(''), 120000);
+
+      // Fallback: if loadingFinished never fires (SSE stream stays open),
+      // poll getResponseBody every 3s after data starts arriving.
+      // SSE response body accumulates even before stream closes.
+      let pollCount = 0;
+      const pollInterval = setInterval(async () => {
+        pollCount++;
+        if (!targetRequestId || !dataReceivedForTarget) return;
+        // Start polling after 10s of data received
+        if (pollCount < 4) return;
+        try {
+          const result = await webview.sendCDPCommand!('Network.getResponseBody', { requestId: targetRequestId });
+          const r = result as { body?: string; base64Encoded?: boolean };
+          const body = r.base64Encoded
+            ? Buffer.from(r.body || '', 'base64').toString()
+            : (r.body || '');
+          // Check if response contains [DONE] marker (SSE complete)
+          if (body.includes('[DONE]') || body.includes('"is_completion":true')) {
+            clearInterval(pollInterval);
+            if (responseResolveFn) { responseResolveFn(body); responseResolveFn = null; }
+          }
+        } catch { /* request still streaming, getResponseBody may fail */ }
+      }, 3000);
+
+      // Hard timeout
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (responseResolveFn) { responseResolveFn(''); responseResolveFn = null; }
+      }, 120000);
     });
 
     // 6. Disable Network + clean up
