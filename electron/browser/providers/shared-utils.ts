@@ -23,6 +23,47 @@ export function extractText(content: unknown): string {
 }
 
 /**
+ * Extract image references from messages.
+ * Handles two formats:
+ * 1. OpenAI content parts: [{type: "image_url", image_url: {url: "data:..."}}]
+ * 2. OpenClaw text-embedded: [media attached: /path/file.jpg (image/jpeg) | /path/file.jpg]
+ */
+export function extractImages(
+  messages: Array<{ role: string; content: unknown }>,
+): Array<{ url: string; mediaType: string }> {
+  const images: Array<{ url: string; mediaType: string }> = [];
+  for (const msg of messages) {
+    // Format 1: OpenAI content parts array
+    if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (typeof part !== 'object' || part === null) continue;
+        if (part.type === 'image_url' && part.image_url?.url) {
+          const url = part.image_url.url as string;
+          let mediaType = 'image/jpeg';
+          const mimeMatch = url.match(/^data:([^;]+);/);
+          if (mimeMatch) mediaType = mimeMatch[1];
+          images.push({ url, mediaType });
+        }
+      }
+    }
+
+    // Format 2: OpenClaw text-embedded media references
+    // Pattern: [media attached: /path/file.jpg (image/jpeg) | /path/file.jpg]
+    const text = typeof msg.content === 'string' ? msg.content : extractText(msg.content);
+    const mediaRegex = /\[media attached:\s*([^\s(]+)\s*\(([^)]+)\)\s*\|[^\]]*\]/g;
+    let m;
+    while ((m = mediaRegex.exec(text)) !== null) {
+      const filePath = m[1];
+      const mimeType = m[2];
+      if (mimeType.startsWith('image/')) {
+        images.push({ url: filePath, mediaType: mimeType });
+      }
+    }
+  }
+  return images;
+}
+
+/**
  * Transform system prompt for WebAuth models that don't support native tool calling.
  *
  * Replaces OpenClaw's tool definitions with text-based tool calling instructions.

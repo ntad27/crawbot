@@ -10,7 +10,7 @@ import type {
   WebProvider, WebProviderModel, WebAuthCheckResult,
   OpenAIChatRequest, OpenAIChatChunk, WebviewLike,
 } from './types';
-import { consolidateMessages, parseTextToolCalls } from './shared-utils';
+import { consolidateMessages, parseTextToolCalls, extractImages } from './shared-utils';
 
 const MODELS: WebProviderModel[] = [
   { id: 'webauth-gemini-pro', name: 'Gemini Pro (WebAuth)', contextWindow: 1000000 },
@@ -51,8 +51,9 @@ export class GeminiWebProvider implements WebProvider {
     // Gemini web chat only accepts a single text input, so we must flatten the
     // entire conversation context into one message.
     const prompt = consolidateMessages(request.messages);
+    const images = extractImages(request.messages);
 
-    const responseText = await this.apiChat(webview, prompt);
+    const responseText = await this.apiChat(webview, prompt, images);
 
     if (!responseText) {
       throw new Error('Gemini: no response. Ensure you are logged in.');
@@ -126,7 +127,11 @@ export class GeminiWebProvider implements WebProvider {
 
   private cachedPageUrl: string | null = null;
 
-  private async apiChat(webview: WebviewLike, message: string): Promise<string> {
+  private async apiChat(
+    webview: WebviewLike,
+    message: string,
+    images: Array<{ url: string; mediaType: string }> = [],
+  ): Promise<string> {
     // Check if page URL changed (account switch or model change)
     // If so, invalidate cached template so we recapture with new settings
     try {
@@ -156,6 +161,32 @@ export class GeminiWebProvider implements WebProvider {
     const template = JSON.parse(JSON.stringify(this.cachedTemplate.inner));
     template[0][0] = message;
     template[2] = ['', '', '', null, null, null, null, null, null, ''];
+
+    // Inject images as inline base64 data
+    // Gemini batchexecute accepts images at template[0][4] as array of [[[base64, mediaType], null]]
+    if (images.length > 0) {
+      const imageEntries: unknown[] = [];
+      for (const img of images) {
+        let b64 = '';
+        if (img.url.startsWith('data:')) {
+          const commaIdx = img.url.indexOf(',');
+          if (commaIdx > 0) b64 = img.url.substring(commaIdx + 1);
+        } else {
+          try {
+            const fs = await import('node:fs');
+            const path = img.url.replace('file://', '');
+            if (fs.existsSync(path)) b64 = fs.readFileSync(path).toString('base64');
+          } catch { /* skip */ }
+        }
+        if (b64) {
+          // Gemini image format: [[base64Data, mediaType], null]
+          imageEntries.push([[b64, img.mediaType.replace('image/', '')], null]);
+        }
+      }
+      if (imageEntries.length > 0) {
+        template[0][4] = imageEntries;
+      }
+    }
 
     const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(template)]))
       + '&at=' + encodeURIComponent(this.cachedTemplate.atToken) + '&';
