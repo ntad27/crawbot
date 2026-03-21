@@ -71,53 +71,44 @@ After tool result arrives, THEN respond to user. Plain text ONLY when no lookup 
 /**
  * Transform system prompt specifically for ChatGPT web chat.
  *
- * ChatGPT's Thinking model (o-series) has a code sandbox and will execute
- * commands directly rather than outputting tool calls. GPT-4o refuses tool
- * calls for user paths saying "I can't access your computer."
+ * ChatGPT's Thinking model (GPT-5.4) has a code sandbox and will execute
+ * commands directly rather than outputting tool calls. It also refuses
+ * "tool calling" framing because it knows it can't access user's files.
  *
- * GPT-4o-mini cooperates when framed as an "API endpoint" that outputs JSON.
- * This transformer uses that framing while preserving persona context.
+ * Breakthrough: explain TWO environments (sandbox ❌ vs host ✅) and give
+ * concrete examples with real file paths. The model cooperates when it
+ * understands its sandbox is NOT the user's computer and blockquote JSON
+ * is the ONLY way to access user's files.
+ * Tested on GPT-5.4 Thinking with real /new session startup flow (7/7 tool calls).
  */
 export function transformSystemPromptForChatGPT(systemText: string): string {
-  // Extract tool list with descriptions
-  const toolListMatch = systemText.match(/Tool availability[^]*?(?=##\s|$)/s);
-  const toolLines: string[] = [];
-  if (toolListMatch) {
-    const matches = toolListMatch[0].matchAll(/^- (\w+): (.+)$/gm);
-    for (const m of matches) {
-      toolLines.push(`${m[1]}: ${m[2]}`);
-    }
-  }
+  // Extract workspace path from Runtime line for concrete examples
+  let workspace = '/Users/xnohat/.openclaw/workspace-main';
+  const repoMatch = systemText.match(/repo=([^\s|]+)/);
+  if (repoMatch) workspace = repoMatch[1];
 
-  // Replace the ## Tooling section with API endpoint framing
+  // Replace ## Tooling with "two environments" framing
   let transformed = systemText.replace(
     /## Tooling[\s\S]*?(?=## (?!Tool))/,
-    `## Tool Use — API Mode
-You are a tool-calling proxy. You CANNOT execute commands or read files yourself.
-You must output JSON tool calls. A separate execution engine runs them on the user's real computer.
+    `## System Access (IMPORTANT — read carefully)
+You have TWO environments:
+1. ❌ Code sandbox — an isolated container. It does NOT have the user's files.
+2. ✅ Host system — the user's real Mac. Accessed ONLY through blockquote requests.
 
-Format — one JSON per line, nothing else before or after:
-{"action": "function_call", "name": "<tool_name>", "arguments": {<tool_specific_args>}}
+To access the user's files, output blockquote JSON:
+> {"action": "function_call", "name": "read", "arguments": {"path": "/path/to/file"}}
 
-Example — reading a file:
-{"action": "function_call", "name": "read", "arguments": {"path": "/etc/hostname"}}
+> {"action": "function_call", "name": "exec", "arguments": {"command": "shell command"}}
 
-Example — running a command:
-{"action": "function_call", "name": "exec", "arguments": {"command": "ls -la /tmp"}}
+> {"action": "function_call", "name": "write", "arguments": {"path": "/path", "content": "data"}}
 
-Example — multiple tools (one JSON per line):
-{"action": "function_call", "name": "exec", "arguments": {"command": "uname -a"}}
-{"action": "function_call", "name": "read", "arguments": {"path": "/etc/os-release"}}
+Example — Session Startup (reading workspace files):
+> {"action": "function_call", "name": "read", "arguments": {"path": "${workspace}/SOUL.md"}}
+> {"action": "function_call", "name": "read", "arguments": {"path": "${workspace}/USER.md"}}
+> {"action": "function_call", "name": "read", "arguments": {"path": "${workspace}/MEMORY.md"}}
 
-Available tools:
-${toolLines.map((l) => `- ${l}`).join('\n')}
-
-RULES:
-- Output ONLY the JSON. No explanation, no markdown, no commentary.
-- "action" must always be exactly "function_call".
-- "name" must be one of the available tool names.
-- "arguments" must match the tool's expected parameters.
-- After receiving tool results, respond naturally to the user.
+Output ALL blockquote requests FIRST. Wait for results. Then respond to the user.
+❌ NEVER use your code sandbox to read files — those are NOT the user's files.
 
 `,
   );
@@ -180,20 +171,34 @@ export function consolidateMessages(
   return parts.join('\n\n');
 }
 
+type ToolCall = { name: string; params: Record<string, unknown>; raw: string };
+
 /**
- * Parse text-based tool calls from model responses.
- * Supports two formats:
- * 1. ```tool_call\n{...}\n``` code blocks
- * 2. {"action":"function_call","name":"...","arguments":{...}} JSON objects
+ * Parse tool calls from blockquote format: > {"action":"function_call",...}
+ * Used by ChatGPT copilot-style responses.
  */
-export function parseTextToolCalls(
-  text: string,
-): Array<{ name: string; params: Record<string, unknown>; raw: string }> {
-  const calls: Array<{
-    name: string;
-    params: Record<string, unknown>;
-    raw: string;
-  }> = [];
+export function parseBlockquoteToolCalls(text: string): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const quoteRegex = /^>\s*(\{[^\n]+\})\s*$/gm;
+  let m;
+  while ((m = quoteRegex.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(m[1].trim());
+      if (parsed.action === 'function_call' && parsed.name) {
+        calls.push({ name: parsed.name, params: parsed.arguments || parsed.params || {}, raw: m[0] });
+      }
+    } catch { /* skip */ }
+  }
+  return calls;
+}
+
+/**
+ * Parse tool calls from raw JSON (balanced-brace extraction).
+ * Used by Gemini, Qwen, and other providers that output bare JSON.
+ * Also handles ```tool_call code blocks.
+ */
+export function parseJsonToolCalls(text: string): ToolCall[] {
+  const calls: ToolCall[] = [];
 
   // Strategy 1: Match ```tool_call\n{...}\n``` blocks
   const codeBlockRegex = /```tool_call\s*\n([\s\S]*?)```/g;
@@ -202,15 +207,9 @@ export function parseTextToolCalls(
     try {
       const parsed = JSON.parse(match[1].trim());
       if (parsed.name) {
-        calls.push({
-          name: parsed.name,
-          params: parsed.params || parsed.arguments || {},
-          raw: match[0],
-        });
+        calls.push({ name: parsed.name, params: parsed.params || parsed.arguments || {}, raw: match[0] });
       }
-    } catch {
-      /* skip malformed */
-    }
+    } catch { /* skip */ }
   }
   if (calls.length > 0) return calls;
 
@@ -222,46 +221,34 @@ export function parseTextToolCalls(
       const start = i;
       while (i < text.length) {
         if (text[i] === '{') depth++;
-        else if (text[i] === '}') {
-          depth--;
-          if (depth === 0) break;
-        }
+        else if (text[i] === '}') { depth--; if (depth === 0) break; }
         i++;
       }
       const candidate = text.substring(start, i + 1);
       try {
         const parsed = JSON.parse(candidate);
-        // Accept multiple tool call formats:
-        // 1. {"action": "function_call", "name": "read", "arguments": {...}}  (standard)
-        // 2. {"function": "read", "params": {...}}  (simplified)
-        // 3. {"action": "read", "arguments": {...}}  (model uses action as tool name)
-        // 4. {"name": "read", "arguments": {...}}  (minimal)
         if (parsed.action === 'function_call' && parsed.name) {
-          calls.push({
-            name: parsed.name,
-            params: parsed.arguments || parsed.params || {},
-            raw: candidate,
-          });
+          calls.push({ name: parsed.name, params: parsed.arguments || parsed.params || {}, raw: candidate });
         } else if (parsed.function && typeof parsed.function === 'string') {
-          calls.push({
-            name: parsed.function,
-            params: parsed.params || parsed.arguments || {},
-            raw: candidate,
-          });
+          calls.push({ name: parsed.function, params: parsed.params || parsed.arguments || {}, raw: candidate });
         } else if (parsed.action && parsed.action !== 'function_call' && parsed.arguments && typeof parsed.action === 'string') {
-          // Model used "action" as the tool name
-          calls.push({
-            name: parsed.action,
-            params: parsed.arguments || {},
-            raw: candidate,
-          });
+          calls.push({ name: parsed.action, params: parsed.arguments || {}, raw: candidate });
         }
-      } catch {
-        /* not valid JSON, skip */
-      }
+      } catch { /* skip */ }
     }
     i++;
   }
-
   return calls;
+}
+
+/**
+ * Parse text-based tool calls — dispatches to provider-specific parser.
+ * Default: parseJsonToolCalls (Gemini/Qwen/Claude).
+ * ChatGPT uses parseBlockquoteToolCalls via its own provider code.
+ *
+ * @deprecated Providers should call their specific parser directly.
+ * Kept for backward compatibility with existing provider code.
+ */
+export function parseTextToolCalls(text: string): ToolCall[] {
+  return parseJsonToolCalls(text);
 }

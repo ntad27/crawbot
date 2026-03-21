@@ -18,7 +18,7 @@ import type {
   WebProvider, WebProviderModel, WebAuthCheckResult,
   OpenAIChatRequest, OpenAIChatChunk, WebviewLike,
 } from './types';
-import { consolidateMessages, parseTextToolCalls } from './shared-utils';
+import { consolidateMessages, parseBlockquoteToolCalls, parseJsonToolCalls, transformSystemPromptForChatGPT } from './shared-utils';
 
 const MODELS: WebProviderModel[] = [
   { id: 'webauth-chatgpt-gpt-4o', name: 'GPT-4o (WebAuth)', contextWindow: 128000 },
@@ -50,7 +50,7 @@ export class ChatGPTWebProvider implements WebProvider {
     webview: WebviewLike,
     request: OpenAIChatRequest,
   ): AsyncGenerator<OpenAIChatChunk> {
-    const prompt = consolidateMessages(request.messages);
+    const prompt = consolidateMessages(request.messages, transformSystemPromptForChatGPT);
     const responseText = await this.sendAndCapture(webview, prompt);
 
     if (!responseText) {
@@ -58,7 +58,9 @@ export class ChatGPTWebProvider implements WebProvider {
     }
 
     const completionId = `chatcmpl-${Date.now()}`;
-    const toolCalls = parseTextToolCalls(responseText);
+    // Try blockquote format first (ChatGPT copilot), then fall back to raw JSON
+    let toolCalls = parseBlockquoteToolCalls(responseText);
+    if (toolCalls.length === 0) toolCalls = parseJsonToolCalls(responseText);
 
     if (toolCalls.length > 0) {
       let textContent = responseText;
