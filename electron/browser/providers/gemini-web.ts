@@ -88,26 +88,77 @@ export class GeminiWebProvider implements WebProvider {
     // Check if response contains text-based tool calls
     const toolCalls = parseTextToolCalls(responseText);
 
-    if (toolCalls.length > 0) {
+    // Intercept `image` tool calls — use Gemini's two-step vision flow.
+    // Upload image → Gemini analyzes → feed analysis back → Gemini continues.
+    const imageCalls = toolCalls.filter((tc) => tc.name === 'image');
+    const otherCalls = toolCalls.filter((tc) => tc.name !== 'image');
+    // Convert image tool calls to read tool calls so OpenClaw UI shows the widget
+    for (const ic of imageCalls) {
+      const imgPath = (ic.params.path || ic.params.image || '') as string;
+      if (imgPath) {
+        otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
+      }
+    }
+
+    if (imageCalls.length > 0) {
+      // Step 1: Get image analysis via Gemini two-step vision flow
+      const analyses: string[] = [];
+      for (const ic of imageCalls) {
+        const imgPath = (ic.params.path || ic.params.image || '') as string;
+        if (!imgPath) continue;
+        try {
+          const imgPrompt = (ic.params.prompt as string) || 'Describe this image in detail.';
+          const analysis = await this.sendWithImage(webview, imgPrompt, [{ url: imgPath, mediaType: 'image/png' }]);
+          if (analysis) analyses.push(analysis);
+        } catch (err) {
+          logger.error('[Gemini] Image analysis failed:', err);
+          analyses.push(`[Image analysis failed: ${err}]`);
+        }
+      }
+
+      // Step 2: Feed analysis back to Gemini as context → let it continue responding
+      if (analyses.length > 0) {
+        const contextMsg = prompt + `\n\n<tool_result>\nImage analysis result:\n${analyses.join('\n---\n')}\n</tool_result>\n\nNow continue with the user's request based on this image analysis. Respond naturally.`;
+        const finalResponse = await this.apiChat(webview, contextMsg);
+
+        if (finalResponse) {
+          const finalToolCalls = parseTextToolCalls(finalResponse);
+
+          if (finalToolCalls.length > 0) {
+            otherCalls.push(...finalToolCalls);
+            let textContent = finalResponse;
+            for (const tc of finalToolCalls) textContent = textContent.replace(tc.raw, '');
+            textContent = textContent.trim();
+            if (textContent) {
+              yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+                choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
+            }
+          } else {
+            yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+              choices: [{ index: 0, delta: { content: finalResponse }, finish_reason: otherCalls.length > 0 ? null : 'stop' }] };
+          }
+        }
+      }
+    }
+
+    if (otherCalls.length > 0) {
       let textContent = responseText;
       for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
       textContent = textContent.trim();
-
-      if (textContent) {
+      // Only emit text if no image analysis was already emitted
+      if (textContent && imageCalls.length === 0) {
         yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
           choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
       }
-
-      // Image tool calls pass through to OpenClaw's vision model (Gemini can't upload images via API)
       yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
         choices: [{ index: 0, delta: {
-          tool_calls: toolCalls.map((tc, i) => ({
+          tool_calls: otherCalls.map((tc, i) => ({
             index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
             function: { name: tc.name, arguments: JSON.stringify(tc.params) },
           }))
         } as unknown as { content: string }, finish_reason: 'tool_calls' }],
       } as unknown as OpenAIChatChunk;
-    } else {
+    } else if (imageCalls.length === 0) {
       yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
         choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
     }
