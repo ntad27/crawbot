@@ -28,6 +28,10 @@ import { ensureManagedBinInProcessPath } from '../utils/nodejs-setup';
 // Disable GPU acceleration for better compatibility
 app.disableHardwareAcceleration();
 
+// Enable CDP (Chrome DevTools Protocol) on internal port for browser automation
+// The CDP Filter Proxy (port 9333) will filter and relay to this internal port
+app.commandLine.appendSwitch('remote-debugging-port', '9222');
+
 // Register 'local-file' as a privileged scheme so it can be used in <iframe>, <img>, <video>, <audio>.
 // Must be called before app.whenReady().
 // NOTE: `standard: true` enables proper URL parsing. We use "localhost" as the host component
@@ -295,6 +299,32 @@ async function initialize(): Promise<void> {
     mainWindow = null;
   });
 
+  // Start CDP proxy (9333) → intercepts Target.createTarget + Page.printToPDF
+  // then relays everything else to Electron's real CDP (9222)
+  // Only set browser config if useBuiltinBrowser is enabled (default: true)
+  try {
+    const { startCdpProxy } = await import('../browser/cdp-proxy');
+    await startCdpProxy(9333, 9222);
+    logger.info('CDP proxy started on port 9333 → real CDP 9222');
+
+    const { getUseBuiltinBrowserFromConfig } = await import('../utils/agent-config');
+    const useBuiltinBrowser = getUseBuiltinBrowserFromConfig();
+
+    if (useBuiltinBrowser) {
+      const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+      setOpenClawBrowserConfig(9333);
+      logger.info('Browser config set: CDP proxy on port 9333');
+    } else {
+      logger.info('Builtin browser disabled — skipping browser config (using Chrome / extension)');
+    }
+
+    // Start CDP focus monitor to sync tab switches from Playwright/agent
+    const { startCdpFocusMonitor } = await import('../browser/cdp-focus-monitor');
+    startCdpFocusMonitor(9222).catch(() => {});
+  } catch (err) {
+    logger.warn('Browser config / CDP proxy failed:', err);
+  }
+
   // Start Gateway automatically
   try {
     logger.debug('Auto-starting Gateway...');
@@ -310,6 +340,20 @@ async function initialize(): Promise<void> {
         logger.warn('Failed to inject CrawBot context:', err);
       }
     }, 5000);
+
+    // Auto-start WebAuth pipeline after Gateway is ready
+    setTimeout(async () => {
+      try {
+        const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+        const pipeline = getWebAuthPipeline();
+        pipeline.setMainWindow(mainWindow!);
+        pipeline.setGatewayRestartFn(() => gatewayManager.restart());
+        await pipeline.initialize();
+        logger.info('WebAuth pipeline auto-start succeeded');
+      } catch (err) {
+        logger.error('[WebAuth] Pipeline init failed:', err);
+      }
+    }, 3000);
   } catch (error) {
     logger.error('Gateway auto-start failed:', error);
     mainWindow?.webContents.send('gateway:error', String(error));
@@ -399,6 +443,21 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   isQuitting = true;
+  // Clean up browser config from openclaw.json so CLI mode works standalone
+  try {
+    const { removeOpenClawBrowserConfig } = await import('../utils/browser-config');
+    removeOpenClawBrowserConfig();
+  } catch { /* ignore */ }
+  // Stop WebAuth pipeline
+  try {
+    const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+    await getWebAuthPipeline().shutdown();
+  } catch { /* ignore */ }
+  // Stop CDP proxy
+  try {
+    const { stopCdpProxy } = await import('../browser/cdp-proxy');
+    await stopCdpProxy();
+  } catch { /* ignore */ }
   // Clean up LibreOffice conversion temp files
   const { cleanupTempDirs } = await import('../utils/libreoffice');
   cleanupTempDirs();

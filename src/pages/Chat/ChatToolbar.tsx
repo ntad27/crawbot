@@ -4,7 +4,7 @@
  * Rendered in the Header when on the Chat page.
  */
 import { useMemo, useEffect } from 'react';
-import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useChatStore } from '@/stores/chat';
@@ -12,6 +12,7 @@ import { useModelsStore } from '@/stores/models';
 import { useAgentsStore } from '@/stores/agents';
 import { useProviderStore } from '@/stores/providers';
 import { useFileBrowserStore } from '@/stores/file-browser';
+import { useBrowserStore } from '@/stores/browser';
 import { resolveAgentModel } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -30,6 +31,9 @@ export function ChatToolbar() {
 
   const panelOpen = useFileBrowserStore((s) => s.panelOpen);
   const togglePanel = useFileBrowserStore((s) => s.togglePanel);
+
+  const browserPanelOpen = useBrowserStore((s) => s.panelOpen);
+  const toggleBrowserPanel = useBrowserStore((s) => s.togglePanel);
 
   const models = useModelsStore((s) => s.models);
   const selectedModel = useModelsStore((s) => s.selectedModel);
@@ -77,19 +81,54 @@ export function ChatToolbar() {
   };
 
   // Set of provider types the user has configured
-  const configuredProviderTypes = useMemo(
-    () => new Set<string>(configuredProviders.map((p) => p.type)),
-    [configuredProviders],
-  );
+  const configuredProviderTypes = useMemo(() => {
+    const types = new Set<string>(configuredProviders.map((p) => p.type));
+    types.add('webauth');
+    return types;
+  }, [configuredProviders]);
 
-  // Filter models to only configured providers, then group by provider
+  // Filter models to only configured providers, then group by provider.
+  // For webauth provider, collapse all models per provider prefix into a single entry
+  // since model selection is done in the web chat UI, not the dropdown.
   const groupedModels = useMemo(() => {
     const groups: Record<string, typeof models> = {};
+    const webauthSeen = new Set<string>(); // track collapsed webauth provider prefixes
     for (const model of models) {
       const provider = model.provider || 'other';
       if (!configuredProviderTypes.has(provider)) continue;
-      if (!groups[provider]) groups[provider] = [];
-      groups[provider].push(model);
+
+      if (provider === 'webauth' && model.id.startsWith('webauth-')) {
+        // Collapse webauth models: e.g. webauth-gemini-pro, webauth-gemini-flash -> "Gemini Web"
+        // Extract provider prefix: webauth-{provider}-{variant} -> {provider}
+        const parts = model.id.replace('webauth-', '').split('-');
+        // Provider name is the first segment (gemini, claude, chatgpt, qwen)
+        const providerPrefix = parts[0];
+        if (webauthSeen.has(providerPrefix)) continue;
+        webauthSeen.add(providerPrefix);
+
+        // Create a single representative entry using the first model's ID
+        // Display name is derived from provider prefix
+        const displayNames: Record<string, string> = {
+          gemini: 'Gemini Web',
+          claude: 'Claude Web',
+          chatgpt: 'ChatGPT Web',
+          qwen: 'Qwen Web',
+          deepseek: 'DeepSeek Web',
+          grok: 'Grok Web',
+          kimi: 'Kimi Web',
+          doubao: 'Doubao Web',
+          glm: 'GLM Web',
+          manus: 'Manus Web',
+        };
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push({
+          ...model,
+          name: displayNames[providerPrefix] || `${providerPrefix} Web`,
+        });
+      } else {
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push(model);
+      }
     }
     return groups;
   }, [models, configuredProviderTypes]);
@@ -279,6 +318,26 @@ export function ChatToolbar() {
         </TooltipTrigger>
         <TooltipContent>
           <p>{panelOpen ? 'Close workspace' : 'Open workspace'}</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Browser panel toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'h-8 w-8',
+              browserPanelOpen && 'bg-primary/10 text-primary',
+            )}
+            onClick={toggleBrowserPanel}
+          >
+            <Globe className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>{browserPanelOpen ? 'Close browser' : 'Open browser'}</p>
         </TooltipContent>
       </Tooltip>
     </div>

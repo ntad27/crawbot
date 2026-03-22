@@ -45,6 +45,8 @@ const electronAPI = {
         'app:setStartMinimized',
         'app:setToolsAutoApprove',
         'app:setSessionDmScope',
+        'app:setScreenshotMaxSide',
+        'app:setUseBuiltinBrowser',
         'app:getOpenclawSettings',
         // Window controls
         'window:minimize',
@@ -229,6 +231,53 @@ const electronAPI = {
         'webhook:update-server-config',
         'webhook:api-key',
         'webhook:regenerate-api-key',
+
+        // Browser
+        'browser:tab:create',
+        'browser:tab:close',
+        'browser:tab:navigate',
+        'browser:tab:goBack',
+        'browser:tab:goForward',
+        'browser:tab:reload',
+        'browser:tab:setZoom',
+        'browser:tab:setActive',
+        'browser:tab:list',
+        'browser:cookies:get',
+        'browser:cookies:remove',
+        'browser:cookies:clear',
+        'browser:cookies:export',
+        'browser:cookies:import',
+        'browser:cookies:import-from-chrome',
+        'browser:cdp:getPort',
+        'browser:cdp:status',
+        'browser:panel:detach',
+        'browser:panel:attach',
+        'browser:panel:isDetached',
+        'browser:panel:setBounds',
+        'browser:printToPDF',
+
+        // WebAuth Browser (independent from Chat browser)
+        'webauth:browser:tab:create',
+        'webauth:browser:tab:close',
+        'webauth:browser:tab:navigate',
+        'webauth:browser:tab:goBack',
+        'webauth:browser:tab:goForward',
+        'webauth:browser:tab:reload',
+        'webauth:browser:tab:setZoom',
+        'webauth:browser:tab:setActive',
+        'webauth:browser:panel:setBounds',
+        'webauth:browser:google-login-done',
+
+        // WebAuth Providers
+        'webauth:provider:add',
+        'webauth:provider:remove',
+        'webauth:provider:login',
+        'webauth:provider:check',
+        'webauth:provider:check-all',
+        'webauth:pipeline:refresh',
+        'webauth:proxy:start',
+        'webauth:proxy:stop',
+        'webauth:proxy:status',
       ];
 
       if (validChannels.includes(channel)) {
@@ -267,6 +316,18 @@ const electronAPI = {
         'update:error',
         'cron:updated',
         'file:changed',
+        'browser:tab:updated',
+        'browser:tab:created',
+        'browser:tab:closed',
+        'browser:tab:activated',
+        'webauth:browser:tab:created',
+        'webauth:browser:tab:updated',
+        'webauth:browser:tab:activated',
+        'webauth:browser:tab:closed',
+        'webauth:browser:google-login',
+        'webauth:provider:status-changed',
+        'webauth:provider:session-expired',
+        'webauth:proxy:started',
       ];
 
       if (validChannels.includes(channel)) {

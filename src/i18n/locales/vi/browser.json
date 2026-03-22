@@ -1,0 +1,43 @@
+{
+  "panel": {
+    "title": "Trình duyệt",
+    "close": "Đóng trình duyệt",
+    "noTabs": "Chưa có tab nào. Nhấn + để thêm tab mới.",
+    "newTab": "Tab mới"
+  },
+  "toolbar": {
+    "back": "Quay lại",
+    "forward": "Tiến tới",
+    "reload": "Tải lại",
+    "zoomIn": "Phóng to",
+    "zoomOut": "Thu nhỏ",
+    "urlPlaceholder": "Nhập URL hoặc tìm kiếm..."
+  },
+  "webauth": {
+    "title": "WebAuth Providers",
+    "description": "Dùng phiên đăng nhập web làm LLM API — không cần API key",
+    "add": "Thêm",
+    "addDialog": "Chọn provider để thêm:",
+    "allAdded": "Tất cả provider đã được thêm",
+    "cancel": "Hủy",
+    "login": "Đăng nhập",
+    "relogin": "Đăng nhập lại",
+    "remove": "Xóa",
+    "showBrowser": "Hiện trình duyệt",
+    "noProviders": "Chưa có WebAuth provider nào. Nhấn \"Thêm\" để bắt đầu.",
+    "proxyRunning": "Đang chạy trên cổng {{port}}",
+    "proxyNotRunning": "Chưa chạy",
+    "status": {
+      "valid": "Hoạt động",
+      "expiring": "Sắp hết hạn",
+      "expired": "Hết hạn",
+      "notConfigured": "Chưa cấu hình"
+    },
+    "toast": {
+      "added": "Đã thêm {{name}}",
+      "removed": "Đã xóa {{name}}",
+      "loginOpening": "Đang mở trang đăng nhập {{name}}...",
+      "sessionExpired": "Phiên {{name}} đã hết hạn — nhấn để đăng nhập lại"
+    }
+  }
+}

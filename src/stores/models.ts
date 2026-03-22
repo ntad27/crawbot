@@ -47,6 +47,7 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
         const configuredTypes = new Set<string>(
           useProviderStore.getState().providers.map((p) => p.type),
         );
+        configuredTypes.add('webauth');
         const filtered = configuredTypes.size > 0
           ? result.result.models.filter((m) => configuredTypes.has(m.provider))
           : result.result.models;

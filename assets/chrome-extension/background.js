@@ -113,7 +113,7 @@ function startAutoDiscovery() {
     if (token && relayWs?.readyState === WebSocket.OPEN) return
     if (!token) {
       const discovered = await autoDiscoverToken()
-      if (discovered) { try { await ensureRelayConnection(); await announceAllTabs() } catch { /* */ } }
+      if (discovered) { try { await ensureRelayConnection(); await announceAllTabs(); await discoverAndAnnounceNewTabs() } catch { /* */ } }
     }
   }, AUTO_DISCOVER_INTERVAL_MS)
 }
@@ -127,7 +127,7 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     if (msg.relayPort) updates.relayPort = msg.relayPort
     chrome.storage.local.set(updates).then(async () => {
       sendResponse({ success: true })
-      if (msg.token) { try { await ensureRelayConnection(); await announceAllTabs() } catch { /* */ } }
+      if (msg.token) { try { await ensureRelayConnection(); await announceAllTabs(); await discoverAndAnnounceNewTabs() } catch { /* */ } }
     })
     return true
   }
@@ -244,6 +244,7 @@ function scheduleReconnect() {
       await ensureRelayConnection()
       reconnectAttempt = 0
       await announceAllTabs()
+      await discoverAndAnnounceNewTabs()
     } catch (err) {
       if (isRetryableReconnectError(err)) scheduleReconnect()
     }
@@ -336,6 +337,7 @@ async function onRelayMessage(text) {
       sendToRelay({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
     }
   }
+
 }
 
 // ── Tab announce (NO debugger attach — lazy only) ─────────────────────────────
@@ -697,6 +699,39 @@ async function handleForwardCdpCommand(msg) {
     return { success: true }
   }
 
+  // Target.getTargets: re-discover new tabs before returning the list.
+  // Without this, tabs opened after initial relay connect are invisible.
+  if (method === 'Target.getTargets') {
+    // Discover any new tabs that haven't been announced yet
+    let allTabs
+    try { allTabs = await chrome.tabs.query({}) } catch { allTabs = [] }
+    for (const t of allTabs) {
+      if (!t.id || tabs.has(t.id) || !isAttachableUrl(t.url)) continue
+      try { await announceTab(t.id) } catch { /* skip */ }
+    }
+    // Build synthetic target list from our tracked tabs
+    const targetInfos = []
+    for (const [tabId, entry] of tabs.entries()) {
+      if (!entry.targetId) continue
+      let title = '', url = ''
+      try {
+        const info = await chrome.tabs.get(tabId)
+        title = info.title || ''
+        url = info.url || ''
+      } catch { continue } // tab gone
+      const isActive = tabId === activeTabId
+      targetInfos.push({
+        targetId: entry.targetId,
+        type: 'page',
+        title: isActive ? `[ACTIVE] ${title}` : title,
+        url,
+        attached: entry.state === 'connected',
+        browserContextId: BROWSER_CONTEXT_ID,
+      })
+    }
+    return { targetInfos }
+  }
+
   if (method === 'Target.activateTarget') {
     const t = typeof params?.targetId === 'string' ? params.targetId : ''
     const toActivate = t ? getTabByTargetId(t) : tabId
@@ -705,6 +740,187 @@ async function handleForwardCdpCommand(msg) {
     if (tab?.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {})
     if (toActivate) await chrome.tabs.update(toActivate, { active: true }).catch(() => {})
     return {}
+  }
+
+  // Custom: get cookies from Chrome for a URL + its parent domains
+  // e.g., for "https://gemini.google.com/app" → gets cookies for:
+  //   gemini.google.com, .gemini.google.com, google.com, .google.com
+  if (method === 'CrawBot.getCookies') {
+    const url = typeof params?.url === 'string' ? params.url : ''
+    if (!url) throw new Error('Missing url parameter')
+
+    // Extract hostname and build domain list including parent domains
+    let hostname
+    try { hostname = new URL(url).hostname } catch { throw new Error('Invalid URL') }
+
+    const domains = new Set()
+    const parts = hostname.split('.')
+    for (let i = 0; i < parts.length - 1; i++) {
+      const domain = parts.slice(i).join('.')
+      domains.add(domain)
+      domains.add('.' + domain) // dot-prefix form used by cookies
+    }
+
+    // Fetch cookies for all domains in parallel
+    const allCookies = new Map() // dedupe by name+domain+path
+    for (const domain of domains) {
+      try {
+        const domainCookies = await chrome.cookies.getAll({ domain })
+        for (const c of domainCookies) {
+          const key = `${c.name}|${c.domain}|${c.path}`
+          if (!allCookies.has(key)) allCookies.set(key, c)
+        }
+      } catch { /* some domains may fail */ }
+    }
+
+    // Also get by URL directly (catches cookies set for exact URL)
+    try {
+      const urlCookies = await chrome.cookies.getAll({ url })
+      for (const c of urlCookies) {
+        const key = `${c.name}|${c.domain}|${c.path}`
+        if (!allCookies.has(key)) allCookies.set(key, c)
+      }
+    } catch { /* */ }
+
+    const cookies = [...allCookies.values()]
+    return {
+      cookies: cookies.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        // Map Chrome's sameSite to Electron's format
+        // Chrome: "unspecified"|"no_restriction"|"lax"|"strict"
+        sameSite: c.sameSite === 'no_restriction' ? 'no_restriction'
+          : c.sameSite === 'lax' ? 'lax'
+          : c.sameSite === 'strict' ? 'strict'
+          : 'unspecified',
+        expirationDate: c.expirationDate,
+      }))
+    }
+  }
+
+  // Custom: get localStorage from Chrome for a URL
+  // Opens/finds a tab on the domain, executes script to read localStorage
+  if (method === 'CrawBot.getStorage') {
+    const url = typeof params?.url === 'string' ? params.url : ''
+    if (!url) throw new Error('Missing url parameter')
+
+    let hostname
+    try { hostname = new URL(url).hostname } catch { throw new Error('Invalid URL') }
+
+    // Find existing tab on this domain or create one
+    const allTabs = await chrome.tabs.query({})
+    let targetTab = allTabs.find(t => t.url && new URL(t.url).hostname === hostname)
+    let createdTab = false
+
+    if (!targetTab) {
+      targetTab = await chrome.tabs.create({ url, active: false })
+      createdTab = true
+      // Wait for page to fully load
+      await new Promise((resolve) => {
+        const onComplete = (details) => {
+          if (details.tabId === targetTab.id) {
+            chrome.webNavigation.onCompleted.removeListener(onComplete)
+            resolve()
+          }
+        }
+        chrome.webNavigation.onCompleted.addListener(onComplete)
+        // Timeout fallback
+        setTimeout(() => {
+          chrome.webNavigation.onCompleted.removeListener(onComplete)
+          resolve()
+        }, 10000)
+      })
+    }
+
+    try {
+      // Read all browser storages via executeScript
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: targetTab.id },
+        func: async () => {
+          // localStorage
+          const ls = {}
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i)
+            if (key) ls[key] = localStorage.getItem(key)
+          }
+
+          // sessionStorage
+          const ss = {}
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i)
+            if (key) ss[key] = sessionStorage.getItem(key)
+          }
+
+          // IndexedDB — read database names and basic key-value data
+          const idb = {}
+          try {
+            const dbs = await indexedDB.databases()
+            for (const dbInfo of dbs) {
+              if (!dbInfo.name) continue
+              try {
+                const db = await new Promise((resolve, reject) => {
+                  const req = indexedDB.open(dbInfo.name, dbInfo.version)
+                  req.onsuccess = () => resolve(req.result)
+                  req.onerror = () => reject(req.error)
+                  // Don't trigger upgrade
+                  req.onupgradeneeded = (e) => { e.target.transaction.abort() }
+                })
+                const storeNames = [...db.objectStoreNames]
+                const dbData = {}
+                for (const storeName of storeNames) {
+                  try {
+                    const tx = db.transaction(storeName, 'readonly')
+                    const store = tx.objectStore(storeName)
+                    const allItems = await new Promise((resolve, reject) => {
+                      const req = store.getAll()
+                      req.onsuccess = () => resolve(req.result)
+                      req.onerror = () => reject(req.error)
+                    })
+                    const allKeys = await new Promise((resolve, reject) => {
+                      const req = store.getAllKeys()
+                      req.onsuccess = () => resolve(req.result)
+                      req.onerror = () => reject(req.error)
+                    })
+                    // Only include if reasonable size (< 1MB total)
+                    const serialized = JSON.stringify(allItems)
+                    if (serialized.length < 1024 * 1024) {
+                      dbData[storeName] = { keys: allKeys, values: allItems }
+                    }
+                  } catch { /* skip store */ }
+                }
+                db.close()
+                if (Object.keys(dbData).length > 0) {
+                  idb[dbInfo.name] = { version: dbInfo.version, stores: dbData }
+                }
+              } catch { /* skip db */ }
+            }
+          } catch { /* indexedDB.databases() not supported */ }
+
+          return { localStorage: ls, sessionStorage: ss, indexedDB: idb }
+        },
+      })
+
+      const storageResult = results?.[0]?.result || {}
+      const localStorage = storageResult.localStorage || {}
+      const sessionStorage = storageResult.sessionStorage || {}
+      const indexedDBData = storageResult.indexedDB || {}
+
+      // Clean up if we created the tab
+      if (createdTab && targetTab.id) {
+        chrome.tabs.remove(targetTab.id).catch(() => {})
+      }
+
+      return { localStorage, sessionStorage, indexedDB: indexedDBData, hostname }
+    } catch (e) {
+      if (createdTab && targetTab?.id) {
+        chrome.tabs.remove(targetTab.id).catch(() => {})
+      }
+      throw new Error('Failed to read storage: ' + e.message)
+    }
   }
 
   // On-demand tab discovery: if no tab found by session/targetId, try to find
@@ -934,16 +1150,32 @@ chrome.tabs.onRemoved.addListener((tabId) => void whenReady(() => {
   void persistState()
 }))
 
-// Do NOT auto-announce new tabs to the relay — this triggers Playwright to
-// create CRPage + send init commands → debugger attaches (yellow bar) on tabs
-// the user is just browsing normally. Tabs are announced on-demand when the
-// agent actually targets them, or via announceAllTabs on relay connect.
-// chrome.tabs.onCreated — intentionally no listener
+// Auto-announce new tabs to the relay so they appear in /json/list (tab listing).
+// announceTab() only sets state='announced' (no debugger attach, no yellow bar).
+// The debugger is only attached lazily when the agent sends a CDP command to the tab.
+chrome.tabs.onCreated.addListener((tab) => void whenReady(async () => {
+  if (!tab.id || tabs.has(tab.id)) return
+  if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
+  // Wait briefly for the tab URL to settle (new tabs start as about:blank)
+  await new Promise((r) => setTimeout(r, 500))
+  try {
+    const tabInfo = await chrome.tabs.get(tab.id)
+    if (!isAttachableUrl(tabInfo.url)) return
+    await announceTab(tab.id)
+  } catch { /* tab may have been closed already */ }
+}))
 
-// Update tab info on navigation complete (only for already-tracked tabs)
+// Update tab info on navigation complete — also announce previously-unknown tabs
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => void whenReady(async () => {
   if (changeInfo.status !== 'complete') return
-  if (!tabs.has(tabId)) return // don't auto-announce new tabs
+
+  // Announce tabs we don't know about yet (opened before relay connect, or missed by onCreated)
+  if (!tabs.has(tabId)) {
+    if (!relayWs || relayWs.readyState !== WebSocket.OPEN) return
+    if (!isAttachableUrl(tab.url)) return
+    try { await announceTab(tabId) } catch { /* */ }
+    return
+  }
 
   // Existing tab — update title/url in relay
   const entry = tabs.get(tabId)
@@ -1052,9 +1284,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       await ensureRelayConnection().catch(() => { if (!reconnectTimer) scheduleReconnect() })
     }
   } else {
-    // Only maintain existing tracked tabs — do NOT discover new tabs on keepalive.
-    // New tabs are discovered on-demand when the agent targets them.
+    // Re-announce tracked tabs + discover any new tabs missed by onCreated/onUpdated
     await announceAllTabs()
+    await discoverAndAnnounceNewTabs()
   }
 })
 

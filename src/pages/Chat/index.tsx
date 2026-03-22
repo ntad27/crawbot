@@ -11,12 +11,14 @@ import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { useFileBrowserStore } from '@/stores/file-browser';
+
 import { resolveAgentWorkspace } from '@/types/agent';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { ChatToolbar } from './ChatToolbar';
 import { WorkspacePanel } from './WorkspacePanel';
+import { BrowserPanel } from './BrowserPanel';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 
@@ -85,6 +87,16 @@ export function Chat() {
     }
   }, [sending, streamingTimestamp]);
 
+  // Hide the native WebContentsView when navigating away from Chat page.
+  // Must be before any early returns to satisfy React hooks rules.
+  useEffect(() => {
+    return () => {
+      window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
+        x: -9999, y: 0, width: 0, height: 0,
+      });
+    };
+  }, []);
+
   // Gateway not running
   if (!isGatewayRunning) {
     return (
@@ -117,7 +129,7 @@ export function Chat() {
   return (
     <div className="flex -m-3 sm:-m-6" style={{ height: 'calc(100vh - 2.5rem)' }}>
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div id="chat-panel" className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
         {/* Toolbar */}
         <div className="flex shrink-0 items-center justify-end px-4 py-2">
           <ChatToolbar />
@@ -204,6 +216,9 @@ export function Chat() {
 
       {/* Workspace Panel (right side, collapsible) */}
       {panelOpen && <WorkspacePanel />}
+
+      {/* Browser Panel (right side, always mounted to preserve webview state) */}
+      <BrowserPanel />
     </div>
   );
 }

@@ -9,6 +9,13 @@ import { join, extname, basename, dirname, normalize, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
 import { openExternalInDefaultProfile } from '../utils/open-external';
+import { browserManager } from '../browser/manager';
+import { automationViews } from '../browser/automation-views';
+import { webauthViews } from '../browser/webauth-views';
+import {
+  getCookies, removeCookie, clearPartition, exportCookies, importCookies,
+  type CookieData,
+} from '../browser/cookie-manager';
 import { GatewayManager } from '../gateway/manager';
 import { ClawHubService, ClawHubSearchParams, ClawHubInstallParams, ClawHubUninstallParams } from '../gateway/clawhub';
 import {
@@ -93,6 +100,10 @@ import {
   getToolsAutoApproveFromConfig,
   setSessionDmScope as setSessionDmScopeConfig,
   getSessionDmScopeFromConfig,
+  setScreenshotMaxSide as setScreenshotMaxSideConfig,
+  getScreenshotMaxSideFromConfig,
+  setUseBuiltinBrowser as setUseBuiltinBrowserConfig,
+  getUseBuiltinBrowserFromConfig,
 } from '../utils/agent-config';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { zaloUserLoginManager } from '../utils/zalouser-login';
@@ -193,6 +204,15 @@ export function registerIpcHandlers(
 
   // Webhook / HTTP API handlers
   registerWebhookHandlers(gatewayManager);
+
+  // Built-in browser handlers
+  registerBuiltinBrowserHandlers(mainWindow);
+
+  // WebAuth browser handlers (independent from Chat browser)
+  registerWebAuthBrowserHandlers(mainWindow);
+
+  // WebAuth provider handlers
+  registerWebAuthHandlers();
 }
 
 /**
@@ -1092,7 +1112,8 @@ function registerGatewayHandlers(
         const data = result as { models?: Array<{ provider: string }> };
         if (Array.isArray(data.models)) {
           const configured = await getAllProviders();
-          const configuredTypes = new Set(configured.map((p) => p.type));
+          const configuredTypes = new Set<string>(configured.map((p) => p.type));
+          configuredTypes.add('webauth'); // Always include WebAuth models
           if (configuredTypes.size > 0) {
             data.models = data.models.filter((m) => configuredTypes.has(m.provider));
           }
@@ -2683,7 +2704,49 @@ function registerAppHandlers(gatewayManager: GatewayManager): void {
       setSessionDmScopeConfig(sessionDmScope);
     }
 
-    return { toolsAutoApprove, sessionDmScope };
+    const screenshotMaxSide = getScreenshotMaxSideFromConfig() ?? 2000;
+    const useBuiltinBrowser = getUseBuiltinBrowserFromConfig();
+
+    return { toolsAutoApprove, sessionDmScope, screenshotMaxSide, useBuiltinBrowser };
+  });
+
+  // Set use builtin browser — persist to crawbot-settings.json + update openclaw.json browser config + restart gateway
+  ipcMain.handle('app:setUseBuiltinBrowser', async (_, enabled: boolean) => {
+    await setSetting('useBuiltinBrowser', enabled);
+    setUseBuiltinBrowserConfig(enabled);
+    if (enabled) {
+      // Restore browser config pointing to CDP proxy
+      try {
+        const { setOpenClawBrowserConfig } = await import('../utils/browser-config');
+        setOpenClawBrowserConfig(9333);
+      } catch (err) {
+        logger.warn('Failed to set browser config:', err);
+      }
+    } else {
+      // Remove browser config so OpenClaw uses Chrome / extension
+      try {
+        const { removeOpenClawBrowserConfig } = await import('../utils/browser-config');
+        removeOpenClawBrowserConfig();
+      } catch (err) {
+        logger.warn('Failed to remove browser config:', err);
+      }
+    }
+    if (gatewayManager.isConnected()) {
+      void gatewayManager.restart().catch((err) => {
+        logger.warn('Gateway restart after use builtin browser change failed:', err);
+      });
+    }
+  });
+
+  // Set screenshot max side — persist to openclaw.json + restart gateway
+  ipcMain.handle('app:setScreenshotMaxSide', async (_, value: number) => {
+    await setSetting('screenshotMaxSide', value);
+    setScreenshotMaxSideConfig(value);
+    if (gatewayManager.isConnected()) {
+      void gatewayManager.restart().catch((err) => {
+        logger.warn('Gateway restart after screenshot max side change failed:', err);
+      });
+    }
   });
 }
 
@@ -3673,5 +3736,589 @@ function registerWebhookHandlers(gatewayManager: GatewayManager): void {
 
   ipcMain.handle('webhook:regenerate-api-key', async () => {
     return httpServer.regenerateApiKey();
+  });
+}
+
+/**
+ * Built-in browser IPC handlers
+ * Tab management, navigation, zoom — operates via BrowserManager
+ */
+function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
+  browserManager.setMainWindowId(mainWindow.webContents.id);
+  automationViews.setMainWindow(mainWindow);
+
+  ipcMain.handle(
+    'browser:tab:create',
+    (_, params: { id: string; url: string; partition: string; category: string }) => {
+      try {
+        // Create WebContentsView for automation tabs (type: "page" in CDP)
+        const tab = automationViews.createTab(params.id, params.url, params.partition);
+        browserManager.createTab(params.id, params.url, params.partition, params.category as 'automation' | 'webauth');
+        return { success: true, tab: { id: tab.id, url: tab.url, title: tab.title } };
+      } catch (err) {
+        return { success: false, error: String(err) };
+      }
+    }
+  );
+
+  ipcMain.handle('browser:tab:close', (_, tabId: string) => {
+    automationViews.closeTab(tabId);
+    browserManager.closeTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:navigate', (_, tabId: string, url: string) => {
+    automationViews.navigateTab(tabId, url);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:goBack', (_, tabId: string) => {
+    automationViews.goBack(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:goForward', (_, tabId: string) => {
+    automationViews.goForward(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:reload', (_, tabId: string) => {
+    automationViews.reload(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:setZoom', (_, tabId: string, factor: number) => {
+    automationViews.setZoom(tabId, factor);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:setActive', (_, tabId: string) => {
+    automationViews.setActiveTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:tab:list', () => {
+    const tabs = automationViews.getAllTabs().map(t => ({
+      id: t.id, url: t.url, title: t.title, partition: t.partition,
+    }));
+    return { success: true, tabs };
+  });
+
+  // Panel bounds — renderer tells main process where to position WebContentsViews
+  ipcMain.handle('browser:panel:setBounds', (_, bounds: { x: number; y: number; width: number; height: number }) => {
+    automationViews.setPanelBounds(bounds);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:cdp:getPort', () => {
+    // Will be implemented in Phase 2 when CDP proxy is ready
+    return { success: true, port: null };
+  });
+
+  ipcMain.handle('browser:cdp:status', () => {
+    return {
+      success: true,
+      running: false,
+      port: null,
+      targets: browserManager.getExposedTargetIds().size,
+    };
+  });
+
+  ipcMain.handle('browser:panel:detach', () => {
+    // Will be implemented in Phase 5
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:panel:attach', () => {
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:panel:isDetached', () => {
+    return { success: true, detached: false };
+  });
+
+  // ── PDF export (Electron API — works in headed mode unlike CDP) ──
+
+  ipcMain.handle('browser:printToPDF', async (_, tabId?: string) => {
+    try {
+      let wc: Electron.WebContents | undefined;
+      if (tabId) {
+        const tab = automationViews.getTab(tabId);
+        if (tab) wc = tab.view.webContents;
+      }
+      if (!wc) {
+        const activeId = automationViews.getActiveTabId();
+        if (activeId) {
+          const tab = automationViews.getTab(activeId);
+          if (tab) wc = tab.view.webContents;
+        }
+      }
+      if (!wc) return { success: false, error: 'No active tab for PDF' };
+
+      const buffer = await wc.printToPDF({ printBackground: true });
+      return { success: true, data: buffer.toString('base64'), size: buffer.length };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  // ── Cookie management ──
+
+  ipcMain.handle('browser:cookies:get', async (_, partition: string, url: string) => {
+    const cookies = await getCookies(partition, url);
+    return { success: true, cookies };
+  });
+
+  ipcMain.handle('browser:cookies:remove', async (_, partition: string, url: string, name: string) => {
+    await removeCookie(partition, url, name);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:cookies:clear', async (_, partition: string) => {
+    await clearPartition(partition);
+    return { success: true };
+  });
+
+  ipcMain.handle('browser:cookies:export', async (_, partition: string) => {
+    const cookies = await exportCookies(partition);
+    return { success: true, cookies };
+  });
+
+  ipcMain.handle('browser:cookies:import', async (_, partition: string, cookies: CookieData[]) => {
+    const count = await importCookies(partition, cookies);
+    return { success: true, imported: count };
+  });
+
+  // Import cookies from Chrome browser via the relay extension's CDP endpoint
+  ipcMain.handle(
+    'browser:cookies:import-from-chrome',
+    async (_, partition: string, url: string) => {
+      try {
+        const token = await getSetting('gatewayToken');
+        const gatewayPort = (await getSetting('gatewayPort')) || 18789;
+        const relayPort = gatewayPort + 3;
+
+        if (!token) {
+          return { success: false, error: 'Gateway token not available. Is the gateway running?' };
+        }
+
+        // Derive relay token (same HMAC-SHA256 algorithm as extension background-utils.js)
+        const hmac = crypto.createHmac('sha256', token);
+        hmac.update(`openclaw-extension-relay-v1:${relayPort}`);
+        const relayToken = hmac.digest('hex');
+
+        // Connect to the relay's CDP WebSocket endpoint (not /extension)
+        // CDP clients send standard { id, method, params } and receive { id, result/error }
+        const cdpWsUrl = `ws://127.0.0.1:${relayPort}/cdp?token=${encodeURIComponent(relayToken)}`;
+
+        const { default: WebSocket } = await import('ws');
+
+        const cookies = await new Promise<CookieData[]>((resolveP, rejectP) => {
+          const ws = new WebSocket(cdpWsUrl);
+          const requestId = 1;
+          let settled = false;
+
+          const timeout = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              try { ws.close(); } catch { /* */ }
+              rejectP(new Error('Timeout waiting for cookies from Chrome extension. Is the extension connected?'));
+            }
+          }, 10000);
+
+          ws.on('error', (err: Error) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeout);
+              rejectP(new Error(`Relay connection error: ${err.message}`));
+            }
+          });
+
+          ws.on('close', () => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeout);
+              rejectP(new Error('Relay connection closed before receiving cookies'));
+            }
+          });
+
+          ws.on('open', () => {
+            // Send custom CDP command — the relay forwards unknown methods to the extension
+            ws.send(JSON.stringify({
+              id: requestId,
+              method: 'CrawBot.getCookies',
+              params: { url },
+            }));
+          });
+
+          ws.on('message', (data: Buffer | string) => {
+            try {
+              const msg = JSON.parse(String(data));
+
+              // CDP response to our command
+              if (typeof msg?.id === 'number' && msg.id === requestId) {
+                clearTimeout(timeout);
+                settled = true;
+
+                if (msg.error) {
+                  try { ws.close(); } catch { /* */ }
+                  const errMsg = typeof msg.error === 'object' ? msg.error.message : String(msg.error);
+                  rejectP(new Error(`Extension error: ${errMsg}`));
+                  return;
+                }
+
+                const chromeCookies: CookieData[] = (msg.result?.cookies || []).map(
+                  (c: Record<string, unknown>) => ({
+                    name: String(c.name || ''),
+                    value: String(c.value || ''),
+                    domain: String(c.domain || ''),
+                    path: String(c.path || '/'),
+                    secure: Boolean(c.secure),
+                    httpOnly: Boolean(c.httpOnly),
+                    sameSite: (c.sameSite as CookieData['sameSite']) || 'unspecified',
+                    expirationDate: typeof c.expirationDate === 'number' ? c.expirationDate : undefined,
+                  }),
+                );
+                try { ws.close(); } catch { /* */ }
+                resolveP(chromeCookies);
+              }
+              // Ignore other messages (Target.attachedToTarget events, etc.)
+            } catch { /* ignore parse errors */ }
+          });
+        });
+
+        // Clear existing cookies for the domains being imported,
+        // then import fresh ones — ensures no stale/corrupt cookies remain
+        const ses = (await import('electron')).session.fromPartition(partition);
+        const importDomains = new Set(cookies.map((c: CookieData) => c.domain));
+        for (const domain of importDomains) {
+          const existing = await ses.cookies.get({ domain });
+          for (const c of existing) {
+            const cookieUrl = `http${c.secure ? 's' : ''}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+            await ses.cookies.remove(cookieUrl, c.name).catch(() => {});
+          }
+        }
+
+        // Import fresh cookies from Chrome into the requested partition
+        const count = await importCookies(partition, cookies);
+        logger.info(`[browser:cookies:import-from-chrome] Imported ${count} cookies into ${partition}`);
+
+        // Also sync to related partitions so login works everywhere:
+        // - If importing from Chat browser (browser-shared) → also import to matching webauth partition
+        // - If importing from WebAuth browser (webauth-*) → also import to browser-shared
+        const { WEBAUTH_PROVIDER_PARTITIONS } = await import('../browser/providers/registry');
+        const allPartitions = new Set([partition, 'persist:browser-shared', ...Object.values(WEBAUTH_PROVIDER_PARTITIONS)]);
+        // Find which webauth partitions match the imported domains
+        for (const otherPartition of allPartitions) {
+          if (otherPartition === partition) continue; // Already imported
+          // Only sync if the URL domain matches a webauth provider's login domain
+          const otherSes = (await import('electron')).session.fromPartition(otherPartition);
+          // Clear old cookies for imported domains in this partition too
+          for (const domain of importDomains) {
+            const existing = await otherSes.cookies.get({ domain });
+            for (const c of existing) {
+              const cookieUrl = `http${c.secure ? 's' : ''}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+              await otherSes.cookies.remove(cookieUrl, c.name).catch(() => {});
+            }
+          }
+          await importCookies(otherPartition, cookies);
+        }
+        logger.info(`[browser:cookies:import-from-chrome] Synced cookies to all ${allPartitions.size} partitions`);
+
+        // Also import localStorage from Chrome for this domain
+        try {
+          const storageResult = await new Promise<{ localStorage: Record<string, string>; sessionStorage: Record<string, string>; indexedDB: Record<string, unknown> }>((resolveS, rejectS) => {
+            const ws2 = new WebSocket(cdpWsUrl);
+            let settled2 = false;
+            const timeout2 = setTimeout(() => { if (!settled2) { settled2 = true; try { ws2.close(); } catch {} rejectS(new Error('timeout')); } }, 15000);
+            ws2.on('error', () => { if (!settled2) { settled2 = true; clearTimeout(timeout2); rejectS(new Error('relay error')); } });
+            ws2.on('open', () => {
+              ws2.send(JSON.stringify({ id: 1, method: 'CrawBot.getStorage', params: { url } }));
+            });
+            ws2.on('message', (data: Buffer | string) => {
+              if (settled2) return;
+              try {
+                const msg = JSON.parse(String(data));
+                if (msg.id === 1) {
+                  settled2 = true; clearTimeout(timeout2);
+                  try { ws2.close(); } catch {}
+                  if (msg.error) { rejectS(new Error('storage error')); return; }
+                  resolveS({
+                    localStorage: msg.result?.localStorage || {},
+                    sessionStorage: msg.result?.sessionStorage || {},
+                    indexedDB: msg.result?.indexedDB || {},
+                  });
+                }
+              } catch {}
+            });
+          });
+
+          const storageData = storageResult.localStorage;
+          const ssData = storageResult.sessionStorage;
+          const idbData = storageResult.indexedDB;
+          const lsKeys = Object.keys(storageData);
+
+          if (lsKeys.length > 0 || Object.keys(ssData).length > 0 || Object.keys(idbData).length > 0) {
+            const { automationViews } = await import('../browser/automation-views');
+            const { webauthViews } = await import('../browser/webauth-views');
+
+            const hostname = new URL(url).hostname;
+            const allTabs = [...automationViews.getAllTabs(), ...webauthViews.getAllTabs()];
+            for (const tab of allTabs) {
+              try {
+                const tabUrl = tab.view.webContents.getURL();
+                if (tabUrl.includes(hostname) && !tab.view.webContents.isDestroyed()) {
+                  // Import localStorage + sessionStorage
+                  await tab.view.webContents.executeJavaScript(`
+                    (function() {
+                      const ls = ${JSON.stringify(storageData)};
+                      for (const [k, v] of Object.entries(ls)) {
+                        try { localStorage.setItem(k, v); } catch {}
+                      }
+                      const ss = ${JSON.stringify(ssData)};
+                      for (const [k, v] of Object.entries(ss)) {
+                        try { sessionStorage.setItem(k, v); } catch {}
+                      }
+                      return { ls: Object.keys(ls).length, ss: Object.keys(ss).length };
+                    })()
+                  `);
+
+                  // Import IndexedDB data
+                  if (Object.keys(idbData).length > 0) {
+                    await tab.view.webContents.executeJavaScript(`
+                      (async function() {
+                        const idbData = ${JSON.stringify(idbData)};
+                        for (const [dbName, dbInfo] of Object.entries(idbData)) {
+                          try {
+                            const db = await new Promise((resolve, reject) => {
+                              const req = indexedDB.open(dbName, dbInfo.version || 1);
+                              req.onupgradeneeded = (e) => {
+                                const db = e.target.result;
+                                for (const storeName of Object.keys(dbInfo.stores || {})) {
+                                  if (!db.objectStoreNames.contains(storeName)) {
+                                    db.createObjectStore(storeName);
+                                  }
+                                }
+                              };
+                              req.onsuccess = () => resolve(req.result);
+                              req.onerror = () => reject(req.error);
+                            });
+                            for (const [storeName, storeData] of Object.entries(dbInfo.stores || {})) {
+                              try {
+                                const tx = db.transaction(storeName, 'readwrite');
+                                const store = tx.objectStore(storeName);
+                                const keys = storeData.keys || [];
+                                const values = storeData.values || [];
+                                for (let i = 0; i < values.length; i++) {
+                                  store.put(values[i], keys[i] !== undefined ? keys[i] : i);
+                                }
+                              } catch {}
+                            }
+                            db.close();
+                          } catch {}
+                        }
+                      })()
+                    `);
+                  }
+                }
+              } catch { /* tab might not be ready */ }
+            }
+            logger.info(`[browser:cookies:import-from-chrome] Imported storage: ${lsKeys.length} localStorage, ${Object.keys(ssData).length} sessionStorage, ${Object.keys(idbData).length} IndexedDB databases`);
+          }
+        } catch (storageErr) {
+          // localStorage import is best-effort — don't fail the whole import
+          logger.warn(`[browser:cookies:import-from-chrome] localStorage import skipped: ${String(storageErr)}`);
+        }
+
+        return { success: true, imported: count };
+      } catch (error) {
+        logger.error(`[browser:cookies:import-from-chrome] ${String(error)}`);
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+}
+
+/**
+ * WebAuth provider IPC handlers
+ */
+function registerWebAuthHandlers(): void {
+  ipcMain.handle('webauth:provider:add', async (_, _providerId: string) => {
+    // Provider registration is handled in renderer store
+    // Trigger pipeline re-check after a delay (cookies may not be imported yet)
+    setTimeout(async () => {
+      try {
+        const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+        const pipeline = getWebAuthPipeline();
+        if (!pipeline.isProxyRunning()) await pipeline.initialize();
+        else await pipeline.checkAllProviders();
+      } catch { /* ignore */ }
+    }, 2000);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:provider:remove', async (_, providerId: string) => {
+    // Clear the partition data
+    const { clearPartition: clearPart } = await import('../browser/cookie-manager');
+    const partitionMap: Record<string, string> = {
+      'claude-web': 'persist:webauth-claude',
+      'chatgpt-web': 'persist:webauth-chatgpt',
+      'deepseek-web': 'persist:webauth-deepseek',
+      'gemini-web': 'persist:webauth-gemini',
+      'grok-web': 'persist:webauth-grok',
+      'qwen-intl-web': 'persist:webauth-qwen-intl',
+      'qwen-china-web': 'persist:webauth-qwen-china',
+      'kimi-web': 'persist:webauth-kimi',
+      'doubao-web': 'persist:webauth-doubao',
+      'glm-china-web': 'persist:webauth-glm-china',
+      'glm-intl-web': 'persist:webauth-glm-intl',
+      'manus-api': 'persist:webauth-manus',
+    };
+    const partition = partitionMap[providerId];
+    if (partition) {
+      await clearPart(partition);
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:provider:login', (_, _providerId: string) => {
+    // Login is handled via browser panel in renderer (opens webview tab)
+    // After user finishes login and imports cookies, re-check auth
+    return { success: true };
+  });
+
+  // Trigger pipeline re-check after cookie import (called from BrowserToolbar import button)
+  // This ensures provider status + models update immediately after import
+  ipcMain.handle('webauth:pipeline:refresh', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const pipeline = getWebAuthPipeline();
+      if (!pipeline.isProxyRunning()) {
+        pipeline.setMainWindow(BrowserWindow.getAllWindows()[0]);
+        await pipeline.initialize();
+      } else {
+        await pipeline.checkAllProviders();
+      }
+      return { success: true, port: pipeline.getProxyPort() };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:provider:check', async (_, providerId: string) => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const result = await getWebAuthPipeline().checkProvider(providerId);
+      return { success: true, status: result.status };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:provider:check-all', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      await getWebAuthPipeline().checkAllProviders();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:proxy:start', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      const pipeline = getWebAuthPipeline();
+      await pipeline.initialize();
+      return { success: true, port: pipeline.getProxyPort() };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:proxy:stop', async () => {
+    try {
+      const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+      await getWebAuthPipeline().shutdown();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('webauth:proxy:status', async () => {
+    const { getWebAuthPipeline } = await import('../browser/webauth-pipeline');
+    const pipeline = getWebAuthPipeline();
+    return {
+      success: true,
+      running: pipeline.isProxyRunning(),
+      port: pipeline.getProxyPort(),
+    };
+  });
+}
+
+/**
+ * WebAuth Browser IPC handlers (independent from Chat browser)
+ * Tab management, navigation, zoom — operates via WebAuthViewManager
+ */
+function registerWebAuthBrowserHandlers(mainWindow: BrowserWindow): void {
+  webauthViews.setMainWindow(mainWindow);
+
+  ipcMain.handle(
+    'webauth:browser:tab:create',
+    (_, params: { id: string; url: string; partition: string }) => {
+      try {
+        const tab = webauthViews.createTab(params.id, params.url, params.partition);
+        return { success: true, tab: { id: tab.id, url: tab.url, title: tab.title } };
+      } catch (err) {
+        return { success: false, error: String(err) };
+      }
+    }
+  );
+
+  ipcMain.handle('webauth:browser:tab:close', (_, tabId: string) => {
+    webauthViews.closeTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:navigate', (_, tabId: string, url: string) => {
+    webauthViews.navigateTab(tabId, url);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:goBack', (_, tabId: string) => {
+    webauthViews.goBack(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:goForward', (_, tabId: string) => {
+    webauthViews.goForward(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:reload', (_, tabId: string) => {
+    webauthViews.reload(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:setZoom', (_, tabId: string, factor: number) => {
+    webauthViews.setZoom(tabId, factor);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:tab:setActive', (_, tabId: string) => {
+    webauthViews.setActiveTab(tabId);
+    return { success: true };
+  });
+
+  ipcMain.handle('webauth:browser:panel:setBounds', (_, bounds: { x: number; y: number; width: number; height: number }) => {
+    webauthViews.setPanelBounds(bounds);
+    return { success: true };
+  });
+
+  // Google login completed in renderer <webview> — reload WebContentsView
+  ipcMain.handle('webauth:browser:google-login-done', (_, tabId: string, providerUrl: string) => {
+    webauthViews.reloadAfterGoogleLogin(tabId, providerUrl);
+    return { success: true };
   });
 }

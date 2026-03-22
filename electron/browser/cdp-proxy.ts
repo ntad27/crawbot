@@ -1,0 +1,1041 @@
+/**
+ * CDP Filter Proxy — Thin HTTP + WebSocket relay
+ *
+ * Sits between OpenClaw (Playwright) and Electron's real CDP server.
+ * - HTTP: filters /json/list to hide main window + webauth webviews
+ * - WebSocket: pure byte relay (zero protocol interpretation)
+ *
+ * ~200 lines. 100% CDP compatible because we don't interpret the protocol.
+ */
+
+import http from 'node:http';
+import { WebSocketServer, WebSocket } from 'ws';
+import { webContents, BrowserWindow } from 'electron';
+import { browserManager } from './manager';
+import { automationViews } from './automation-views';
+import { logger } from '../utils/logger';
+
+/** Map page-level WS paths to their webContents ID for printToPDF interception */
+function findWebContentsForTarget(targetPath: string): Electron.WebContents | null {
+  // targetPath looks like /devtools/page/<targetId>
+  // We need to match it to an automation tab's webContents
+  const allWc = webContents.getAllWebContents();
+  for (const wc of allWc) {
+    // Electron assigns numeric IDs that appear in CDP target paths
+    const debuggerUrl = `/devtools/page/${wc.id}`;
+    if (targetPath === debuggerUrl) return wc;
+  }
+  // Also try matching by looking for the ID after the last /
+  const idPart = targetPath.split('/').pop();
+  if (idPart) {
+    for (const wc of allWc) {
+      if (String(wc.id) === idPart) return wc;
+    }
+  }
+  return null;
+}
+
+const LOG_TAG = '[CDP-Proxy]';
+
+export interface CdpProxyOptions {
+  /** Port for the proxy server (external, advertised to OpenClaw) */
+  proxyPort: number;
+  /** Port of Electron's real CDP server (internal) */
+  realCdpPort: number;
+}
+
+export class CdpFilterProxy {
+  private server: http.Server | null = null;
+  private wss: WebSocketServer | null = null;
+  private options: CdpProxyOptions;
+  private running = false;
+  /** PDF stream data for IO.read/IO.close protocol */
+  pdfStreams = new Map<string, { data: string; read: boolean }>();
+  /** Internal CDP message IDs — responses are filtered from clientWs */
+  private internalCdpIds = new Set<number>();
+
+  constructor(options: CdpProxyOptions) {
+    this.options = options;
+  }
+
+  get port(): number {
+    return this.options.proxyPort;
+  }
+
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  async start(): Promise<void> {
+    if (this.running) return;
+
+    const { proxyPort, realCdpPort } = this.options;
+
+    this.server = http.createServer(async (req, res) => {
+      try {
+        logger.info(`${LOG_TAG} HTTP ${req.method} ${req.url}`);
+        await this.handleHttp(req, res, realCdpPort, proxyPort);
+      } catch (err) {
+        logger.error(`${LOG_TAG} HTTP error:`, err);
+        res.writeHead(500);
+        res.end('Internal Server Error');
+      }
+    });
+
+    this.wss = new WebSocketServer({ server: this.server });
+    this.wss.on('connection', (clientWs, req) => {
+      logger.info(`${LOG_TAG} WS client connected: ${req.url}`);
+      this.handleWsConnection(clientWs, req, realCdpPort);
+    });
+
+    return new Promise((resolve, reject) => {
+      this.server!.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          logger.warn(`${LOG_TAG} Port ${proxyPort} in use`);
+          reject(new Error(`Port ${proxyPort} already in use`));
+        } else {
+          reject(err);
+        }
+      });
+
+      this.server!.listen(proxyPort, '127.0.0.1', () => {
+        this.running = true;
+        logger.info(`${LOG_TAG} Listening on 127.0.0.1:${proxyPort} → real CDP 127.0.0.1:${realCdpPort}`);
+
+        // No default page needed — Browser Panel webview tabs are exposed as "page" type
+
+        resolve();
+      });
+    });
+  }
+
+  // No default page needed — webview tabs in Browser Panel serve as CDP targets
+  // (their type is rewritten from "webview" to "page" in /json/list)
+
+  async stop(): Promise<void> {
+    if (!this.running) return;
+    this.running = false;
+
+    // Close all WebSocket connections
+    if (this.wss) {
+      for (const client of this.wss.clients) {
+        client.close();
+      }
+      this.wss.close();
+      this.wss = null;
+    }
+
+    return new Promise((resolve) => {
+      if (this.server) {
+        this.server.close(() => {
+          this.server = null;
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+
+  // ── HTTP Handler ──
+
+  private async handleHttp(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    realCdpPort: number,
+    proxyPort: number
+  ): Promise<void> {
+    const url = req.url || '/';
+
+    // Normalize trailing slash for URL matching
+    const normalizedUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+
+    if (normalizedUrl === '/json/list' || normalizedUrl === '/json') {
+      // Filter targets: only expose automation tabs
+      const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+      const targets = JSON.parse(realRes);
+      const exposed = browserManager.getExposedTargetIds();
+
+      const filtered = targets.filter((t: { id: string; webSocketDebuggerUrl?: string }) => {
+        // Match by webContents ID embedded in the target's devtoolsFrontendUrl or id
+        // CDP target IDs are strings — we need to check against our exposed set
+        // The real CDP /json/list returns targets with numeric-ish IDs
+        return this.isTargetAllowed(t, exposed);
+      });
+
+      // Rewrite ports + mark active tab in title
+      const activeTabId = automationViews.getActiveTabId();
+      const rewritten = filtered.map((t: Record<string, unknown>) => {
+        const result = this.rewritePorts(t, realCdpPort, proxyPort);
+        // Mark active tab by matching URL to active automation tab
+        if (activeTabId) {
+          const activeTab = automationViews.getTab(activeTabId);
+          if (activeTab) {
+            try {
+              const activeUrl = activeTab.view.webContents.getURL();
+              if (result.url === activeUrl) {
+                result.title = `[Active] ${result.title || ''}`;
+              }
+            } catch {
+              // webContents may be destroyed — clean up stale tab
+              logger.warn(`${LOG_TAG} Active tab ${activeTabId} has destroyed webContents, cleaning up`);
+              automationViews.closeTab(activeTabId);
+              browserManager.closeTab(activeTabId);
+            }
+          }
+        }
+        return result;
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rewritten));
+    } else if (normalizedUrl.startsWith('/json/new')) {
+      // Electron doesn't support Target.createTarget via CDP.
+      // Create a real BrowserWindow as a CDP-controllable page.
+      const targetUrl = normalizedUrl.split('?')[1] || 'about:blank';
+      const target = await this.createCdpPage(targetUrl, realCdpPort, proxyPort);
+      if (target) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(target));
+      } else {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to create page' }));
+      }
+    } else if (normalizedUrl === '/json/version') {
+      const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/version');
+      const version = JSON.parse(realRes);
+      const rewritten = this.rewritePorts(version, realCdpPort, proxyPort);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rewritten));
+    } else if (normalizedUrl === '/json/protocol') {
+      const realRes = await this.fetchFromRealCdp(realCdpPort, '/json/protocol');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(realRes);
+    } else if (normalizedUrl.startsWith('/json/close/')) {
+      // Close a CDP target and clean up CrawBot internal state
+      const targetId = normalizedUrl.split('/json/close/')[1];
+      logger.info(`${LOG_TAG} Closing target: ${targetId}`);
+
+      // Find and clean up the matching automation tab before forwarding
+      if (targetId) {
+        const matchingTab = automationViews.getAllTabs().find((tab) => {
+          try {
+            return String(tab.view.webContents.id) === targetId;
+          } catch {
+            return false;
+          }
+        });
+        if (matchingTab) {
+          logger.info(`${LOG_TAG} Cleaning up automation tab ${matchingTab.id} for target ${targetId}`);
+          automationViews.closeTab(matchingTab.id);
+          browserManager.closeTab(matchingTab.id);
+        }
+      }
+
+      // Forward the close request to real CDP
+      try {
+        const realRes = await this.fetchFromRealCdp(realCdpPort, url);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(realRes);
+      } catch {
+        // Target may already be gone — still return success
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'string', value: 'Target is closing' }));
+      }
+    } else if (normalizedUrl.startsWith('/json/activate/')) {
+      // Activate a CDP target and sync CrawBot's active tab state
+      const targetId = normalizedUrl.split('/json/activate/')[1];
+      logger.info(`${LOG_TAG} Activating target: ${targetId}`);
+
+      // Sync automationViews active tab
+      if (targetId) {
+        this.activateTabByTargetId(targetId, realCdpPort);
+      }
+
+      // Forward to real CDP
+      try {
+        const realRes = await this.fetchFromRealCdp(realCdpPort, url);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(realRes);
+      } catch {
+        // Electron may not support /json/activate — return success anyway
+        // since we've already synced the tab state in automationViews
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'string', value: 'Target activated' }));
+      }
+    } else {
+      // Pass-through unknown endpoints
+      try {
+        const realRes = await this.fetchFromRealCdp(realCdpPort, url);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(realRes);
+      } catch {
+        res.writeHead(404);
+        res.end('Not Found');
+      }
+    }
+  }
+
+  // ── WebSocket Relay ──
+
+  private handleWsConnection(
+    clientWs: WebSocket,
+    req: http.IncomingMessage,
+    realCdpPort: number
+  ): void {
+    const targetPath = req.url || '';
+    const realWsUrl = `ws://127.0.0.1:${realCdpPort}${targetPath}`;
+
+    const realWs = new WebSocket(realWsUrl);
+
+    // Buffer messages from client until real WS is open
+    const pendingMessages: { data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }[] = [];
+    let realWsReady = false;
+
+    realWs.on('open', () => {
+      logger.info(`${LOG_TAG} WS relay open: ${targetPath}`);
+      realWsReady = true;
+      // Flush buffered messages
+      for (const msg of pendingMessages) {
+        realWs.send(msg.data, { binary: msg.isBinary });
+      }
+      pendingMessages.length = 0;
+    });
+
+    // Relay: client → real CDP (buffer if not ready)
+    // Intercept commands that Electron doesn't support natively
+    clientWs.on('message', (data, isBinary) => {
+      if (!isBinary) {
+        try {
+          const msg = JSON.parse(data.toString());
+          // Intercept Target.activateTarget to sync tab switch in CrawBot UI
+          if (msg.method === 'Target.activateTarget' && msg.params?.targetId) {
+            logger.info(`${LOG_TAG} Intercepted Target.activateTarget: ${msg.params.targetId}`);
+            this.activateTabByTargetId(msg.params.targetId, realCdpPort);
+          }
+
+          // Rewrite Target.setAutoAttach to disable waitForDebuggerOnStart
+          // In Electron, waitForDebuggerOnStart pauses ALL targets (including
+          // internal ones) and there's no reliable way to resume them. This
+          // prevents Playwright's connectOverCDP from breaking existing tabs.
+          if (msg.method === 'Target.setAutoAttach' && msg.params?.waitForDebuggerOnStart) {
+            logger.info(`${LOG_TAG} Rewriting setAutoAttach: waitForDebuggerOnStart=false`);
+            msg.params.waitForDebuggerOnStart = false;
+            // Replace the forwarded data with the modified message
+            const modifiedData = JSON.stringify(msg);
+            if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+              realWs.send(modifiedData, { binary: false });
+            } else {
+              pendingMessages.push({ data: Buffer.from(modifiedData), isBinary: false });
+            }
+            return; // Don't forward the original
+          }
+
+          // Intercept Target.createTarget — Electron doesn't support it
+          if (msg.method === 'Target.createTarget') {
+            const url = msg.params?.url || 'about:blank';
+            logger.info(`${LOG_TAG} Intercepted Target.createTarget for: ${url}`);
+            this.createCdpPage(url, realCdpPort, this.options.proxyPort).then((target) => {
+              const response = {
+                id: msg.id,
+                result: { targetId: (target as Record<string, unknown>)?.id || '' },
+              };
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify(response));
+              }
+            }).catch(() => {
+              const errorResponse = {
+                id: msg.id,
+                error: { code: -32000, message: 'Failed to create target' },
+              };
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify(errorResponse));
+              }
+            });
+            return; // Don't forward to real CDP
+          }
+
+          // Handle IO.read for our PDF stream handles
+          if (msg.method === 'IO.read' && msg.params?.handle && this.pdfStreams.has(msg.params.handle)) {
+            const stream = this.pdfStreams.get(msg.params.handle)!;
+            const response: Record<string, unknown> = {
+              id: msg.id,
+              result: {
+                data: stream.read ? '' : stream.data,
+                eof: stream.read,
+                base64Encoded: !stream.read,
+              },
+            };
+            if (msg.sessionId) response.sessionId = msg.sessionId;
+            stream.read = true; // Next read returns eof
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify(response));
+            }
+            return; // Don't forward
+          }
+
+          // Handle IO.close for our PDF stream handles
+          if (msg.method === 'IO.close' && msg.params?.handle && this.pdfStreams.has(msg.params.handle)) {
+            this.pdfStreams.delete(msg.params.handle);
+            const response: Record<string, unknown> = { id: msg.id, result: {} };
+            if (msg.sessionId) response.sessionId = msg.sessionId;
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify(response));
+            }
+            return;
+          }
+
+          // Fix Page.captureScreenshot: disable captureBeyondViewport
+          // OpenClaw hardcodes captureBeyondViewport=true which captures
+          // content beyond viewport. Set to false for viewport screenshots.
+          // For full page (with clip), keep captureBeyondViewport=true so
+          // CDP captures the full content area defined by clip.
+          if (msg.method === 'Page.captureScreenshot' && msg.params) {
+            if (!msg.params.clip) {
+              // Viewport-only: use Electron's capturePage() instead of CDP.
+              // After a full-page screenshot, setDeviceMetricsOverride persists
+              // and inflates the CSS viewport. CDP screenshot captures the
+              // inflated viewport. capturePage() captures the actual visible
+              // pixels in the WebContentsView, bypassing CDP viewport state.
+              const activeTabId2 = automationViews.getActiveTabId();
+              const activeTab2 = activeTabId2 ? automationViews.getTab(activeTabId2) : null;
+              if (activeTab2) {
+                const wc2 = activeTab2.view.webContents;
+                (async () => {
+                  try {
+                    const image = await wc2.capturePage();
+                    const pngBase64 = image.toPNG().toString('base64');
+                    // Send CDP response directly to client (bypass realWs)
+                    const response: Record<string, unknown> = {
+                      id: msg.id,
+                      result: { data: pngBase64 },
+                    };
+                    if (msg.sessionId) response.sessionId = msg.sessionId;
+                    if (clientWs.readyState === WebSocket.OPEN) {
+                      clientWs.send(JSON.stringify(response), { binary: false });
+                    }
+                    logger.info(`${LOG_TAG} Viewport screenshot via capturePage: ${image.getSize().width}x${image.getSize().height}`);
+                  } catch (err) {
+                    logger.error(`${LOG_TAG} capturePage failed:`, err);
+                    // Fallback: forward to CDP
+                    msg.params.captureBeyondViewport = false;
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(data, { binary: false });
+                    }
+                  }
+                })();
+                return; // Don't forward — async handler responds directly
+              }
+              // No active tab — forward to CDP with captureBeyondViewport=false
+              msg.params.captureBeyondViewport = false;
+            } else {
+              // Full page with clip: auto-scroll to trigger animations,
+              // then trim clip to actual content bounds
+              const activeTabId = automationViews.getActiveTabId();
+              const activeTab = activeTabId ? automationViews.getTab(activeTabId) : null;
+              if (activeTab) {
+                const wc = activeTab.view.webContents;
+                const captureMsg = msg;
+                const captureData = data;
+                // Save original clip from OpenClaw/Playwright — it has the
+                // correct viewport-based x/width for the page layout
+                const originalClip = { ...msg.params.clip };
+
+                // Async scroll + capture — return early to prevent sync forwarding
+                (async () => {
+                  try {
+                    // Step 1: Get page height and auto-scroll to trigger animations
+                    // Uses viewport-height steps so IntersectionObserver thresholds
+                    // are reliably crossed, with enough delay for CSS transitions.
+                    const MAX_SCROLL = 20000;
+                    const STEP_DELAY = 300;
+
+                    const scrollInfo = await wc.executeJavaScript(
+                      '({ pageHeight: Math.min(Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), ' + MAX_SCROLL + '), viewportHeight: window.innerHeight })'
+                    );
+                    const pageHeight = scrollInfo.pageHeight;
+                    // Use viewport-height steps (or 500px min) so each scroll
+                    // reveals a new screenful for IntersectionObserver triggers
+                    const STEP = Math.max(Math.floor(scrollInfo.viewportHeight * 0.7), 500);
+
+                    // Scroll incrementally from top to bottom
+                    for (let y = 0; y < pageHeight; y += STEP) {
+                      await wc.executeJavaScript(`window.scrollTo(0, ${y})`);
+                      await new Promise(r => setTimeout(r, STEP_DELAY));
+                    }
+                    // Scroll to very bottom
+                    await wc.executeJavaScript(`window.scrollTo(0, ${pageHeight})`);
+                    await new Promise(r => setTimeout(r, STEP_DELAY));
+
+                    // Scroll back to top
+                    await wc.executeJavaScript('window.scrollTo(0, 0)');
+                    // Wait for animations to settle after scroll-back
+                    await new Promise(r => setTimeout(r, 500));
+
+                    // Force all elements visible: override scroll-triggered
+                    // animations that may leave elements with opacity:0 or
+                    // off-screen transforms if the scroll was too fast.
+                    await wc.executeJavaScript(`
+                      (function() {
+                        var style = document.createElement('style');
+                        style.id = '__crawbot_screenshot_override';
+                        style.textContent = '*, *::before, *::after { ' +
+                          'opacity: 1 !important; ' +
+                          'transform: none !important; ' +
+                          'transition: none !important; ' +
+                          'animation: none !important; ' +
+                          'visibility: visible !important; ' +
+                        '}';
+                        document.head.appendChild(style);
+                      })()
+                    `);
+                    // Let the override take effect
+                    await new Promise(r => setTimeout(r, 500));
+
+                    // Step 2: Scan content height to trim empty bottom space
+                    const contentHeight = await wc.executeJavaScript(`
+                      (function() {
+                        var docHeight = Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0, document.documentElement.clientHeight || 0);
+                        var contentTags = 'p,h1,h2,h3,h4,h5,h6,span,a,li,td,th,img,svg,video,canvas,input,button,textarea,select,label,figcaption,blockquote,pre,code,footer,nav,header,section>*,article>*';
+                        var allEls = document.querySelectorAll(contentTags);
+                        var maxBottom = 0;
+                        for (var i = 0; i < allEls.length; i++) {
+                          var rect = allEls[i].getBoundingClientRect();
+                          if (rect.width === 0 || rect.height === 0) continue;
+                          var absBottom = rect.bottom + window.scrollY;
+                          if (absBottom > maxBottom) maxBottom = absBottom;
+                        }
+                        if (maxBottom > 0) maxBottom = Math.min(maxBottom + 50, docHeight);
+                        var finalHeight = (maxBottom > 100) ? maxBottom : docHeight;
+                        if (finalHeight > ${MAX_SCROLL}) finalHeight = ${MAX_SCROLL};
+                        return finalHeight;
+                      })()
+                    `);
+
+                    // Step 3: Crop clip to compensate for zoom-inflated viewport.
+                    // At zoom 0.6, setDeviceMetricsOverride makes CSS viewport = width/0.6,
+                    // inflating it ~1.67x. Simply multiply clip dimensions by zoom factor
+                    // to crop away the excess whitespace on the right and bottom.
+                    const clipHeight = contentHeight > 0 ? contentHeight : (originalClip.height || 10000);
+                    const zoomFactor = wc.getZoomFactor() || 1;
+                    // Only apply zoom correction if zoom < 1 (zoomed out)
+                    const zoomCorrection = zoomFactor < 1 ? zoomFactor : 1;
+                    const clipWidth = Math.round((originalClip.width || 1280) * zoomCorrection);
+                    const clipHeightCorrected = Math.round(clipHeight * zoomCorrection);
+
+                    captureMsg.params.clip = {
+                      x: originalClip.x || 0,
+                      y: originalClip.y || 0,
+                      width: clipWidth,
+                      height: clipHeightCorrected,
+                      scale: 2, // Retina quality
+                    };
+
+                    logger.info(`${LOG_TAG} Screenshot clip: ${clipWidth}x${clipHeightCorrected} (original: ${originalClip.width}x${clipHeight}, zoom=${zoomFactor}, correction=${zoomCorrection})`);
+
+                    // Forward the modified message
+                    const modifiedData = JSON.stringify(captureMsg);
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(modifiedData, { binary: false });
+                    } else {
+                      pendingMessages.push({ data: Buffer.from(modifiedData), isBinary: false });
+                    }
+
+                    // Remove the CSS override after a delay so the screenshot
+                    // has time to be captured before restoring animations
+                    setTimeout(() => {
+                      wc.executeJavaScript(`
+                        (function() {
+                          var el = document.getElementById('__crawbot_screenshot_override');
+                          if (el) el.remove();
+                        })()
+                      `).catch(() => {});
+                    }, 3000);
+                  } catch (err) {
+                    logger.error(`${LOG_TAG} Screenshot scroll/trim failed:`, err);
+                    // Forward original message as fallback
+                    if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+                      realWs.send(captureData, { binary: false });
+                    } else {
+                      pendingMessages.push({ data: captureData as Buffer, isBinary: false });
+                    }
+                  }
+                })();
+                return; // Don't forward synchronously — async handler will forward
+              }
+              // No active tab — forward normally
+            }
+            // Forward normally for viewport-only case
+          }
+
+          // Fix Emulation.setDeviceMetricsOverride — Playwright uses this for
+          // page.setViewportSize(). Restore WebContentsView bounds after a delay.
+          if (msg.method === 'Emulation.setDeviceMetricsOverride') {
+            logger.info(`${LOG_TAG} Detected viewport resize: ${msg.params.width}x${msg.params.height}`);
+            setTimeout(() => {
+              const activeId = automationViews.getActiveTabId();
+              if (activeId) {
+                const activeTab = automationViews.getTab(activeId);
+                if (activeTab) {
+                  const panelBounds = automationViews.getPanelBounds();
+                  if (panelBounds && panelBounds.width > 0) {
+                    activeTab.view.setBounds(panelBounds);
+                    activeTab.view.webContents.setZoomFactor(0.6);
+                    logger.info(`${LOG_TAG} Restored view bounds after resize`);
+                  }
+                }
+              }
+            }, 5000);
+            // Forward normally (don't return)
+          }
+
+          // Intercept Page.printToPDF — DO NOT forward to real CDP.
+          // Electron headed mode doesn't support CDP printToPDF, but
+          // Electron's webContents.printToPDF() API works.
+          // Response includes sessionId for Playwright's flattened session tracking.
+          if (msg.method === 'Page.printToPDF') {
+            logger.info(`${LOG_TAG} Intercepted Page.printToPDF id=${msg.id} sessionId=${msg.sessionId || 'none'}`);
+            this.handlePrintToPdf(
+              { id: msg.id, params: msg.params || {} },
+              clientWs,
+              targetPath,
+              msg.sessionId
+            );
+            return; // Don't forward to real CDP
+          }
+        } catch {
+          // Not JSON, forward as-is
+        }
+      }
+
+      if (realWsReady && realWs.readyState === WebSocket.OPEN) {
+        realWs.send(data, { binary: isBinary });
+      } else {
+        pendingMessages.push({ data: data as Buffer, isBinary });
+      }
+    });
+
+    // Relay: real CDP → client
+    // Filter Target events to hide main app window and internal targets
+    realWs.on('message', (data, isBinary) => {
+      if (clientWs.readyState !== WebSocket.OPEN) return;
+
+      if (!isBinary) {
+        try {
+          const msg = JSON.parse(data.toString());
+
+          // Filter responses to our internal CDP commands (not from Playwright)
+          if (msg.id && this.internalCdpIds.has(msg.id)) {
+            this.internalCdpIds.delete(msg.id);
+            logger.info(`${LOG_TAG} Filtered internal CDP response id=${msg.id}`);
+            return; // Don't forward to client
+          }
+
+          // Filter Target.getTargets response — hide internal targets + mark active tab
+          if (msg.result?.targetInfos) {
+            const activeId = automationViews.getActiveTabId();
+            let activeUrl: string | null = null;
+            if (activeId) {
+              try {
+                activeUrl = automationViews.getTab(activeId)?.view.webContents.getURL() ?? null;
+              } catch { /* webContents may be destroyed */ }
+            }
+
+            msg.result.targetInfos = msg.result.targetInfos
+              .filter((t: { url?: string }) => !this.isInternalTarget(t.url))
+              .map((t: { url?: string; title?: string }) => {
+                if (activeUrl && t.url === activeUrl) {
+                  return { ...t, title: `[Active] ${t.title || ''}` };
+                }
+                return t;
+              });
+            clientWs.send(JSON.stringify(msg), { binary: false });
+            return;
+          }
+
+          // Filter Target.attachedToTarget events for internal targets
+          // (prevents Playwright from trying to initialize the main window)
+          if (msg.method === 'Target.attachedToTarget' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              logger.info(`${LOG_TAG} Suppressing attachedToTarget for internal: ${msg.params.targetInfo.url}`);
+              return; // Don't forward to client
+            }
+          }
+
+          // Filter Target.targetCreated events for internal targets
+          if (msg.method === 'Target.targetCreated' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              return; // Don't forward to client
+            }
+          }
+
+          // Filter Target.targetInfoChanged events for internal targets
+          if (msg.method === 'Target.targetInfoChanged' && msg.params?.targetInfo) {
+            if (this.isInternalTarget(msg.params.targetInfo.url)) {
+              return; // Don't forward to client
+            }
+          }
+        } catch {
+          // Not valid JSON — forward as-is
+        }
+      }
+
+      clientWs.send(data, { binary: isBinary });
+    });
+
+    // Close propagation
+    clientWs.on('close', (code, reason) => {
+      logger.info(`${LOG_TAG} Client WS closed for ${targetPath}: code=${code}`);
+      if (realWs.readyState === WebSocket.OPEN || realWs.readyState === WebSocket.CONNECTING) {
+        realWs.close();
+      }
+    });
+
+    realWs.on('close', (code, reason) => {
+      logger.info(`${LOG_TAG} Real WS closed for ${targetPath}: code=${code}`);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.close();
+      }
+    });
+
+    // Error handling
+    clientWs.on('error', (err) => {
+      logger.error(`${LOG_TAG} Client WS error for ${targetPath}:`, err.message);
+      realWs.close();
+    });
+
+    realWs.on('error', (err) => {
+      logger.error(`${LOG_TAG} Real CDP WS error for ${targetPath}:`, err.message);
+      clientWs.close();
+    });
+  }
+
+  // ── Helpers ──
+
+  private async fetchFromRealCdp(port: number, path: string, method = 'GET'): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        `http://127.0.0.1:${port}${path}`,
+        { method },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => resolve(data));
+        }
+      );
+      req.on('error', reject);
+      req.setTimeout(3000, () => {
+        req.destroy();
+        reject(new Error(`Timeout fetching ${path} from real CDP`));
+      });
+      req.end();
+    });
+  }
+
+  // ── Create new tab via AutomationViews for CDP automation ──
+
+  private async createCdpPage(
+    url: string,
+    realCdpPort: number,
+    proxyPort: number
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      // Create a WebContentsView tab (appears as type: "page" in CDP natively)
+      const tabId = `cdp-new-${Date.now()}`;
+      const tab = automationViews.createTab(tabId, url || 'about:blank');
+
+      // Notify renderer about the new tab
+      automationViews.notifyRendererPublic('browser:tab:created', tabId, {
+        id: tabId,
+        url: url || 'about:blank',
+        title: 'New Tab',
+        isLoading: true,
+      });
+
+      // Wait for CDP to register the new target
+      const wcId = tab.view.webContents.id;
+      let target: Record<string, unknown> | null = null;
+
+      // Poll for the target to appear in CDP (up to 3 seconds)
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        try {
+          const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+          const targets = JSON.parse(listRes);
+          // Match by webContents ID — Electron uses numeric IDs
+          target = targets.find(
+            (t: { id?: string; type?: string }) =>
+              t.type === 'page' && String(t.id) === String(wcId)
+          );
+          // If not found by ID, try matching by URL for newly navigated pages
+          if (!target && url && url !== 'about:blank') {
+            target = targets.find(
+              (t: { url?: string; type?: string }) =>
+                t.type === 'page' && t.url === url
+            );
+          }
+          if (target) break;
+        } catch { /* retry */ }
+      }
+
+      if (target) {
+        return this.rewritePorts(target as Record<string, unknown>, realCdpPort, proxyPort);
+      }
+
+      // Fallback: find the newest page target that isn't the main app
+      const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
+      const pageTargets = targets.filter(
+        (t: { type?: string; url?: string }) =>
+          t.type === 'page' &&
+          !t.url?.startsWith('http://localhost:5173') &&
+          !t.url?.startsWith('http://127.0.0.1:5173') &&
+          !t.url?.startsWith('http://localhost:23333') &&
+          !t.url?.startsWith('file://') &&
+          !t.url?.startsWith('devtools://')
+      );
+      if (pageTargets.length > 0) {
+        return this.rewritePorts(pageTargets[pageTargets.length - 1], realCdpPort, proxyPort);
+      }
+
+      logger.warn(`${LOG_TAG} createCdpPage: target not found after creation`);
+      return null;
+    } catch (err) {
+      logger.error(`${LOG_TAG} createCdpPage failed:`, err);
+      return null;
+    }
+  }
+
+  /** Activate the CrawBot browser tab matching a CDP targetId */
+  private async activateTabByTargetId(targetId: string, realCdpPort: number): Promise<void> {
+    try {
+      // In Electron's builtin browser, CDP target ID is the webContents ID (numeric string).
+      // Try direct match first — faster and more reliable than URL matching.
+      const numericId = parseInt(targetId, 10);
+      if (!isNaN(numericId) && automationViews.activateByWebContentsId(numericId)) {
+        logger.info(`${LOG_TAG} Activated tab by webContents ID: ${numericId}`);
+        return;
+      }
+
+      // Fallback: match by URL via real CDP target list
+      const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
+      const target = targets.find((t: { id: string }) => t.id === targetId);
+      if (target?.url) {
+        const wcId = automationViews.findWebContentsIdByUrl(target.url);
+        if (wcId != null) {
+          automationViews.activateByWebContentsId(wcId);
+          logger.info(`${LOG_TAG} Activated tab by URL match: ${target.url}`);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Check if a target URL belongs to CrawBot's internal windows/pages */
+  private isInternalTarget(url?: string): boolean {
+    if (!url) return false;
+    return url.startsWith('http://localhost:5173') ||
+           url.startsWith('http://127.0.0.1:5173') ||
+           url.startsWith('http://localhost:23333') ||
+           url.startsWith('http://127.0.0.1:23333') ||
+           url.startsWith('file://') ||
+           url.startsWith('devtools://');
+  }
+
+  /** Handle Page.printToPDF via Electron's webContents.printToPDF() API */
+  private async handlePrintToPdf(
+    msg: { id: number; params?: Record<string, unknown> },
+    clientWs: WebSocket,
+    targetPath: string,
+    sessionId?: string
+  ): Promise<void> {
+    try {
+      // Find webContents by matching CDP targetId to real CDP /json/list
+      const cdpTargetId = targetPath.split('/').pop() || '';
+      let wc: Electron.WebContents | null = null;
+
+      // Get target URL from real CDP
+      const listRes = await this.fetchFromRealCdp(this.options.realCdpPort, '/json/list');
+      const targets = JSON.parse(listRes);
+      const target = targets.find((t: { id: string }) => t.id === cdpTargetId);
+
+      if (target?.url) {
+        // Find matching automation tab by URL
+        for (const tab of automationViews.getAllTabs()) {
+          if (tab.view.webContents.getURL() === target.url) {
+            wc = tab.view.webContents;
+            break;
+          }
+        }
+        // Fallback: search all webContents
+        if (!wc) {
+          for (const contents of webContents.getAllWebContents()) {
+            if (contents.getURL() === target.url) {
+              wc = contents;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!wc) {
+        // Last resort: use the active automation tab
+        const activeId = automationViews.getActiveTabId();
+        if (activeId) {
+          const activeTab = automationViews.getTab(activeId);
+          if (activeTab) wc = activeTab.view.webContents;
+        }
+      }
+
+      if (!wc) {
+        throw new Error('Could not find webContents for PDF target');
+      }
+
+      logger.info(`${LOG_TAG} printToPDF: wc=${wc.id} url=${wc.getURL().substring(0, 50)} params=${JSON.stringify(msg.params).substring(0, 200)}`);
+
+      // Temporarily expand view to full size for PDF rendering,
+      // but position it OFFSCREEN so user doesn't see the flash.
+      // We keep the SAME webContents (preserving page state/forms/scroll).
+      const tab = automationViews.getAllTabs().find(t => t.view.webContents === wc);
+      const view = tab?.view;
+      const savedBounds = view?.getBounds() || { x: 0, y: 0, width: 0, height: 0 };
+      const savedVisible = true;
+
+      if (view) {
+        // Move offscreen but with real dimensions (Electron still renders)
+        view.setBounds({ x: -2000, y: -2000, width: 1280, height: 900 });
+        view.setVisible(true);
+      }
+
+      // Reset zoom to 100%
+      const originalZoom = wc.getZoomFactor();
+      wc.setZoomFactor(1.0);
+
+      // Wait for re-render at new size
+      await new Promise(r => setTimeout(r, 2000));
+      await wc.executeJavaScript('void(document.body.offsetHeight)').catch(() => {});
+      await new Promise(r => setTimeout(r, 500));
+
+      // Use fixed A4 page size and standard margins
+      // Ignore CDP paperWidth/paperHeight — they cause dimension issues
+      // with Electron's printToPDF on WebContentsView
+      const p = msg.params || {};
+      const pdfOptions: Electron.PrintToPDFOptions = {
+        printBackground: (p.printBackground as boolean) ?? true,
+        pageSize: 'A4' as Electron.PrintToPDFOptions['pageSize'],
+        landscape: !!(p.landscape),
+        margins: {
+          top: 0.4,
+          bottom: 0.4,
+          left: 0.4,
+          right: 0.4,
+        },
+      };
+
+      const pdfBuffer = await wc.printToPDF(pdfOptions);
+
+      // Restore original bounds and zoom
+      if (view) {
+        wc.setZoomFactor(originalZoom);
+        if (savedBounds.width > 0) {
+          view.setBounds(savedBounds);
+        }
+      }
+
+      const base64Data = pdfBuffer.toString('base64');
+
+      // Return as stream handle (like real CDP does with transferMode: "ReturnAsStream")
+      // Playwright reads data via IO.read/IO.close protocol
+      const streamHandle = `crawbot-pdf-${Date.now()}`;
+      this.pdfStreams.set(streamHandle, { data: base64Data, read: false });
+
+      const response: Record<string, unknown> = {
+        id: msg.id,
+        result: { stream: streamHandle },
+      };
+      if (sessionId) response.sessionId = sessionId;
+
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(response));
+      }
+      // Restore original zoom
+      if (originalZoom !== 1.0) {
+        wc.setZoomFactor(originalZoom);
+      }
+
+      logger.info(`${LOG_TAG} printToPDF success: ${Math.round(pdfBuffer.length / 1024)}KB stream=${streamHandle}`);
+    } catch (err) {
+      logger.error(`${LOG_TAG} printToPDF failed:`, err);
+      const errResponse: Record<string, unknown> = {
+        id: msg.id,
+        error: { code: -32000, message: `printToPDF failed: ${(err as Error).message}` },
+      };
+      if (sessionId) errResponse.sessionId = sessionId;
+
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(errResponse));
+      }
+    }
+  }
+
+  private isTargetAllowed(
+    target: { id: string; url?: string; type?: string },
+    _exposed: Set<number>
+  ): boolean {
+    if (this.isInternalTarget(target.url)) return false;
+
+    // Allow both page AND webview types
+    if (target.type !== 'page' && target.type !== 'webview') return false;
+
+    return true;
+  }
+
+  /** Rewrite webview targets to page type so Playwright treats them as controllable pages */
+  private rewriteTargetType(target: Record<string, unknown>): Record<string, unknown> {
+    const result = { ...target };
+    if (result.type === 'webview') {
+      result.type = 'page';
+    }
+    return result;
+  }
+
+  private rewritePorts(obj: Record<string, unknown>, from: number, to: number): Record<string, unknown> {
+    const result = { ...obj };
+    const fromStr = `:${from}`;
+    const toStr = `:${to}`;
+
+    for (const key of Object.keys(result)) {
+      if (typeof result[key] === 'string') {
+        result[key] = (result[key] as string).replaceAll(fromStr, toStr);
+      }
+    }
+    return result;
+  }
+}
+
+/** Singleton proxy instance */
+let proxyInstance: CdpFilterProxy | null = null;
+
+export function getCdpProxy(): CdpFilterProxy | null {
+  return proxyInstance;
+}
+
+export async function startCdpProxy(
+  proxyPort = 9333,
+  realCdpPort = 9222
+): Promise<CdpFilterProxy> {
+  if (proxyInstance?.isRunning) return proxyInstance;
+
+  proxyInstance = new CdpFilterProxy({ proxyPort, realCdpPort });
+  await proxyInstance.start();
+  return proxyInstance;
+}
+
+export async function stopCdpProxy(): Promise<void> {
+  if (proxyInstance) {
+    await proxyInstance.stop();
+    proxyInstance = null;
+  }
+}

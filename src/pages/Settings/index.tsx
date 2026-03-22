@@ -39,6 +39,7 @@ import { useUpdateStore } from '@/stores/update';
 import { useWebhookStore } from '@/stores/webhook';
 import { ProvidersSettings } from '@/components/settings/ProvidersSettings';
 import { UpdateSettings } from '@/components/settings/UpdateSettings';
+import { WebAuthSettings } from './WebAuthSettings';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '@/i18n';
 type ControlUiInfo = {
@@ -70,6 +71,10 @@ export function Settings() {
     setToolsAutoApprove,
     sessionDmScope,
     setSessionDmScope,
+    useBuiltinBrowser,
+    setUseBuiltinBrowser,
+    screenshotMaxSide,
+    setScreenshotMaxSide,
     syncFromMain,
   } = useSettingsStore();
 
@@ -515,6 +520,9 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      {/* WebAuth Providers */}
+      <WebAuthSettings />
+
       {/* Gateway */}
       <Card>
         <CardHeader>
@@ -744,6 +752,44 @@ export function Settings() {
             <p className="text-xs text-muted-foreground/70">
               {t(`openclaw.dmScopeHints.${sessionDmScope}`)}
             </p>
+          </div>
+
+          <Separator />
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Browser Tool: Use Builtin Browser</Label>
+              <p className="text-sm text-muted-foreground">
+                When enabled, the Browser Tool uses CrawBot&apos;s built-in browser. When disabled, it uses Chrome on your machine or the Chrome extension. Requires gateway restart.
+              </p>
+            </div>
+            <Switch
+              checked={useBuiltinBrowser}
+              onCheckedChange={setUseBuiltinBrowser}
+            />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex-1 mr-4">
+                <Label>Screenshot Max Resolution</Label>
+                <p className="text-sm text-muted-foreground">
+                  Maximum width/height in pixels for browser screenshots. Higher values produce sharper images but larger files. Requires gateway restart.
+                </p>
+              </div>
+              <Select
+                className="w-[140px]"
+                value={String(screenshotMaxSide)}
+                onChange={(e) => setScreenshotMaxSide(parseInt(e.target.value, 10))}
+              >
+                <option value="2000">2000px</option>
+                <option value="4000">4000px</option>
+                <option value="8000">8000px</option>
+                <option value="16000">16000px</option>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>

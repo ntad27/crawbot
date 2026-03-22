@@ -34,6 +34,10 @@ interface SettingsState {
   toolsAutoApprove: boolean;
   sessionDmScope: DmScope;
 
+  // Browser / Screenshot
+  useBuiltinBrowser: boolean;
+  screenshotMaxSide: number;
+
   // Setup
   setupComplete: boolean;
 
@@ -51,6 +55,8 @@ interface SettingsState {
   setDevModeUnlocked: (value: boolean) => void;
   setToolsAutoApprove: (value: boolean) => void;
   setSessionDmScope: (value: DmScope) => void;
+  setUseBuiltinBrowser: (value: boolean) => void;
+  setScreenshotMaxSide: (value: number) => void;
   syncFromMain: () => Promise<void>;
   markSetupComplete: () => void;
   resetSettings: () => void;
@@ -75,6 +81,8 @@ const defaultSettings = {
   toolsAutoApprove: true,
   sessionDmScope: 'main' as DmScope,
   setupComplete: false,
+  useBuiltinBrowser: true,
+  screenshotMaxSide: 2000,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -107,13 +115,28 @@ export const useSettingsStore = create<SettingsState>()(
         window.electron.ipcRenderer.invoke('app:setSessionDmScope', sessionDmScope);
         set({ sessionDmScope });
       },
+      setUseBuiltinBrowser: (useBuiltinBrowser) => {
+        window.electron.ipcRenderer.invoke('app:setUseBuiltinBrowser', useBuiltinBrowser);
+        set({ useBuiltinBrowser });
+      },
+      setScreenshotMaxSide: (screenshotMaxSide) => {
+        window.electron.ipcRenderer.invoke('app:setScreenshotMaxSide', screenshotMaxSide);
+        set({ screenshotMaxSide });
+      },
       syncFromMain: async () => {
         try {
           const result = await window.electron.ipcRenderer.invoke('app:getOpenclawSettings') as {
             toolsAutoApprove: boolean;
             sessionDmScope: DmScope;
+            screenshotMaxSide?: number;
+            useBuiltinBrowser?: boolean;
           };
-          set({ toolsAutoApprove: result.toolsAutoApprove, sessionDmScope: result.sessionDmScope });
+          set({
+            toolsAutoApprove: result.toolsAutoApprove,
+            sessionDmScope: result.sessionDmScope,
+            ...(result.screenshotMaxSide ? { screenshotMaxSide: result.screenshotMaxSide } : {}),
+            ...(typeof result.useBuiltinBrowser === 'boolean' ? { useBuiltinBrowser: result.useBuiltinBrowser } : {}),
+          });
         } catch {
           // IPC may not be ready yet on very early calls — ignore
         }

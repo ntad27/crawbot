@@ -18,7 +18,7 @@ import { FileEditor } from './FileEditor';
 import { FileViewer } from './FileViewer';
 
 const MIN_PANEL_WIDTH = 300;
-const MAX_PANEL_WIDTH = 900;
+const MAX_PANEL_RATIO = 0.75; // max 75% of window width
 const MIN_TREE_WIDTH = 120;
 const MIN_EDITOR_WIDTH = 150;
 
@@ -45,11 +45,13 @@ export function WorkspacePanel() {
       const dx = e.clientX - startXRef.current;
 
       if (draggingRef.current === 'panel') {
-        const next = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startValueRef.current - dx));
+        const maxPanelWidth = Math.round(window.innerWidth * MAX_PANEL_RATIO);
+        const next = Math.min(maxPanelWidth, Math.max(MIN_PANEL_WIDTH, startValueRef.current - dx));
         setPanelWidth(next);
       } else {
+        const maxPanelWidth = Math.round(window.innerWidth * MAX_PANEL_RATIO);
         const proposed = Math.max(MIN_TREE_WIDTH, startValueRef.current + dx);
-        setTreeWidth(Math.min(proposed, MAX_PANEL_WIDTH - MIN_EDITOR_WIDTH));
+        setTreeWidth(Math.min(proposed, maxPanelWidth - MIN_EDITOR_WIDTH));
       }
     };
     const up = () => {
