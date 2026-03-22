@@ -233,7 +233,7 @@ function writeAuthProfile(credential: {
   const profileId = `${providerType}:default`;
 
   store.profiles[profileId] = {
-    type: 'token',
+    type: credential.refreshToken ? 'oauth' : 'token',
     provider: providerType,
     token: credential.accessToken,
     refreshToken: credential.refreshToken,
