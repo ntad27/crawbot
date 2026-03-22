@@ -212,16 +212,13 @@ class WebAuthPipeline {
     const tab = webauthViews.createTab(tabId, provider.loginUrl, provider.partition);
 
     // Pipeline tabs are API-only — not for user interaction.
-    // Keep hidden + prevent throttling so CDP works.
+    // Keep in window (off-screen, not visible) so web apps render full UI.
+    // Gemini hides the "+" upload button when view is detached (outerWidth=0).
+    // pipelineTabs set prevents setActiveTab from showing them.
     tab.view.setVisible(false);
-    tab.view.setBounds({ x: -9999, y: -9999, width: 1, height: 1 });
+    tab.view.setBounds({ x: -9999, y: -9999, width: 1280, height: 800 });
     tab.view.webContents.setBackgroundThrottling(false);
-    // Remove from main window content view to prevent popup
-    try {
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        this.mainWindow.contentView.removeChildView(tab.view);
-      }
-    } catch { /* already removed or not added */ }
+    // NOTE: Do NOT removeChildView — keeping attached ensures proper CSS layout/viewport
 
     await new Promise<void>((resolve) => {
       if (tab.view.webContents.isLoading()) {

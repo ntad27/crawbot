@@ -45,13 +45,28 @@ class WebAuthViewManager {
 
   /** Update the panel area bounds (called from renderer via IPC) */
   setPanelBounds(bounds: { x: number; y: number; width: number; height: number }): void {
+    const wasHidden = this.panelBounds.width <= 0 || this.panelBounds.height <= 0;
     this.panelBounds = bounds;
     // Apply bounds to ALL tabs — show active, hide others
     for (const [id, tab] of this.tabs) {
-      if (id === this.activeTabId) {
+      if (id === this.activeTabId && !this.pipelineTabs.has(id)) {
         if (bounds.width > 0 && bounds.height > 0) {
+          // Add to window if not already there
+          if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+            try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
+            this.mainWindow.contentView.addChildView(tab.view);
+          }
           tab.view.setVisible(true);
           tab.view.setBounds(bounds);
+          // Force repaint when transitioning from hidden → visible
+          // (Chromium compositor skips painting for long-hidden views)
+          if (wasHidden && !tab.view.webContents.isDestroyed()) {
+            // Jitter bounds to force compositor repaint
+            tab.view.setBounds({ ...bounds, width: bounds.width - 1 });
+            setTimeout(() => {
+              try { tab.view.setBounds(bounds); } catch { /* view might be destroyed */ }
+            }, 50);
+          }
         } else {
           tab.view.setVisible(false);
         }
@@ -375,6 +390,14 @@ class WebAuthViewManager {
           this.mainWindow.contentView.addChildView(tab.view);
           tab.view.setVisible(true);
           tab.view.setBounds(this.panelBounds);
+          // Force repaint for views that were hidden (jitter bounds)
+          if (!tab.view.webContents.isDestroyed()) {
+            const b = this.panelBounds;
+            tab.view.setBounds({ ...b, width: b.width - 1 });
+            setTimeout(() => {
+              try { tab.view.setBounds(b); } catch { /* */ }
+            }, 50);
+          }
         } else {
           tab.view.setVisible(false);
         }

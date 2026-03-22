@@ -676,6 +676,22 @@ kill $DEV_PID
    - Body type: check `typeof init.body === 'string'` — some frameworks use Blob/FormData/ReadableStream
    - Message escaping: `JSON.stringify(msg).slice(1, -1)` produces a string safe for JSON string value embedding
 
+14. **CDP Network listener race condition** — set up listeners BEFORE triggering actions
+   - If you click Send then set up `Network.responseReceived` listener, fast responses get missed
+   - Pattern: create Promise with captured `resolve`, attach WS listener, THEN click Send, THEN `await` the Promise
+   - Also applies to upload monitoring (`push.clients6.google.com`) — enable `Network.enable` before triggering file upload
+
+15. **Use JS DOM selectors over Accessibility tree for off-screen views**
+   - `Accessibility.getFullAXTree` returns empty/incomplete results on off-screen WebContentsViews
+   - `document.querySelector('button[aria-label*="..."]')` works reliably via CDP `Runtime.evaluate` even off-screen
+   - Always use `aria-label` selectors (stable) over CSS classes (change frequently)
+   - Force English UI with `?hl=en` URL parameter to ensure consistent aria-label values
+
+16. **Always wrap UI automation in try/finally for cleanup**
+   - Pattern: show WebContentsView on-screen → perform automation → hide in `finally` block
+   - Without this, any error leaves the webview permanently blocking the screen
+   - Helper function `hideWebview()` avoids repeating cleanup code in every error path
+
 ---
 
 ## Phase 6: Provider-Specific Notes
@@ -693,6 +709,20 @@ kill $DEV_PID
 - **Multi-account:** Google accounts use URL prefix `/u/N/` (e.g., `/u/2/app` for 3rd account). Cached template must be invalidated when account changes. Navigate to `gemini.google.com/u/N/app` (preserve prefix) during template capture.
 - **Model selection:** Gemini web API uses whatever model is active in the UI (Fast/Thinking/Pro). The model is captured as part of the template. Switching model on the web UI → invalidates template → next API call recaptures with new model.
 - **Template invalidation:** Invalidate cached template when: (1) account URL prefix changes, (2) API returns 400/401, (3) user switches model via UI. Template is recaptured automatically on next call.
+- **Force English UI:** Append `?hl=en` to all Gemini URLs to ensure consistent English aria-labels (e.g., `"Open upload file menu"`, `"Send message"`). Without this, localized labels break DOM selectors.
+- **Image upload (UI-based):** Gemini's internal image upload uses proprietary `push.clients6.google.com` service — cannot be replicated via API. Must use UI automation:
+  1. Navigate to `/app?hl=en` (home page has "+" button available)
+  2. Show WebContentsView on-screen (Angular won't render "+" button when off-screen)
+  3. Override `document.hidden`/`visibilityState` (Gemini hides UI elements when tab not visible)
+  4. Click `button[aria-label*="upload file menu"]` to open overlay menu
+  5. Click `button[aria-label*="Upload files"]` — triggers file chooser (menu item is inside `cdk-overlay-pane`)
+  6. Set files via `DOM.setFileInputFiles` on `input[type="file"]` in the overlay
+  7. Monitor upload completion via `Network.responseReceived` for `push.clients6.google.com` + `upload_id`
+  8. Type message, click `button[aria-label*="Send"]`, capture `StreamGenerate` response
+- **Two-step vision flow:** Gemini web chat can't handle long system prompts with images. Solution: (1) upload image with fixed prompt "describe this image in detail" → get description, (2) append description as `<image_description>` context to full consolidated prompt → call `apiChat` for final answer.
+- **Image extraction scope:** Only extract images from the LAST user message (`extractImages([lastUserMsg])`), not entire conversation history. Otherwise old images get re-uploaded on every turn.
+- **`input[type="file"]` lifecycle:** The file input only exists inside the `cdk-overlay-pane` when the "+" upload menu is open. It's destroyed when the menu closes. Must click "+" first to create it.
+- **Webview visibility for UI automation:** Always wrap UI automation (show webview → interact → hide) in `try/finally` to guarantee cleanup. Without this, a failed upload leaves the webview blocking the entire screen permanently.
 
 ### Claude (SSE API)
 - **Endpoint:** `https://claude.ai/api/organizations/{orgId}/chat_conversations/{convId}/completion`

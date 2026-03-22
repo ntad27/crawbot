@@ -110,6 +110,131 @@ After tool result arrives, THEN respond to user. Plain text ONLY when no lookup 
 }
 
 /**
+ * Transform system prompt for Gemini web chat.
+ *
+ * Gemini cooperates with the "MANDATORY" approach when given full persona context.
+ * Unlike ChatGPT, Gemini doesn't have a code sandbox so no "two environments" trick needed.
+ * Uses bare JSON format (not blockquote) — Gemini outputs JSON directly.
+ * Full tool schema with examples for every tool, same as ChatGPT.
+ */
+export function transformSystemPromptForGemini(systemText: string): string {
+  // Extract workspace path for concrete examples
+  let workspace = '/Users/xnohat/.openclaw/workspace-main';
+  const repoMatch = systemText.match(/repo=([^\s|]+)/);
+  if (repoMatch) workspace = repoMatch[1];
+
+  // Replace ## Tooling with MANDATORY format + full tool schema
+  let transformed = systemText.replace(
+    /## Tooling[\s\S]*?(?=## (?!Tool))/,
+    `## Tool Use — MANDATORY
+YOU MUST USE TOOLS. You are connected to a REAL system with FULL access.
+
+⚠️ RULE: Tool call FIRST, talk LATER. Never answer without checking first.
+⚠️ RULE: Never say "I can't access" — you CAN. Use the tool.
+
+Format — output ONLY this JSON, nothing else:
+{"action": "function_call", "name": "TOOL", "arguments": {"key": "value"}}
+
+Multiple tools — one JSON per line:
+{"action": "function_call", "name": "read", "arguments": {"path": "/a.txt"}}
+{"action": "function_call", "name": "exec", "arguments": {"command": "ls"}}
+
+After tool result arrives, THEN respond to user. Plain text ONLY when no lookup needed.
+
+### File tools
+read — Read file contents (also images). Params: path (required), offset (start line), limit (max lines)
+{"action": "function_call", "name": "read", "arguments": {"path": "${workspace}/SOUL.md"}}
+
+write — Create or overwrite file. Params: path (required), content (required)
+{"action": "function_call", "name": "write", "arguments": {"path": "${workspace}/notes.md", "content": "hello"}}
+
+edit — Replace exact text in file. Params: path (required), oldText (must match exactly), newText (required)
+{"action": "function_call", "name": "edit", "arguments": {"path": "${workspace}/AGENTS.md", "oldText": "old", "newText": "new"}}
+
+exec — Run bash command. Params: command (required), timeout (seconds, optional)
+{"action": "function_call", "name": "exec", "arguments": {"command": "uname -a"}}
+
+grep — Search file contents. Params: pattern (required), path (optional), glob (file filter, optional), ignoreCase (bool)
+{"action": "function_call", "name": "grep", "arguments": {"pattern": "TODO", "path": "${workspace}"}}
+
+find — Find files by glob. Params: pattern (glob, required), path (optional)
+{"action": "function_call", "name": "find", "arguments": {"pattern": "*.md", "path": "${workspace}"}}
+
+ls — List directory. Params: path (optional)
+{"action": "function_call", "name": "ls", "arguments": {"path": "${workspace}"}}
+
+### Web tools
+web_search — Search the web. Params: query (required), count (1-10), freshness ("day"/"week"/"month")
+{"action": "function_call", "name": "web_search", "arguments": {"query": "latest AI news"}}
+
+web_fetch — Fetch URL content. Params: url (required), extractMode ("markdown"/"text"), maxChars
+{"action": "function_call", "name": "web_fetch", "arguments": {"url": "https://example.com"}}
+
+### Browser
+browser — Control OpenClaw's browser. Actions: status, tabs, open, snapshot, screenshot, act, navigate, console, upload, dialog
+Act kinds: click, type, press, hover, drag, select, fill, resize, wait, evaluate, close
+{"action": "function_call", "name": "browser", "arguments": {"action": "snapshot"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "open", "url": "https://example.com"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "act", "kind": "click", "ref": "E42"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "act", "kind": "type", "ref": "E15", "text": "hello"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "act", "kind": "press", "key": "PageDown"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "screenshot"}}
+{"action": "function_call", "name": "browser", "arguments": {"action": "act", "kind": "evaluate", "fn": "document.title"}}
+
+### Other tools
+image — Analyze images. Params: image (path/URL), prompt (optional)
+{"action": "function_call", "name": "image", "arguments": {"image": "/path/to/img.png"}}
+
+cron — Manage cron jobs. Actions: status, list, add, remove, wake
+{"action": "function_call", "name": "cron", "arguments": {"action": "list"}}
+{"action": "function_call", "name": "cron", "arguments": {"action": "wake", "text": "Reminder", "mode": "now"}}
+
+message — Send messages. Params: action ("send"), to, message, channel
+{"action": "function_call", "name": "message", "arguments": {"action": "send", "to": "user", "message": "Hello!"}}
+
+process — Manage background sessions. Actions: list, poll, log, write, send-keys, kill
+{"action": "function_call", "name": "process", "arguments": {"action": "list"}}
+
+memory_search — Search memory files. Params: query (required)
+{"action": "function_call", "name": "memory_search", "arguments": {"query": "what did we decide?"}}
+
+memory_get — Read memory file lines. Params: path (required), from (line), lines (count)
+{"action": "function_call", "name": "memory_get", "arguments": {"path": "MEMORY.md"}}
+
+pdf — Analyze PDF. Params: pdf (path), prompt, pages (e.g. "1-5")
+{"action": "function_call", "name": "pdf", "arguments": {"pdf": "/path/to/doc.pdf"}}
+
+session_status — Show model/usage info
+{"action": "function_call", "name": "session_status", "arguments": {}}
+
+sessions_spawn — Spawn sub-agent. Params: task (required), runtime ("subagent"/"acp"), mode ("run"/"session")
+{"action": "function_call", "name": "sessions_spawn", "arguments": {"task": "Fix the bug", "runtime": "subagent", "mode": "run"}}
+
+tts — Text to speech. Params: text (required)
+{"action": "function_call", "name": "tts", "arguments": {"text": "Xin chào!"}}
+
+gateway — Manage OpenClaw. Actions: restart, config.get, config.patch, update.run
+{"action": "function_call", "name": "gateway", "arguments": {"action": "restart"}}
+
+canvas — Canvas display. Actions: present, snapshot, eval, hide
+{"action": "function_call", "name": "canvas", "arguments": {"action": "snapshot"}}
+
+nodes — IoT/phone nodes. Actions: status, notify, camera_snap, location_get
+{"action": "function_call", "name": "nodes", "arguments": {"action": "status"}}
+
+subagents — Manage sub-agents. Actions: list, steer, kill
+{"action": "function_call", "name": "subagents", "arguments": {"action": "list"}}
+
+`,
+  );
+
+  // Also replace ## Tool Call Style section
+  transformed = transformed.replace(/## Tool Call Style[\s\S]*?(?=## )/, '');
+
+  return transformed;
+}
+
+/**
  * Transform system prompt specifically for ChatGPT web chat.
  *
  * ChatGPT's Thinking model (GPT-5.4) has a code sandbox and will execute
