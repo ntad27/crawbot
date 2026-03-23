@@ -41,6 +41,24 @@
         "discordChannelId": "ID Kênh Discord",
         "discordChannelIdPlaceholder": "Ví dụ: 1438452657525100686",
         "discordChannelIdDesc": "Nhấp chuột phải kênh Discord → Sao chép ID Kênh",
+        "recipientId": {
+            "default": "ID người nhận",
+            "telegram": "Telegram Chat ID",
+            "discord": "ID Kênh Discord",
+            "zalo": "ID người dùng Zalo"
+        },
+        "recipientPlaceholder": {
+            "default": "Nhập ID người nhận",
+            "telegram": "Ví dụ: 123456789",
+            "discord": "Ví dụ: 1438452657525100686",
+            "zalo": "Ví dụ: 1234567890"
+        },
+        "recipientDesc": {
+            "default": "ID của người nhận kết quả",
+            "telegram": "Chat ID nơi bot sẽ gửi kết quả",
+            "discord": "Nhấp chuột phải kênh Discord → Sao chép ID Kênh",
+            "zalo": "ID người dùng hoặc nhóm Zalo"
+        },
         "enableImmediately": "Bật ngay",
         "enableImmediatelyDesc": "Bắt đầu chạy tác vụ sau khi tạo",
         "saveChanges": "Lưu thay đổi",
@@ -90,6 +108,7 @@
         "messageRequired": "Vui lòng nhập tin nhắn",
         "channelRequired": "Vui lòng chọn kênh",
         "discordIdRequired": "Vui lòng nhập ID Kênh Discord",
+        "recipientRequired": "Vui lòng nhập ID người nhận",
         "scheduleRequired": "Vui lòng chọn hoặc nhập lịch trình"
     },
     "webhook": {

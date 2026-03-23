@@ -168,7 +168,12 @@ class WebAuthViewManager {
 
     view.webContents.on('did-navigate', () => {
       tab.url = view.webContents.getURL();
-      tab.title = view.webContents.getTitle();
+      const rawTitle = view.webContents.getTitle();
+      tab.title = rawTitle.startsWith('[WebAuth] ') ? rawTitle : `[WebAuth] ${rawTitle}`;
+      // Set document.title so CDP /json/list also sees the prefix
+      view.webContents.executeJavaScript(
+        `document.title = ${JSON.stringify(tab.title)}`
+      ).catch(() => {});
       this.notifyRenderer('webauth:browser:tab:updated', tabId, {
         url: tab.url,
         title: tab.title,
@@ -182,8 +187,19 @@ class WebAuthViewManager {
       this.notifyRenderer('webauth:browser:tab:updated', tabId, { url: tab.url });
     });
 
-    view.webContents.on('page-title-updated', (_, title) => {
-      tab.title = title;
+    view.webContents.on('page-title-updated', (e, title) => {
+      // Prevent infinite loop: if title already has prefix, just store it
+      if (title.startsWith('[WebAuth] ')) {
+        tab.title = title;
+        this.notifyRenderer('webauth:browser:tab:updated', tabId, { title });
+        return;
+      }
+      tab.title = `[WebAuth] ${title}`;
+      // Set document.title so CDP /json/list also sees the prefix
+      e.preventDefault();
+      view.webContents.executeJavaScript(
+        `document.title = ${JSON.stringify(`[WebAuth] ${title}`)}`
+      ).catch(() => {});
       this.notifyRenderer('webauth:browser:tab:updated', tabId, { title: `[WebAuth] ${title}` });
     });
 

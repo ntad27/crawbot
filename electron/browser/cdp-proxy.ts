@@ -642,9 +642,10 @@ export class CdpFilterProxy {
             }
 
             msg.result.targetInfos = msg.result.targetInfos
-              .filter((t: { url?: string; targetId?: string }) => {
+              .filter((t: { url?: string; title?: string }) => {
                 if (this.isInternalTarget(t.url)) return false;
-                return this.isWsTargetExposed(t.targetId);
+                if (this.isWebauthTarget(t.title)) return false;
+                return true;
               })
               .map((t: { url?: string; title?: string }) => {
                 if (activeUrl && t.url === activeUrl) {
@@ -660,7 +661,7 @@ export class CdpFilterProxy {
           // (prevents Playwright from trying to initialize the main window or webauth views)
           if (msg.method === 'Target.attachedToTarget' && msg.params?.targetInfo) {
             if (this.isInternalTarget(msg.params.targetInfo.url) ||
-                !this.isWsTargetExposed(msg.params.targetInfo.targetId)) {
+                this.isWebauthTarget(msg.params.targetInfo.title)) {
               logger.info(`${LOG_TAG} Suppressing attachedToTarget for: ${msg.params.targetInfo.url}`);
               return; // Don't forward to client
             }
@@ -669,7 +670,7 @@ export class CdpFilterProxy {
           // Filter Target.targetCreated events for internal/webauth targets
           if (msg.method === 'Target.targetCreated' && msg.params?.targetInfo) {
             if (this.isInternalTarget(msg.params.targetInfo.url) ||
-                !this.isWsTargetExposed(msg.params.targetInfo.targetId)) {
+                this.isWebauthTarget(msg.params.targetInfo.title)) {
               return; // Don't forward to client
             }
           }
@@ -677,7 +678,7 @@ export class CdpFilterProxy {
           // Filter Target.targetInfoChanged events for internal/webauth targets
           if (msg.method === 'Target.targetInfoChanged' && msg.params?.targetInfo) {
             if (this.isInternalTarget(msg.params.targetInfo.url) ||
-                !this.isWsTargetExposed(msg.params.targetInfo.targetId)) {
+                this.isWebauthTarget(msg.params.targetInfo.title)) {
               return; // Don't forward to client
             }
           }
@@ -839,22 +840,10 @@ export class CdpFilterProxy {
     }
   }
 
-  /** Check if a CDP target (by targetId string) belongs to an exposed automation tab */
-  private isWsTargetExposed(targetId?: string): boolean {
-    if (!targetId) return true; // If no targetId, allow (can't filter)
-    // Try to find matching webContents by iterating all known ones
-    const allWc = webContents.getAllWebContents();
-    const exposed = browserManager.getExposedTargetIds();
-    if (exposed.size === 0) return true; // No automation tabs yet, allow all
-
-    for (const wc of allWc) {
-      // Electron CDP targetId is the string form of webContents.id
-      if (String(wc.id) === targetId) {
-        return exposed.has(wc.id);
-      }
-    }
-    // targetId doesn't match any webContents — could be a non-tab target, allow
-    return true;
+  /** Check if a CDP target is a webauth view by [WebAuth] title prefix */
+  private isWebauthTarget(title?: string): boolean {
+    if (!title) return false;
+    return title.startsWith('[WebAuth] ');
   }
 
   /** Check if a target URL belongs to CrawBot's internal windows/pages */
@@ -1005,20 +994,16 @@ export class CdpFilterProxy {
   }
 
   private isTargetAllowed(
-    target: { id: string; url?: string; type?: string },
-    exposed: Set<number>
+    target: { id: string; url?: string; type?: string; title?: string },
+    _exposed: Set<number>
   ): boolean {
     if (this.isInternalTarget(target.url)) return false;
 
     // Allow both page AND webview types
     if (target.type !== 'page' && target.type !== 'webview') return false;
 
-    // Only expose automation tabs, not webauth views
-    // CDP target IDs are strings; try to match against exposed webContents IDs
-    const numericId = parseInt(target.id, 10);
-    if (!isNaN(numericId) && exposed.size > 0) {
-      return exposed.has(numericId);
-    }
+    // Hide webauth views (e.g. Facebook login, Gemini session)
+    if (this.isWebauthTarget(target.title)) return false;
 
     return true;
   }

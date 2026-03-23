@@ -41,6 +41,24 @@
         "discordChannelId": "Discord Channel ID",
         "discordChannelIdPlaceholder": "e.g., 1438452657525100686",
         "discordChannelIdDesc": "Right-click the Discord channel → Copy Channel ID",
+        "recipientId": {
+            "default": "Recipient ID",
+            "telegram": "Telegram Chat ID",
+            "discord": "Discord Channel ID",
+            "zalo": "Zalo User ID"
+        },
+        "recipientPlaceholder": {
+            "default": "Enter recipient ID",
+            "telegram": "e.g., 123456789",
+            "discord": "e.g., 1438452657525100686",
+            "zalo": "e.g., 1234567890"
+        },
+        "recipientDesc": {
+            "default": "The ID of the recipient to send results to",
+            "telegram": "Chat ID where the bot will send the results",
+            "discord": "Right-click the Discord channel → Copy Channel ID",
+            "zalo": "Zalo user or group ID"
+        },
         "enableImmediately": "Enable immediately",
         "enableImmediatelyDesc": "Start running this task after creation",
         "saveChanges": "Save Changes",
@@ -90,6 +108,7 @@
         "messageRequired": "Please enter a message",
         "channelRequired": "Please select a channel",
         "discordIdRequired": "Please enter a Discord Channel ID",
+        "recipientRequired": "Please enter a recipient ID",
         "scheduleRequired": "Please select or enter a schedule"
     },
     "webhook": {

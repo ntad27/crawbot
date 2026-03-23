@@ -114,9 +114,9 @@ export const useCronStore = create<CronState>((set) => ({
 
   fetchRuns: async (jobId) => {
     try {
-      const result = await window.electron.ipcRenderer.invoke('cron:runs', jobId, 20, 0) as { runs?: CronRunLogEntry[] };
+      const result = await window.electron.ipcRenderer.invoke('cron:runs', jobId, 20, 0) as { entries?: CronRunLogEntry[] };
       set((state) => ({
-        runs: { ...state.runs, [jobId]: result?.runs ?? [] },
+        runs: { ...state.runs, [jobId]: result?.entries ?? [] },
       }));
     } catch (error) {
       console.error('Failed to fetch cron runs:', error);
