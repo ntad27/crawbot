@@ -55,24 +55,11 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
           ? result.result.models.filter((m) => configuredTypes.has(m.provider))
           : result.result.models;
 
-        // When Google provider uses OAuth (no API key), remap google/ models
-        // to google-gemini-cli/ so auth profile lookup works correctly.
+        // When Google provider uses OAuth (no API key), hide built-in google/
+        // models (they have no auth) and show google-gemini-cli/ models instead.
         const googleProvider = providers.find((p) => p.type === 'google');
         if (googleProvider && !googleProvider.hasKey) {
-          filtered = filtered
-            // Remove built-in google/ models (they won't have auth)
-            .filter((m) => m.provider !== 'google')
-            // Remap google-gemini-cli models to show as 'google' for display,
-            // but keep the actual provider for correct model ref
-            ;
-          // If no google-gemini-cli models from catalog, create entries from google models
-          const hasGeminiCliModels = filtered.some((m) => m.provider === 'google-gemini-cli');
-          if (!hasGeminiCliModels) {
-            const googleModels = (result.result.models ?? [])
-              .filter((m) => m.provider === 'google')
-              .map((m) => ({ ...m, provider: 'google-gemini-cli' }));
-            filtered = [...filtered, ...googleModels];
-          }
+          filtered = filtered.filter((m) => m.provider !== 'google');
         }
 
         set({ models: filtered, loading: false });
@@ -92,11 +79,14 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
     try {
       const { useChatStore } = await import('./chat');
       const key = useChatStore.getState().currentSessionKey;
-      await window.electron.ipcRenderer.invoke(
+      const res = await window.electron.ipcRenderer.invoke(
         'gateway:rpc',
         'sessions.patch',
         { key, model: modelId || null },
-      );
+      ) as { success: boolean; error?: string };
+      if (!res.success) {
+        console.warn('sessions.patch failed:', res.error);
+      }
     } catch (err) {
       console.warn('Failed to patch session model:', err);
     }

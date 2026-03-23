@@ -1114,6 +1114,10 @@ function registerGatewayHandlers(
           const configured = await getAllProviders();
           const configuredTypes = new Set<string>(configured.map((p) => p.type));
           configuredTypes.add('webauth'); // Always include WebAuth models
+          // Google OAuth uses 'google-gemini-cli' provider in OpenClaw
+          if (configuredTypes.has('google')) {
+            configuredTypes.add('google-gemini-cli');
+          }
           if (configuredTypes.size > 0) {
             data.models = data.models.filter((m) => configuredTypes.has(m.provider));
           }

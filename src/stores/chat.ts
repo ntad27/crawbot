@@ -1347,11 +1347,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const { useModelsStore } = await import('./models');
         const selectedModel = useModelsStore.getState().selectedModel;
         if (selectedModel) {
-          await window.electron.ipcRenderer.invoke(
+          const patchRes = await window.electron.ipcRenderer.invoke(
             'gateway:rpc',
             'sessions.patch',
             { key: currentSessionKey, model: selectedModel },
-          );
+          ) as { success: boolean; error?: string };
+          if (!patchRes.success) {
+            console.warn('Pre-send sessions.patch failed:', patchRes.error);
+          }
         }
       } catch {
         // Best-effort: session may not exist yet for brand-new sessions
