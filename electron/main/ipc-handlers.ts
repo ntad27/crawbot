@@ -2735,6 +2735,13 @@ function registerAppHandlers(gatewayManager: GatewayManager): void {
         logger.warn('Failed to remove browser config:', err);
       }
     }
+    // Sync AGENTS.md browser instructions across all workspaces
+    try {
+      const { syncBrowserBlockToAllWorkspaces } = await import('../utils/agents-md-injection');
+      syncBrowserBlockToAllWorkspaces(enabled);
+    } catch (err) {
+      logger.warn('Failed to sync browser block to AGENTS.md:', err);
+    }
     if (gatewayManager.isConnected()) {
       void gatewayManager.restart().catch((err) => {
         logger.warn('Gateway restart after use builtin browser change failed:', err);

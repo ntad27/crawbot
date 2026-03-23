@@ -2,6 +2,8 @@
  * AGENTS.md CrawBot Context Injection
  * Appends/updates a <crawbot> block in every workspace's AGENTS.md
  * so agents know they're running inside CrawBot.
+ *
+ * The Browser Tool section is only included when useBuiltinBrowser is enabled.
  */
 import { app } from 'electron';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -9,7 +11,7 @@ import { join } from 'path';
 import { platform, arch } from 'os';
 
 import { getOpenClawConfigDir, getOpenClawStatus } from './paths';
-import { getSetting, setSetting } from './store';
+import { getUseBuiltinBrowserFromConfig } from './agent-config';
 import { logger } from './logger';
 
 const BLOCK_START = '<crawbot>';
@@ -17,14 +19,24 @@ const BLOCK_END = '</crawbot>';
 
 /**
  * Build the CrawBot context block content
+ * @param includeBuiltinBrowser - whether to include Browser Tool instructions
  */
-function buildCrawBotBlock(): string {
+function buildCrawBotBlock(includeBuiltinBrowser: boolean): string {
   const crawBotVersion = app.getVersion();
   const openClawStatus = getOpenClawStatus();
   const openClawVersion = openClawStatus.version ?? 'unknown';
   const openClawDir = openClawStatus.dir;
   const plat = platform();
   const archt = arch();
+
+  const browserSection = includeBuiltinBrowser
+    ? `
+### Browser Tool
+- CrawBot provides a **built-in browser** accessible via the browser tool. **Do NOT specify a profile parameter** — the default profile automatically routes to CrawBot's built-in browser.
+- Never use \`profile="user"\`, \`profile="chrome"\`, or \`profile="chrome-relay"\` unless the user explicitly asks to use their real Chrome browser.
+- When the user asks you to browse, open a website, or check something on the web, simply use the browser tool without any profile parameter.
+`
+    : '';
 
   return `${BLOCK_START}
 ## CrawBot Runtime Context
@@ -42,7 +54,7 @@ CrawBot is a dual-process Electron app:
 - **Main process** manages the Gateway lifecycle, system tray, IPC, and secure storage
 - **Renderer process** is a React UI that communicates with the Gateway over WebSocket (JSON-RPC)
 - **OpenClaw Gateway** runs as a child process on port 18789
-
+${browserSection}
 ### Guidelines
 - You are managed by CrawBot — do not attempt to start, stop, or reconfigure the Gateway process
 - API keys and provider credentials are stored securely in the system keychain via CrawBot
@@ -128,29 +140,32 @@ function injectIntoFile(filePath: string, block: string): boolean {
 }
 
 /**
- * Main entry: inject CrawBot context into all workspace AGENTS.md files
- * Skips if the current version has already been injected.
+ * Main entry: inject CrawBot context into all workspace AGENTS.md files.
+ * Content-based: skips files where the block is already up-to-date.
+ * Reads useBuiltinBrowser setting to decide whether to include Browser Tool section.
  */
 export async function injectCrawBotContext(): Promise<void> {
-  const currentVersion = app.getVersion();
-  const lastVersion = await getSetting('lastInjectedVersion');
-
-  if (currentVersion === lastVersion) {
-    logger.debug('AGENTS.md injection: already at current version, skipping');
-    return;
-  }
-
+  const useBuiltinBrowser = getUseBuiltinBrowserFromConfig();
   const files = findAgentsMdFiles();
   if (files.length === 0) {
     logger.debug('AGENTS.md injection: no workspace AGENTS.md files found, will retry next startup');
     return;
   }
 
-  const block = buildCrawBotBlock();
+  const block = buildCrawBotBlock(useBuiltinBrowser);
   let injectedCount = 0;
 
   for (const filePath of files) {
     try {
+      // Skip if the file already contains the exact same block between markers
+      const content = readFileSync(filePath, 'utf-8');
+      const startIdx = content.indexOf(BLOCK_START);
+      const endIdx = content.indexOf(BLOCK_END);
+      if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+        const existingBlock = content.substring(startIdx, endIdx + BLOCK_END.length);
+        if (existingBlock === block) continue; // Already up-to-date
+      }
+
       if (injectIntoFile(filePath, block)) {
         injectedCount++;
         logger.info(`Injected CrawBot context into ${filePath}`);
@@ -161,7 +176,30 @@ export async function injectCrawBotContext(): Promise<void> {
   }
 
   if (injectedCount > 0) {
-    await setSetting('lastInjectedVersion', currentVersion);
-    logger.info(`AGENTS.md injection complete: ${injectedCount}/${files.length} files updated`);
+    logger.info(`AGENTS.md injection complete: ${injectedCount}/${files.length} files updated (builtinBrowser=${useBuiltinBrowser})`);
+  }
+}
+
+/**
+ * Re-inject CrawBot context into all workspaces with updated browser setting.
+ * Called when useBuiltinBrowser toggle changes — bypasses version gating.
+ */
+export function syncBrowserBlockToAllWorkspaces(useBuiltinBrowser: boolean): void {
+  const files = findAgentsMdFiles();
+  if (files.length === 0) return;
+
+  const block = buildCrawBotBlock(useBuiltinBrowser);
+  let count = 0;
+
+  for (const filePath of files) {
+    try {
+      if (injectIntoFile(filePath, block)) count++;
+    } catch (err) {
+      logger.warn(`Failed to sync browser block in ${filePath}:`, err);
+    }
+  }
+
+  if (count > 0) {
+    logger.info(`Browser block synced in ${count}/${files.length} AGENTS.md files (builtinBrowser=${useBuiltinBrowser})`);
   }
 }
