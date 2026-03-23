@@ -329,6 +329,8 @@ CrawBot is built on the shoulders of excellent open-source projects:
 - [shadcn/ui](https://ui.shadcn.com/) – Beautifully designed components
 - [Zustand](https://github.com/pmndrs/zustand) – Lightweight state management
 
+AND YES, THIS PROJECT WAS FIRST STARTED BY CLONING [Claw-X](https://github.com/ValueCell-ai/ClawX) BECAUSE THEY DO NOT ACCEPT ANY PRs AND THEY LACK ALL OF THE FEATURES I WANT. SO FUCK THEM, I CLONE THE IDEA AND I DID IT WITH MY CLAUDE CODE. IF YOU DON’T LIKE THIS, GO FUCK YOURSELF.
+
 ---
 
 ## Community
