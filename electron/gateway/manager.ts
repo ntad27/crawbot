@@ -256,7 +256,15 @@ export class GatewayManager extends EventEmitter {
       }
       
       logger.debug('No existing Gateway found, starting new process...');
-      
+
+      // Repair any malformed auth profiles before starting
+      try {
+        const { repairAuthProfiles } = await import('../utils/openclaw-auth');
+        repairAuthProfiles();
+      } catch (err) {
+        logger.warn('Auth profile repair failed:', err);
+      }
+
       // Start new Gateway process
       await this.startProcess();
       

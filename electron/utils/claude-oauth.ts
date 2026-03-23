@@ -232,13 +232,22 @@ function writeAuthProfile(credential: {
   const providerType = 'anthropic';
   const profileId = `${providerType}:default`;
 
-  store.profiles[profileId] = {
-    type: credential.refreshToken ? 'oauth' : 'token',
-    provider: providerType,
-    token: credential.accessToken,
-    refreshToken: credential.refreshToken,
-    expiresAt: credential.expiresAt,
-  };
+  // Use OAuth format (access/refresh/expires) when we have a short-lived token
+  // that needs refresh. Use token format for long-lived API keys (no expiry).
+  const useOAuthFormat = !!(credential.refreshToken && credential.expiresAt);
+  store.profiles[profileId] = useOAuthFormat
+    ? {
+        type: 'oauth' as const,
+        provider: providerType,
+        access: credential.accessToken,
+        refresh: credential.refreshToken,
+        expires: credential.expiresAt,
+      }
+    : {
+        type: 'token' as const,
+        provider: providerType,
+        token: credential.accessToken,
+      };
 
   if (!store.order) store.order = {};
   if (!store.order[providerType]) store.order[providerType] = [];

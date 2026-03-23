@@ -514,5 +514,34 @@ export function setOpenClawDefaultModelWithOverride(
   );
 }
 
+/**
+ * Repair auth profiles with wrong field names.
+ * A previous version wrote Anthropic OAuth profiles with token/refreshToken/expiresAt
+ * instead of the correct access/refresh/expires for type: "oauth".
+ */
+export function repairAuthProfiles(agentId = 'main'): void {
+  const store = readAuthProfiles(agentId);
+  let changed = false;
+
+  for (const [id, profile] of Object.entries(store.profiles)) {
+    const p = profile as Record<string, unknown>;
+    if (p.provider === 'anthropic' && p.type === 'oauth' && p.token && !p.access) {
+      store.profiles[id] = {
+        type: 'oauth',
+        provider: 'anthropic',
+        access: p.token,
+        refresh: p.refreshToken,
+        expires: p.expiresAt,
+      } as unknown as AuthProfileEntry;
+      changed = true;
+      console.log(`Repaired Anthropic OAuth profile "${id}" field names`);
+    }
+  }
+
+  if (changed) {
+    writeAuthProfiles(store, agentId);
+  }
+}
+
 // Re-export for backwards compatibility
 export { getProviderEnvVar } from './provider-registry';
