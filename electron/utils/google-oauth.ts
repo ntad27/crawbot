@@ -500,7 +500,12 @@ function writeAuthProfile(credential: {
   const authProfilesPath = join(openclawDir, 'auth-profiles.json');
   mkdirSync(openclawDir, { recursive: true });
 
-  let store: { version?: number; profiles?: Record<string, unknown> } = { version: 1, profiles: {} };
+  let store: {
+    version?: number;
+    profiles?: Record<string, unknown>;
+    order?: Record<string, string[]>;
+    lastGood?: Record<string, string>;
+  } = { version: 1, profiles: {} };
   if (existsSync(authProfilesPath)) {
     try {
       store = JSON.parse(readFileSync(authProfilesPath, 'utf-8'));
@@ -523,6 +528,16 @@ function writeAuthProfile(credential: {
     email: credential.email,
     projectId: credential.projectId,
   };
+
+  const providerType = 'google-gemini-cli';
+  if (!store.order) store.order = {};
+  if (!store.order[providerType]) store.order[providerType] = [];
+  if (!store.order[providerType].includes(profileId)) {
+    store.order[providerType].push(profileId);
+  }
+
+  if (!store.lastGood) store.lastGood = {};
+  store.lastGood[providerType] = profileId;
 
   writeFileSync(authProfilesPath, JSON.stringify(store, null, 2), 'utf-8');
 }

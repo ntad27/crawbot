@@ -44,13 +44,37 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
 
       if (result.success && result.result?.models) {
         // Filter to only show models from user-configured providers
-        const configuredTypes = new Set<string>(
-          useProviderStore.getState().providers.map((p) => p.type),
-        );
+        const providers = useProviderStore.getState().providers;
+        const configuredTypes = new Set<string>(providers.map((p) => p.type));
         configuredTypes.add('webauth');
-        const filtered = configuredTypes.size > 0
+        // Google OAuth uses 'google-gemini-cli' provider in OpenClaw
+        if (configuredTypes.has('google')) {
+          configuredTypes.add('google-gemini-cli');
+        }
+        let filtered = configuredTypes.size > 0
           ? result.result.models.filter((m) => configuredTypes.has(m.provider))
           : result.result.models;
+
+        // When Google provider uses OAuth (no API key), remap google/ models
+        // to google-gemini-cli/ so auth profile lookup works correctly.
+        const googleProvider = providers.find((p) => p.type === 'google');
+        if (googleProvider && !googleProvider.hasKey) {
+          filtered = filtered
+            // Remove built-in google/ models (they won't have auth)
+            .filter((m) => m.provider !== 'google')
+            // Remap google-gemini-cli models to show as 'google' for display,
+            // but keep the actual provider for correct model ref
+            ;
+          // If no google-gemini-cli models from catalog, create entries from google models
+          const hasGeminiCliModels = filtered.some((m) => m.provider === 'google-gemini-cli');
+          if (!hasGeminiCliModels) {
+            const googleModels = (result.result.models ?? [])
+              .filter((m) => m.provider === 'google')
+              .map((m) => ({ ...m, provider: 'google-gemini-cli' }));
+            filtered = [...filtered, ...googleModels];
+          }
+        }
+
         set({ models: filtered, loading: false });
       } else {
         set({ models: [], loading: false, error: result.error || 'No models returned' });

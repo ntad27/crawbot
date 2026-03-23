@@ -84,6 +84,10 @@ export function ChatToolbar() {
   const configuredProviderTypes = useMemo(() => {
     const types = new Set<string>(configuredProviders.map((p) => p.type));
     types.add('webauth');
+    // Google OAuth uses 'google-gemini-cli' provider in OpenClaw
+    if (types.has('google')) {
+      types.add('google-gemini-cli');
+    }
     return types;
   }, [configuredProviders]);
 
