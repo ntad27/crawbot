@@ -266,12 +266,16 @@ function ToolStatusBar({
     summary?: string;
   }>;
 }) {
+  // Only show running or error tools — completed tools are noise
+  const activeTools = tools.filter(t => t.status !== 'completed');
+  if (activeTools.length === 0) return null;
+
   return (
     <div className="w-full rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
       <div className="space-y-1">
-        {tools.map((tool) => {
+        {activeTools.map((tool) => {
           const duration = formatDuration(tool.durationMs);
-          const statusLabel = tool.status === 'running' ? 'running' : (tool.status === 'error' ? 'error' : 'done');
+          const statusLabel = tool.status === 'running' ? 'running' : 'error';
           return (
             <div key={tool.toolCallId || tool.id || tool.name} className="flex flex-wrap items-center gap-2">
               <span className={cn(

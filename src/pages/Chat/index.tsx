@@ -72,10 +72,10 @@ export function Chat() {
     };
   }, [isGatewayRunning, loadHistory, loadSessions]);
 
-  // Auto-scroll on new messages or streaming
+  // Auto-scroll on new messages or streaming updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingMessage, sending]);
+  }, [messages, streamingMessage, streamingTools, sending]);
 
   // Update timestamp when sending starts
   useEffect(() => {
