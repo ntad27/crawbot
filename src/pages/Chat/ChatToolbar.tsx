@@ -13,6 +13,7 @@ import { useAgentsStore } from '@/stores/agents';
 import { useProviderStore } from '@/stores/providers';
 import { useFileBrowserStore } from '@/stores/file-browser';
 import { useBrowserStore } from '@/stores/browser';
+import { useWebAuthStore } from '@/stores/webauth';
 import { resolveAgentModel } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -80,16 +81,20 @@ export function ChatToolbar() {
     setSelectedModel(value || null);
   };
 
+  const webauthProviders = useWebAuthStore((s) => s.providers);
+
   // Set of provider types the user has configured
   const configuredProviderTypes = useMemo(() => {
     const types = new Set<string>(configuredProviders.map((p) => p.type));
-    types.add('webauth');
+    if (webauthProviders.length > 0) {
+      types.add('webauth');
+    }
     // Google OAuth uses 'google-gemini-cli' provider in OpenClaw
     if (types.has('google')) {
       types.add('google-gemini-cli');
     }
     return types;
-  }, [configuredProviders]);
+  }, [configuredProviders, webauthProviders]);
 
   // Filter models to only configured providers, then group by provider.
   // For webauth provider, collapse all models per provider prefix into a single entry

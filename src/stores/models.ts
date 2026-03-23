@@ -46,7 +46,11 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
         // Filter to only show models from user-configured providers
         const providers = useProviderStore.getState().providers;
         const configuredTypes = new Set<string>(providers.map((p) => p.type));
-        configuredTypes.add('webauth');
+        // Only show webauth models if user has webauth providers configured
+        const { useWebAuthStore } = await import('./webauth');
+        if (useWebAuthStore.getState().providers.length > 0) {
+          configuredTypes.add('webauth');
+        }
         // Google OAuth uses 'google-gemini-cli' provider in OpenClaw
         if (configuredTypes.has('google')) {
           configuredTypes.add('google-gemini-cli');
