@@ -18,10 +18,10 @@ import { logger } from './logger';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const AUTH_URL = 'https://claude.ai/oauth/authorize';
 const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
-const API_KEY_URL = 'https://api.anthropic.com/api/oauth/claude_cli/create_api_key';
-const OAUTH_BETA_HEADER = 'oauth-2025-04-20';
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const SCOPES = ['user:inference', 'user:profile', 'user:sessions:claude_code', 'user:mcp_servers'];
+// Must match pi-ai's SCOPES exactly so token refresh (which sends scope param) succeeds.
+// Mismatched scopes cause Anthropic to reject refresh with "invalid_scope".
+const SCOPES = ['org:create_api_key', 'user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload'];
 
 // ── PKCE ──
 
@@ -175,33 +175,6 @@ async function exchangeCodeForTokens(
   return data;
 }
 
-// ── Create long-lived API key from OAuth access token ──
-
-async function createApiKey(accessToken: string): Promise<string> {
-  logger.debug(`[claude-oauth] Creating API key via ${API_KEY_URL}`);
-
-  const response = await fetch(API_KEY_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'anthropic-beta': OAUTH_BETA_HEADER,
-      'Accept': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API key creation failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json() as { raw_key?: string };
-  if (!data.raw_key) {
-    throw new Error('No API key returned from Anthropic');
-  }
-
-  return data.raw_key;
-}
-
 // ── Auth profile persistence ──
 
 function writeAuthProfile(credential: {
@@ -301,25 +274,17 @@ export async function runClaudeOAuthFlow(): Promise<{
     const tokens = await exchangeCodeForTokens(code, verifier, redirectUri, state);
     logger.info('[claude-oauth] Token exchange successful');
 
-    // 7. Create long-lived API key from the OAuth access token
-    //    (same as what `claude setup-token` does — produces an sk-ant-oat01-* key)
-    let apiKey: string | undefined;
-    try {
-      apiKey = await createApiKey(tokens.access_token);
-      logger.info('[claude-oauth] Long-lived API key created successfully');
-    } catch (err) {
-      logger.warn('[claude-oauth] API key creation failed, using access token directly:', err);
-    }
-
-    // 8. Write auth profile (prefer long-lived API key, fall back to access token)
+    // 7. Write auth profile as OAuth format (access + refresh + expires).
+    //    Always keep the refresh token so pi-ai/OpenClaw can refresh when
+    //    the access token expires. Previously we created a long-lived API key
+    //    and stored it as type:'token' (discarding the refresh token), but
+    //    this left no recovery path when the key eventually expired.
     writeAuthProfile({
-      accessToken: apiKey || tokens.access_token,
+      accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
-      expiresAt: apiKey
-        ? undefined // long-lived key doesn't expire (valid ~1 year)
-        : tokens.expires_in
-          ? Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000
-          : undefined,
+      expiresAt: tokens.expires_in
+        ? Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000
+        : undefined,
     });
     logger.info('[claude-oauth] Anthropic OAuth credentials saved to auth-profiles.json');
 

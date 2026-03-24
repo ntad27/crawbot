@@ -1,6 +1,6 @@
 {
     "name": "crawbot",
-    "version": "2026.3.14",
+    "version": "2026.3.15",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@whiskeysockets/baileys",
@@ -22,6 +22,7 @@
     "private": true,
     "scripts": {
         "init": "pnpm install && pnpm run uv:download",
+        "postinstall": "node -e \"const{existsSync:e}=require('fs'),{execSync:x}=require('child_process'),p=require('path').join('node_modules','openclaw','extensions','openzalo');e(p)||x('git clone --depth 1 https://github.com/darkamenosa/openzalo.git '+p,{stdio:'inherit'})\"",
         "dev": "vite",
         "build": "vite build && zx scripts/bundle-openclaw.mjs && electron-builder",
         "build:vite": "vite build",
