@@ -465,14 +465,14 @@ for (const { name, binName, binPath } of EXTRA_CLI_PACKAGES) {
     }
   }
 
-  // Create .bin symlink
+  // Create .bin wrapper script (NOT a symlink — symlinks break macOS codesign)
   const binDir = path.join(outputNodeModules, '.bin');
   fs.mkdirSync(binDir, { recursive: true });
-  const symlinkTarget = path.join('..', name, binPath);
-  const symlinkPath = path.join(binDir, binName);
-  if (!fs.existsSync(symlinkPath)) {
-    fs.symlinkSync(symlinkTarget, symlinkPath);
-    // Make executable
+  const binScriptPath = path.join(binDir, binName);
+  if (!fs.existsSync(binScriptPath)) {
+    const targetPath = path.join('..', name, binPath);
+    fs.writeFileSync(binScriptPath, `#!/usr/bin/env node\nrequire("./${targetPath}");\n`, 'utf-8');
+    fs.chmodSync(binScriptPath, 0o755);
     try { fs.chmodSync(path.join(outputNodeModules, name, binPath), 0o755); } catch {}
   }
   echo`   ✅ Bundled CLI tool: ${binName} (from ${name})`;

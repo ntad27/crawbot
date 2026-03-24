@@ -9,6 +9,10 @@
  *   A2. fetchBrowserJson default timeout: 5s → 30s
  *   A3. Replace "Do NOT retry" agent hint with retry-friendly message
  *
+ * Patch D) pi-ai anthropic.js (OAuth token refresh):
+ *   D1. Remove scope param from refresh_token request — Anthropic rejects it
+ *       with "invalid_scope". Fixed in pi-ai 0.61.1+ but we're on 0.58.0.
+ *
  * Patch B) any chunk containing broadcastToCdpClients (Chrome extension relay):
  *   B1. Dedup: disable duplicate Target.attachedToTarget re-send (Playwright crash)
  *   B2. Passthrough: remove local Target.attachToTarget handler → fall through
@@ -112,9 +116,16 @@ const loaderSource = [
   'const C1_REPLACE_VALUE = (SCREENSHOT_MAX_SIDE_VALUE / 1000) + "e3";',
   'const C1_REPLACE = "SCREENSHOT_MAX_SIDE = " + C1_REPLACE_VALUE + ";";',
   '',
+  '// ── Patch D: pi-ai anthropic.js — remove scope from refresh request ──',
+  '// pi-ai 0.58.0 sends scope: SCOPES in refresh_token requests but Anthropic',
+  '// rejects it with "invalid_scope". Fixed in pi-ai 0.61.1+ (scope removed).',
+  'const D1_FIND = "refresh_token: refreshToken,\\n            scope: SCOPES,";',
+  'const D1_REPLACE = "refresh_token: refreshToken,";',
+  '',
   'const dispatchDone = new Set();',
   'const relayDone = new Set();',
   'const screenshotDone = new Set();',
+  'const oauthDone = new Set();',
   '',
   'function applyPairs(src, pairs) {',
   '  let s = src, n = 0;',
@@ -171,11 +182,18 @@ const loaderSource = [
   '    if (modified.includes(C1_FIND)) { modified = modified.split(C1_FIND).join(C1_REPLACE); screenshotCount++; screenshotDone.add(base); }',
   '  }',
   '',
-  '  if (dispatchCount > 0 || relayCount > 0 || screenshotCount > 0) {',
+  '  // Patch D: apply to pi-ai anthropic.js (OAuth refresh scope fix)',
+  '  let oauthCount = 0;',
+  '  if (!oauthDone.has(base) && modified.includes("refreshAnthropicToken") && modified.includes("scope: SCOPES")) {',
+  '    if (modified.includes(D1_FIND)) { modified = modified.split(D1_FIND).join(D1_REPLACE); oauthCount++; oauthDone.add(base); }',
+  '  }',
+  '',
+  '  if (dispatchCount > 0 || relayCount > 0 || screenshotCount > 0 || oauthCount > 0) {',
   '    const parts = [];',
   '    if (dispatchCount > 0) parts.push("dispatch: " + dispatchCount);',
   '    if (relayCount > 0) parts.push("relay: " + relayCount);',
   '    if (screenshotCount > 0) parts.push("screenshot: " + screenshotCount);',
+  '    if (oauthCount > 0) parts.push("oauth-refresh: " + oauthCount);',
   '    console.error("[openclaw-patches] " + parts.join(", ") + " patch(es) applied (" + base + ")");',
   '    return { format: "module", source: modified, shortCircuit: true };',
   '  }',
