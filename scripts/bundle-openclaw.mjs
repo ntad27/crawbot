@@ -408,7 +408,9 @@ for (const { name, repo } of THIRD_PARTY_EXTENSIONS) {
     fs.rmSync(extPath, { recursive: true, force: true });
   }
   echo`   ⬇️  Cloning ${name} from ${repo}...`;
-  await $`git clone --depth 1 ${repo} ${extPath}`;
+  // Use forward slashes on Windows to avoid backslash escape interpretation in shell
+  const extPathShell = extPath.split(path.sep).join('/');
+  await $`git clone --depth 1 ${repo} ${extPathShell}`;
   // Remove .git directory (not needed in bundle, saves space + avoids signing overhead)
   fs.rmSync(path.join(extPath, '.git'), { recursive: true, force: true });
   // Remove dev artifacts
