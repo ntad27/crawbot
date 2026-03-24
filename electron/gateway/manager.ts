@@ -651,10 +651,14 @@ export class GatewayManager extends EventEmitter {
     const managedBinDir = getManagedBinDirPath();
     const managedBinExists = existsSync(managedBinDir);
 
-    // Build PATH: managedBin > uvBin > system PATH
+    // Build PATH: managedBin > uvBin > openclaw node_modules/.bin > system PATH
+    // Include openclaw's node_modules/.bin so bundled CLI tools (e.g. openzca) are accessible
+    const openclawBinDir = path.join(openclawDir, 'node_modules', '.bin');
+    const openclawBinExists = existsSync(openclawBinDir);
     const pathParts: string[] = [];
     if (managedBinExists) pathParts.push(managedBinDir);
     if (uvBinPathExists) pathParts.push(uvBinPath);
+    if (openclawBinExists) pathParts.push(openclawBinDir);
     pathParts.push(process.env.PATH || '');
     const finalPath = pathParts.join(path.delimiter);
     

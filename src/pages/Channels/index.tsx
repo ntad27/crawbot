@@ -570,7 +570,7 @@ function AddChannelDialog({
       setConfigValues({});
       if (!isEditMode) setAccountId('');
       window.electron.ipcRenderer.invoke('channel:cancelWhatsAppQr').catch(() => {});
-      window.electron.ipcRenderer.invoke('channel:cancelZaloUserQr').catch(() => {});
+      window.electron.ipcRenderer.invoke('channel:cancelOpenZaloQr').catch(() => {});
       return;
     }
 
@@ -636,8 +636,8 @@ function AddChannelDialog({
   // Shared post-QR-login success handler for QR-based channels (WhatsApp, Zalo Personal)
   // Uses refs for form values so the callback identity stays stable and
   // useEffect doesn't re-run (which would cancel the active QR session).
-  const handleQrLoginSuccess = useCallback(async (channelType: 'whatsapp' | 'zalouser', eventAccountId?: string) => {
-    const toastKey = channelType === 'whatsapp' ? 'toast.whatsappConnected' : 'toast.zalouserConnected';
+  const handleQrLoginSuccess = useCallback(async (channelType: 'whatsapp', eventAccountId?: string) => {
+    const toastKey = 'toast.whatsappConnected';
     toast.success(t(toastKey));
 
     const acctId = eventAccountId || accountIdRef.current.trim() || 'default';
@@ -735,13 +735,20 @@ function AddChannelDialog({
     };
   }, [selectedType, t]);
 
-  // Listen for Zalo Personal QR events
-  // Use ref to avoid useEffect re-running (and canceling QR session) when callback identity changes
+  // Keep ref for QR login success handler stable
   const handleQrLoginSuccessRef = useRef(handleQrLoginSuccess);
   handleQrLoginSuccessRef.current = handleQrLoginSuccess;
 
+  // Listen for OpenZalo QR events
+  // Use refs for callbacks so useEffect only re-runs when selectedType changes
+  // (prevents cleanup from killing the openzca process on every render)
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const onChannelAddedRef = useRef(onChannelAdded);
+  onChannelAddedRef.current = onChannelAdded;
+
   useEffect(() => {
-    if (selectedType !== 'zalouser') return;
+    if (selectedType !== 'openzalo') return;
 
     const onQr = (...args: unknown[]) => {
       const data = args[0] as { qr: string };
@@ -749,26 +756,59 @@ function AddChannelDialog({
       setQrCode(qrData.startsWith('data:') ? qrData : `data:image/png;base64,${qrData}`);
     };
 
-    const onSuccess = async (...args: unknown[]) => {
-      const data = args[0] as { accountId?: string } | undefined;
-      await handleQrLoginSuccessRef.current('zalouser', data?.accountId);
+    const onSuccess = async () => {
+      toast.success(t('toast.openzaloConnected'));
+
+      const acctId = accountIdRef.current.trim() || 'default';
+      const currentBindingAgentId = bindingAgentIdRef.current;
+      const currentIsEditMode = isEditModeRef.current;
+
+      // Save plugin config (enable channel + plugin entry)
+      try {
+        await window.electron.ipcRenderer.invoke('channel:saveConfig', 'openzalo', { enabled: true });
+      } catch (err) {
+        console.error('Failed to save openzalo config:', err);
+      }
+
+      // Save account-level config
+      try {
+        await window.electron.ipcRenderer.invoke('channel:saveAccountConfig', 'openzalo', acctId, { enabled: true });
+      } catch (err) {
+        console.error('Failed to save openzalo account config:', err);
+      }
+
+      // Add channel entry so it shows up immediately
+      if (!currentIsEditMode) {
+        await addChannel({ type: 'openzalo' as ChannelType, name: 'OpenZalo', accountId: acctId });
+      }
+
+      // Save or remove agent binding
+      if (currentBindingAgentId) {
+        await setBinding(currentBindingAgentId, 'openzalo', acctId === 'default' ? undefined : acctId);
+      } else if (currentIsEditMode) {
+        await removeBinding('openzalo', acctId === 'default' ? undefined : acctId);
+      }
+      await fetchBindings();
+
+      // Close dialog and restart gateway
+      onChannelAddedRef.current({ restartGateway: true });
     };
 
     const onError = (...args: unknown[]) => {
       const err = args[0] as string;
-      console.error('Zalo Personal Login Error:', err);
-      toast.error(t('toast.zalouserFailed', { error: err }));
+      console.error('OpenZalo Login Error:', err);
+      toast.error(t('toast.openzaloFailed', { error: err }));
       setQrCode(null);
       setConnecting(false);
     };
 
-    const removeQrListener = window.electron.ipcRenderer.on('channel:zalouser-qr', onQr);
+    const removeQrListener = window.electron.ipcRenderer.on('channel:openzalo-qr', onQr);
     const removeSuccessListener = window.electron.ipcRenderer.on(
-      'channel:zalouser-success',
+      'channel:openzalo-success',
       onSuccess
     );
     const removeErrorListener = window.electron.ipcRenderer.on(
-      'channel:zalouser-error',
+      'channel:openzalo-error',
       onError
     );
 
@@ -776,9 +816,10 @@ function AddChannelDialog({
       if (typeof removeQrListener === 'function') removeQrListener();
       if (typeof removeSuccessListener === 'function') removeSuccessListener();
       if (typeof removeErrorListener === 'function') removeErrorListener();
-      window.electron.ipcRenderer.invoke('channel:cancelZaloUserQr').catch(() => {});
+      window.electron.ipcRenderer.invoke('channel:cancelOpenZaloQr').catch(() => {});
     };
-  }, [selectedType, t]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedType]);
 
   const handleValidate = async () => {
     if (!selectedType) return;
@@ -833,8 +874,8 @@ function AddChannelDialog({
       // For QR-based channels, request QR code
       if (meta.connectionType === 'qr') {
         const qrAccountId = accountId.trim() || 'default';
-        if (selectedType === 'zalouser') {
-          await window.electron.ipcRenderer.invoke('channel:requestZaloUserQr', qrAccountId);
+        if (selectedType === 'openzalo') {
+          await window.electron.ipcRenderer.invoke('channel:requestOpenZaloQr', qrAccountId);
         } else {
           await window.electron.ipcRenderer.invoke('channel:requestWhatsAppQr', qrAccountId);
         }

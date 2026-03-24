@@ -20,8 +20,8 @@
     "toast": {
         "whatsappConnected": "WhatsApp connected successfully",
         "whatsappFailed": "WhatsApp connection failed: {{error}}",
-        "zalouserConnected": "Zalo Personal connected successfully",
-        "zalouserFailed": "Zalo Personal connection failed: {{error}}",
+        "openzaloConnected": "OpenZalo connected successfully",
+        "openzaloFailed": "OpenZalo connection failed: {{error}}",
         "channelSaved": "Channel {{name}} saved",
         "channelConnecting": "Connecting to {{name}}...",
         "restartManual": "Please restart the gateway manually",
@@ -295,30 +295,9 @@
                 "Copy the access token"
             ]
         },
-        "zalo": {
-            "description": "Connect Zalo Official Account bot via Bot API",
-            "docsUrl": "https://docs.openclaw.ai/channels/zalo",
-            "fields": {
-                "botToken": {
-                    "label": "Bot Token",
-                    "placeholder": "12345689:abc-xyz"
-                },
-                "allowedUsers": {
-                    "label": "Allowed User IDs",
-                    "placeholder": "e.g. 123456789, 987654321",
-                    "description": "Controls who can DM your Zalo bot:\n• Enter comma-separated User IDs → allowlist mode (only listed users can chat)\n• Enter * → open mode (anyone can chat)\n• Leave blank → pairing mode (users must enter a pairing code to connect)"
-                }
-            },
-            "instructions": [
-                "Create a bot at Zalo Bot Platform (bot.zaloplatforms.com)",
-                "Copy the bot token from the dashboard",
-                "Paste the token below",
-                "Configure allowed users or leave blank for pairing mode"
-            ]
-        },
-        "zalouser": {
-            "description": "Connect Zalo personal account via QR code login",
-            "docsUrl": "https://docs.openclaw.ai/channels/zalouser",
+        "openzalo": {
+            "description": "Connect Zalo personal account via openzca CLI",
+            "docsUrl": "https://github.com/darkamenosa/openzalo",
             "fields": {
                 "allowedUsers": {
                     "label": "Allowed User IDs",

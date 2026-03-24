@@ -1726,25 +1726,25 @@ function registerWhatsAppHandlers(mainWindow: BrowserWindow): void {
  * Zalo Personal Login Handlers
  */
 function registerZaloUserHandlers(mainWindow: BrowserWindow): void {
-  // Request Zalo Personal QR code
-  ipcMain.handle('channel:requestZaloUserQr', async (_, accountId: string) => {
+  // Request OpenZalo QR code
+  ipcMain.handle('channel:requestOpenZaloQr', async (_, accountId: string) => {
     try {
-      logger.info('channel:requestZaloUserQr', { accountId });
+      logger.info('channel:requestOpenZaloQr', { accountId });
       await zaloUserLoginManager.start(accountId);
       return { success: true };
     } catch (error) {
-      logger.error('channel:requestZaloUserQr failed', error);
+      logger.error('channel:requestOpenZaloQr failed', error);
       return { success: false, error: String(error) };
     }
   });
 
-  // Cancel Zalo Personal login
-  ipcMain.handle('channel:cancelZaloUserQr', async () => {
+  // Cancel OpenZalo login
+  ipcMain.handle('channel:cancelOpenZaloQr', async () => {
     try {
       await zaloUserLoginManager.stop();
       return { success: true };
     } catch (error) {
-      logger.error('channel:cancelZaloUserQr failed', error);
+      logger.error('channel:cancelOpenZaloQr failed', error);
       return { success: false, error: String(error) };
     }
   });
@@ -1752,21 +1752,21 @@ function registerZaloUserHandlers(mainWindow: BrowserWindow): void {
   // Forward events to renderer
   zaloUserLoginManager.on('qr', (data) => {
     if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('channel:zalouser-qr', data);
+      mainWindow.webContents.send('channel:openzalo-qr', data);
     }
   });
 
   zaloUserLoginManager.on('success', (data) => {
     if (!mainWindow.isDestroyed()) {
-      logger.info('zalouser:login-success', data);
-      mainWindow.webContents.send('channel:zalouser-success', data);
+      logger.info('openzalo:login-success', data);
+      mainWindow.webContents.send('channel:openzalo-success', data);
     }
   });
 
   zaloUserLoginManager.on('error', (error) => {
     if (!mainWindow.isDestroyed()) {
-      logger.error('zalouser:login-error', error);
-      mainWindow.webContents.send('channel:zalouser-error', error);
+      logger.error('openzalo:login-error', error);
+      mainWindow.webContents.send('channel:openzalo-error', error);
     }
   });
 }

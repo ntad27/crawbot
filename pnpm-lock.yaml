@@ -93,6 +93,9 @@ importers:
       openclaw:
         specifier: 2026.3.13
         version: 2026.3.13(@discordjs/opus@0.10.0(encoding@0.1.13))(@napi-rs/canvas@0.1.96)(@types/express@5.0.6)(encoding@0.1.13)
+      openzca:
+        specifier: ^0.1.51
+        version: 0.1.51
       prism-react-renderer:
         specifier: ^2.4.1
         version: 2.4.1(react@19.2.4)
@@ -133,8 +136,8 @@ importers:
         specifier: ^0.18.5
         version: 0.18.5
       zca-js:
-        specifier: 2.1.1
-        version: 2.1.1
+        specifier: 2.1.2
+        version: 2.1.2
       zustand:
         specifier: ^5.0.11
         version: 5.0.11(@types/react@19.2.14)(react@19.2.4)(use-sync-external-store@1.6.0(react@19.2.4))
@@ -2641,6 +2644,9 @@ packages:
   '@types/prismjs@1.26.6':
     resolution: {integrity: sha512-vqlvI7qlMvcCBbVe0AKAb4f97//Hy0EBTaiW8AalRnG/xAN5zOiWWyrNqNXeq8+KAuvRewjCVY1+IPxk4RdNYw==}
 
+  '@types/qrcode-terminal@0.12.2':
+    resolution: {integrity: sha512-v+RcIEJ+Uhd6ygSQ0u5YYY7ZM+la7GgPbs0V/7l/kFs2uO4S8BcIUEMoP7za4DNIqNnUD5npf0A/7kBhrCKG5Q==}
+
   '@types/qs@6.15.0':
     resolution: {integrity: sha512-JawvT8iBVWpzTrz3EGw9BTQFg3BQNmwERdKE22vlTxawwtbyUSlMppvZYKLZzB5zgACXdXxbD3m1bXaMqP/9ow==}
 
@@ -4319,6 +4325,11 @@ packages:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
 
+  image-size@2.0.2:
+    resolution: {integrity: sha512-IRqXKlaXwgSMAMtpNzZa1ZAe8m+Sa1770Dhk8VkSsP9LS+iHD62Zd8FQKs8fbPiagBE7BzoFX23cxFnwshpV6w==}
+    engines: {node: '>=16.x'}
+    hasBin: true
+
   immediate@3.0.6:
     resolution: {integrity: sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==}
 
@@ -5185,6 +5196,11 @@ packages:
     peerDependenciesMeta:
       node-llama-cpp:
         optional: true
+
+  openzca@0.1.51:
+    resolution: {integrity: sha512-vnhkqirC1IRO1xoybF1KCBYVhmusGQv4UYGwyzNQ3skaKJZn2s9cj2zM+nE1MaM26809iPkpKArsmn9qSBWljQ==}
+    engines: {node: '>=22.13.0'}
+    hasBin: true
 
   option@0.2.4:
     resolution: {integrity: sha512-pkEqbDyl8ou5cpq+VsnQbe/WlEy5qS7xPzMS1U55OCG9KPvwFD46zDbxQIj3egJSFc3D+XhYOPUzz49zQAVy7A==}
@@ -6602,8 +6618,8 @@ packages:
     resolution: {integrity: sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug==}
     engines: {node: '>=18'}
 
-  zca-js@2.1.1:
-    resolution: {integrity: sha512-6zCmaIIWg/1eYlvCvO4rVsFt6SQ8MRodro3dCzMkk+LNgB3MyaEMBywBJfsw44WhODmOh8iMlPv4xDTNTMWDWA==}
+  zca-js@2.1.2:
+    resolution: {integrity: sha512-82+zCqoIXnXEF6C9YuN3Kf7WKlyyujY/6Ejl2n8PkwazYkBK0k7kiPd8S7nHvC5Wl7vjwGRhDYeAM8zTHyoRxQ==}
     engines: {node: '>=18.0.0'}
 
   zip-stream@4.1.1:
@@ -9752,6 +9768,8 @@ snapshots:
 
   '@types/prismjs@1.26.6': {}
 
+  '@types/qrcode-terminal@0.12.2': {}
+
   '@types/qs@6.15.0': {}
 
   '@types/range-parser@1.2.7': {}
@@ -11851,6 +11869,8 @@ snapshots:
 
   ignore@7.0.5: {}
 
+  image-size@2.0.2: {}
+
   immediate@3.0.6: {}
 
   imurmurhash@0.1.4: {}
@@ -12982,6 +13002,17 @@ snapshots:
       - link-preview-js
       - node-opus
       - supports-color
+      - utf-8-validate
+
+  openzca@0.1.51:
+    dependencies:
+      '@types/qrcode-terminal': 0.12.2
+      commander: 14.0.3
+      image-size: 2.0.2
+      qrcode-terminal: 0.12.0
+      zca-js: 2.1.2
+    transitivePeerDependencies:
+      - bufferutil
       - utf-8-validate
 
   option@0.2.4: {}
@@ -14462,7 +14493,7 @@ snapshots:
 
   yoctocolors@2.1.2: {}
 
-  zca-js@2.1.1:
+  zca-js@2.1.2:
     dependencies:
       crypto-js: 4.2.0
       form-data: 4.0.5

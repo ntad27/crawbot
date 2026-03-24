@@ -18,8 +18,7 @@ export type ChannelType =
   | 'msteams'
   | 'googlechat'
   | 'mattermost'
-  | 'zalo'
-  | 'zalouser';
+  | 'openzalo';
 
 /**
  * Channel connection status
@@ -29,7 +28,7 @@ export type ChannelStatus = 'connected' | 'disconnected' | 'connecting' | 'error
 /**
  * Channel connection type
  */
-export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook';
+export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook' | 'cli';
 
 /**
  * Channel data structure
@@ -91,8 +90,7 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
   msteams: '👔',
   googlechat: '💭',
   mattermost: '💠',
-  zalo: '💙',
-  zalouser: '💙',
+  openzalo: '💙',
 };
 
 /**
@@ -110,8 +108,7 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
   msteams: 'Microsoft Teams',
   googlechat: 'Google Chat',
   mattermost: 'Mattermost',
-  zalo: 'Zalo',
-  zalouser: 'Zalo Personal',
+  openzalo: 'OpenZalo',
 };
 
 /**
@@ -442,61 +439,28 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
     ],
     isPlugin: true,
   },
-  zalo: {
-    id: 'zalo',
-    name: 'Zalo',
+  openzalo: {
+    id: 'openzalo',
+    name: 'OpenZalo',
     icon: '💙',
-    description: 'channels:meta.zalo.description',
-    connectionType: 'token',
-    docsUrl: 'channels:meta.zalo.docsUrl',
-    configFields: [
-      {
-        key: 'botToken',
-        label: 'channels:meta.zalo.fields.botToken.label',
-        type: 'password',
-        placeholder: 'channels:meta.zalo.fields.botToken.placeholder',
-        required: true,
-        envVar: 'ZALO_BOT_TOKEN',
-      },
-      {
-        key: 'allowedUsers',
-        label: 'channels:meta.zalo.fields.allowedUsers.label',
-        type: 'text',
-        placeholder: 'channels:meta.zalo.fields.allowedUsers.placeholder',
-        description: 'channels:meta.zalo.fields.allowedUsers.description',
-        required: false,
-      },
-    ],
-    instructions: [
-      'channels:meta.zalo.instructions.0',
-      'channels:meta.zalo.instructions.1',
-      'channels:meta.zalo.instructions.2',
-      'channels:meta.zalo.instructions.3',
-    ],
-    isPlugin: true,
-  },
-  zalouser: {
-    id: 'zalouser',
-    name: 'Zalo Personal',
-    icon: '💙',
-    description: 'channels:meta.zalouser.description',
+    description: 'channels:meta.openzalo.description',
     connectionType: 'qr',
-    docsUrl: 'channels:meta.zalouser.docsUrl',
+    docsUrl: 'channels:meta.openzalo.docsUrl',
     configFields: [
       {
         key: 'allowedUsers',
-        label: 'channels:meta.zalouser.fields.allowedUsers.label',
+        label: 'channels:meta.openzalo.fields.allowedUsers.label',
         type: 'text',
-        placeholder: 'channels:meta.zalouser.fields.allowedUsers.placeholder',
-        description: 'channels:meta.zalouser.fields.allowedUsers.description',
+        placeholder: 'channels:meta.openzalo.fields.allowedUsers.placeholder',
+        description: 'channels:meta.openzalo.fields.allowedUsers.description',
         required: false,
       },
     ],
     instructions: [
-      'channels:meta.zalouser.instructions.0',
-      'channels:meta.zalouser.instructions.1',
-      'channels:meta.zalouser.instructions.2',
-      'channels:meta.zalouser.instructions.3',
+      'channels:meta.openzalo.instructions.0',
+      'channels:meta.openzalo.instructions.1',
+      'channels:meta.openzalo.instructions.2',
+      'channels:meta.openzalo.instructions.3',
     ],
     isPlugin: true,
   },
@@ -518,7 +482,7 @@ export interface AgentBinding {
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['telegram', 'discord', 'whatsapp', 'feishu', 'zalo', 'zalouser'];
+  return ['telegram', 'discord', 'whatsapp', 'feishu', 'openzalo'];
 }
 
 /**

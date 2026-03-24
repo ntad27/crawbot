@@ -75,6 +75,7 @@
         "lucide-react": "^0.563.0",
         "mammoth": "^1.11.0",
         "openclaw": "2026.3.13",
+        "openzca": "^0.1.51",
         "prism-react-renderer": "^2.4.1",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
@@ -88,7 +89,7 @@
         "tar": "^7.5.9",
         "ws": "^8.19.0",
         "xlsx": "^0.18.5",
-        "zca-js": "2.1.1",
+        "zca-js": "2.1.2",
         "zustand": "^5.0.11"
     },
     "devDependencies": {

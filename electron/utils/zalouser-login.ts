@@ -1,97 +1,43 @@
 /**
- * Zalo Personal (zalouser) Login Manager
- * Handles QR-based login for Zalo Personal accounts using zca-js.
- * Follows the same EventEmitter pattern as WhatsAppLoginManager.
+ * OpenZalo Login Manager
+ * Handles QR-based login by spawning the `openzca` CLI tool.
+ * Works cross-platform (macOS, Windows, Linux) via child_process.spawn.
  */
-import { join } from 'path';
-import { homedir } from 'os';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { EventEmitter } from 'events';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync, watch } from 'fs';
+import { spawn, type ChildProcess } from 'child_process';
+import { app } from 'electron';
+import { logger } from './logger';
 
-// --- Types from zca-js ---
-
-interface ZcaLoginQRCallbackEvent {
-    type: number;
-    data: {
-        code?: string;
-        image?: string;
-        avatar?: string;
-        display_name?: string;
-        cookie?: unknown;
-        imei?: string;
-        userAgent?: string;
-    } | null;
-    actions: {
-        saveToFile?: (qrPath?: string) => Promise<unknown>;
-        retry?: () => unknown;
-        abort?: () => unknown;
-    } | null;
-}
-
-const LoginQRCallbackEventType = {
-    QRCodeGenerated: 0,
-    QRCodeExpired: 1,
-    QRCodeScanned: 2,
-    QRCodeDeclined: 3,
-    GotLoginInfo: 4,
-} as const;
-
-interface StoredCredentials {
-    imei: string;
-    cookie: unknown;
-    userAgent: string;
-    language?: string;
-    createdAt: string;
-    lastUsedAt?: string;
-}
-
-const CREDENTIALS_DIR = join(homedir(), '.openclaw', 'credentials', 'zalouser');
-
-function credentialsPath(profile: string): string {
-    if (profile === 'default') {
-        return join(CREDENTIALS_DIR, 'credentials.json');
+/**
+ * Resolve the openzca binary path.
+ * In packaged mode: resources/openclaw/node_modules/.bin/openzca
+ * In dev mode: node_modules/.bin/openzca
+ */
+function resolveOpenzcaBinary(): string {
+    const ext = process.platform === 'win32' ? '.cmd' : '';
+    if (app.isPackaged) {
+        return join(process.resourcesPath, 'openclaw', 'node_modules', '.bin', `openzca${ext}`);
     }
-    return join(CREDENTIALS_DIR, `credentials-${encodeURIComponent(profile)}.json`);
+    // Dev mode: resolve from project root (app.getAppPath() = project root in dev)
+    const projectRoot = resolve(app.getAppPath());
+    return join(projectRoot, 'node_modules', '.bin', `openzca${ext}`);
 }
-
-function ensureCredentialsDir(): void {
-    if (!existsSync(CREDENTIALS_DIR)) {
-        mkdirSync(CREDENTIALS_DIR, { recursive: true });
-    }
-}
-
-function writeCredentials(
-    profile: string,
-    credentials: { imei: string; cookie: unknown; userAgent: string },
-): void {
-    ensureCredentialsDir();
-    const stored: StoredCredentials = {
-        ...credentials,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-    };
-    writeFileSync(credentialsPath(profile), JSON.stringify(stored, null, 2), 'utf-8');
-}
-
-// --- Zalo QR Login Manager ---
 
 export class ZaloUserLoginManager extends EventEmitter {
     private active = false;
     private profile: string | null = null;
-    private abortFn: (() => void) | null = null;
-    private retryFn: (() => void) | null = null;
-    private loginCompleted = false;
+    private childProcess: ChildProcess | null = null;
 
     constructor() {
         super();
     }
 
-    /**
-     * Start Zalo Personal login via QR code
-     */
     async start(accountId: string = 'default'): Promise<void> {
         if (this.active && this.profile === accountId) {
-            console.log('[ZaloUserLogin] Already running for this profile');
+            logger.info('[OpenZaloLogin] Already running for this profile');
             return;
         }
 
@@ -101,158 +47,160 @@ export class ZaloUserLoginManager extends EventEmitter {
 
         this.profile = accountId;
         this.active = true;
-        this.loginCompleted = false;
 
-        await this.startQrLogin(accountId);
+        this.startCliLogin(accountId);
     }
 
-    private async startQrLogin(profile: string): Promise<void> {
+    private startCliLogin(profile: string): void {
         if (!this.active) return;
 
         try {
-            // Dynamically import zca-js
-            const zcaModule = await import('zca-js');
-            const Zalo = zcaModule.Zalo || zcaModule.default?.Zalo || zcaModule.default;
+            const binary = resolveOpenzcaBinary();
+            logger.info('[OpenZaloLogin] Binary:', binary);
 
-            if (!Zalo) {
-                throw new Error('Could not load Zalo class from zca-js');
+            if (!existsSync(binary)) {
+                this.active = false;
+                this.emit('error', `openzca binary not found at: ${binary}`);
+                return;
             }
 
-            console.log('[ZaloUserLogin] Starting QR login for profile:', profile);
+            // Create temp dir for QR image
+            const tempDir = mkdtempSync(join(tmpdir(), 'crawbot-openzalo-'));
+            const qrPath = join(tempDir, 'qr.png');
 
-            const zalo = new Zalo({ logging: false, selfListen: false });
+            logger.info('[OpenZaloLogin] Starting login for profile:', profile);
 
-            // loginQR returns a Promise<API> that resolves when login completes
-            const loginPromise = zalo.loginQR(
-                undefined,
-                (event: ZcaLoginQRCallbackEvent) => {
-                    if (!this.active) return;
-
-                    try {
-                        switch (event.type) {
-                            case LoginQRCallbackEventType.QRCodeGenerated: {
-                                console.log('[ZaloUserLogin] QR code generated');
-                                if (event.actions?.abort) {
-                                    this.abortFn = event.actions.abort as () => void;
-                                }
-                                if (event.actions?.retry) {
-                                    this.retryFn = event.actions.retry as () => void;
-                                }
-
-                                let image = event.data?.image || '';
-                                // Normalize to data URL
-                                if (image && !image.startsWith('data:image')) {
-                                    image = `data:image/png;base64,${image}`;
-                                }
-                                if (image) {
-                                    this.emit('qr', { qr: image });
-                                }
-                                break;
-                            }
-
-                            case LoginQRCallbackEventType.QRCodeExpired: {
-                                console.log('[ZaloUserLogin] QR code expired, retrying...');
-                                if (event.actions?.retry) {
-                                    event.actions.retry();
-                                } else {
-                                    this.emit('error', 'QR code expired');
-                                    this.active = false;
-                                }
-                                break;
-                            }
-
-                            case LoginQRCallbackEventType.QRCodeScanned: {
-                                console.log('[ZaloUserLogin] QR code scanned by user:', event.data?.display_name);
-                                this.emit('scanned', {
-                                    displayName: event.data?.display_name,
-                                    avatar: event.data?.avatar,
-                                });
-                                break;
-                            }
-
-                            case LoginQRCallbackEventType.QRCodeDeclined: {
-                                console.log('[ZaloUserLogin] QR code declined by user');
-                                this.emit('error', 'Login was declined on the phone');
-                                this.active = false;
-                                break;
-                            }
-
-                            case LoginQRCallbackEventType.GotLoginInfo: {
-                                console.log('[ZaloUserLogin] Got login info, saving credentials...');
-                                this.loginCompleted = true;
-                                try {
-                                    if (event.data?.imei && event.data?.cookie && event.data?.userAgent) {
-                                        writeCredentials(profile, {
-                                            imei: event.data.imei,
-                                            cookie: event.data.cookie,
-                                            userAgent: event.data.userAgent,
-                                        });
-                                        console.log('[ZaloUserLogin] Credentials saved successfully');
-                                    } else {
-                                        console.error('[ZaloUserLogin] GotLoginInfo but missing data:', {
-                                            hasImei: !!event.data?.imei,
-                                            hasCookie: !!event.data?.cookie,
-                                            hasUserAgent: !!event.data?.userAgent,
-                                        });
-                                    }
-                                } catch (err) {
-                                    console.error('[ZaloUserLogin] Failed to save credentials:', err);
-                                }
-                                break;
-                            }
-
-                            default: {
-                                console.log('[ZaloUserLogin] Unknown event type:', event.type, 'data keys:', event.data ? Object.keys(event.data) : 'null');
-                                break;
-                            }
-                        }
-                    } catch (err) {
-                        console.error('[ZaloUserLogin] Error in callback:', err);
-                    }
+            // Spawn openzca auth login with --qr-path
+            // Use shell: true on Windows for .cmd scripts
+            const child = spawn(binary, [
+                '--profile', profile,
+                'auth', 'login',
+                '--qr-path', qrPath,
+            ], {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                shell: process.platform === 'win32',
+                env: {
+                    ...process.env,
+                    OPENZCA_QR_RENDER: 'ascii',
+                    OPENZCA_QR_AUTO_OPEN: '0',
+                    OPENZCA_QR_ASCII: '0',
                 },
-            );
+            });
 
-            // Wait for login to complete
-            try {
-                await loginPromise;
-                if (this.active) {
-                    console.log('[ZaloUserLogin] Login completed successfully');
-                    this.active = false;
-                    this.emit('success', { accountId: profile });
+            this.childProcess = child;
+
+            let stdout = '';
+            let qrSent = false;
+
+            // Watch for QR file to appear (more reliable than parsing stdout)
+            const watcher = watch(tempDir, (_eventType, filename) => {
+                if (filename === 'qr.png' && !qrSent && existsSync(qrPath)) {
+                    try {
+                        const pngData = readFileSync(qrPath);
+                        if (pngData.length > 100) { // valid PNG
+                            const dataUrl = `data:image/png;base64,${pngData.toString('base64')}`;
+                            qrSent = true;
+                            logger.info('[OpenZaloLogin] QR code captured from file');
+                            this.emit('qr', { qr: dataUrl });
+                        }
+                    } catch {
+                        // File not ready yet, will retry on next event
+                    }
                 }
-            } catch (err) {
-                if (this.active) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    console.error('[ZaloUserLogin] Login failed:', msg);
-                    this.active = false;
+            });
+
+            // Also poll for QR file (fs.watch can be unreliable on some platforms)
+            const pollInterval = setInterval(() => {
+                if (qrSent || !this.active) return;
+                if (existsSync(qrPath)) {
+                    try {
+                        const pngData = readFileSync(qrPath);
+                        if (pngData.length > 100) {
+                            const dataUrl = `data:image/png;base64,${pngData.toString('base64')}`;
+                            qrSent = true;
+                            logger.info('[OpenZaloLogin] QR code captured via poll');
+                            this.emit('qr', { qr: dataUrl });
+                        }
+                    } catch { /* retry */ }
+                }
+            }, 500);
+
+            child.stdout?.on('data', (data: Buffer) => {
+                const text = data.toString();
+                stdout += text;
+                logger.info('[OpenZaloLogin] stdout:', text.trim());
+
+                // Parse events from openzca output
+                if (text.includes('Scanned by:')) {
+                    const match = text.match(/Scanned by:\s*(.+)/);
+                    this.emit('scanned', { displayName: match?.[1]?.trim() });
+                }
+                if (text.includes('Logged in profile')) {
+                    logger.info('[OpenZaloLogin] Login success detected');
+                    // Login complete — don't emit yet, wait for process to exit
+                }
+            });
+
+            child.stderr?.on('data', (data: Buffer) => {
+                logger.info('[OpenZaloLogin] stderr:', data.toString().trim());
+            });
+
+            child.on('close', (code) => {
+                clearInterval(pollInterval);
+                watcher.close();
+
+                // Cleanup temp dir
+                try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+                if (!this.active) return; // stopped by user
+
+                this.active = false;
+                this.childProcess = null;
+
+                if (code === 0 && stdout.includes('Logged in profile')) {
+                    logger.info('[OpenZaloLogin] Process exited successfully');
+                    this.emit('success', { accountId: profile });
+                } else if (code === 0) {
+                    // Exited OK but no "Logged in" message — might be --qr-base64 mode
+                    this.emit('error', 'Login process exited without completing login');
+                } else {
+                    const errorMatch = stdout.match(/Error:\s*(.+)/i) ||
+                                       stdout.match(/Can't login/i);
+                    const msg = errorMatch?.[1] || errorMatch?.[0] || `Login failed (exit code: ${code})`;
+                    logger.error('[OpenZaloLogin] Login failed:', msg);
                     this.emit('error', msg);
                 }
-            }
+            });
+
+            child.on('error', (err) => {
+                clearInterval(pollInterval);
+                watcher.close();
+                try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+                this.active = false;
+                this.childProcess = null;
+                logger.error('[OpenZaloLogin] Spawn error:', err.message);
+                this.emit('error', `Failed to start openzca: ${err.message}`);
+            });
+
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            console.error('[ZaloUserLogin] Fatal error:', msg);
+            logger.error('[OpenZaloLogin] Fatal error:', msg);
             this.active = false;
             this.emit('error', msg);
         }
     }
 
-    /**
-     * Stop current login process
-     */
     async stop(): Promise<void> {
-        console.log('[ZaloUserLogin] Stop requested (active=%s, loginCompleted=%s)', this.active, this.loginCompleted);
+        logger.info('[OpenZaloLogin] Stop requested');
         this.active = false;
-        // Don't abort if login already completed — credentials are already saved
-        if (this.abortFn && !this.loginCompleted) {
+        if (this.childProcess) {
             try {
-                this.abortFn();
-                console.log('[ZaloUserLogin] Aborted QR login session');
-            } catch {
-                // Ignore abort errors
-            }
+                this.childProcess.kill();
+                logger.info('[OpenZaloLogin] Process killed');
+            } catch { /* ignore */ }
+            this.childProcess = null;
         }
-        this.abortFn = null;
-        this.retryFn = null;
     }
 }
 

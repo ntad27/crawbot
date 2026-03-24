@@ -367,7 +367,116 @@ echo`🧹 Cleaning up unnecessary files in bundle...`;
 const cleanedCount = cleanupDir(outputNodeModules);
 echo`   Removed ${cleanedCount} unnecessary files/directories`;
 
-// 7. Verify the bundle
+// 7. Replace built-in zalo/zalouser with third-party openzalo extension
+//
+// openzalo (https://github.com/darkamenosa/openzalo) replaces the built-in
+// zalo (OA) and zalouser (personal via zca-js) extensions with a unified
+// personal Zalo integration via openzca CLI.
+const REMOVE_EXTENSIONS_LIST = ['zalo', 'zalouser'];
+const THIRD_PARTY_EXTENSIONS = [
+  { name: 'openzalo', repo: 'https://github.com/darkamenosa/openzalo.git' },
+];
+
+echo`📦 Replacing bundled Zalo extensions with openzalo...`;
+
+// OpenClaw 2026.3.13 uses extensions/ (TS source), 2026.3.22+ uses dist/extensions/ (compiled JS).
+// resolveBundledPluginsDir() returns only ONE dir at runtime, so we must place third-party
+// extensions in the same dir that will be resolved. Check both locations.
+const extensionsDirs = [
+  path.join(OUTPUT, 'extensions'),
+  path.join(OUTPUT, 'dist', 'extensions'),
+].filter(d => fs.existsSync(d));
+
+// Remove built-in zalo and zalouser from all extension locations
+for (const extDir of extensionsDirs) {
+  for (const ext of REMOVE_EXTENSIONS_LIST) {
+    const extPath = path.join(extDir, ext);
+    if (fs.existsSync(extPath)) {
+      fs.rmSync(extPath, { recursive: true, force: true });
+      echo`   🗑️  Removed built-in extension: ${ext} (from ${path.relative(OUTPUT, extDir)})`;
+    }
+  }
+}
+
+// Clone third-party extensions into the first available extensions dir.
+// On 2026.3.13: extensions/ (TS source, loaded via Jiti)
+// On 2026.3.22+: dist/extensions/ (compiled JS, but Jiti handles TS too)
+const thirdPartyExtDir = extensionsDirs[0];
+for (const { name, repo } of THIRD_PARTY_EXTENSIONS) {
+  const extPath = path.join(thirdPartyExtDir, name);
+  if (fs.existsSync(extPath)) {
+    fs.rmSync(extPath, { recursive: true, force: true });
+  }
+  echo`   ⬇️  Cloning ${name} from ${repo}...`;
+  await $`git clone --depth 1 ${repo} ${extPath}`;
+  // Remove .git directory (not needed in bundle, saves space + avoids signing overhead)
+  fs.rmSync(path.join(extPath, '.git'), { recursive: true, force: true });
+  // Remove dev artifacts
+  for (const devDir of ['node_modules', '.github']) {
+    const devPath = path.join(extPath, devDir);
+    if (fs.existsSync(devPath)) {
+      fs.rmSync(devPath, { recursive: true, force: true });
+    }
+  }
+  echo`   ✅ Bundled extension: ${name}`;
+}
+
+// 7b. Bundle extra CLI tools required by third-party extensions
+//
+// openzalo spawns `openzca` CLI binary at runtime. Since openzca is a CrawBot
+// npm dependency (not an openclaw dep), the BFS above doesn't collect it.
+// Copy openzca + its deps and create a .bin symlink so it's in PATH.
+const EXTRA_CLI_PACKAGES = [
+  { name: 'openzca', binName: 'openzca', binPath: 'dist/cli.js' },
+];
+
+echo`📦 Bundling extra CLI tools...`;
+for (const { name, binName, binPath } of EXTRA_CLI_PACKAGES) {
+  const pkgLink = path.join(NODE_MODULES, name);
+  if (!fs.existsSync(pkgLink)) {
+    echo`   ⚠️  ${name} not found in node_modules, skipping`;
+    continue;
+  }
+
+  const pkgReal = fs.realpathSync(pkgLink);
+  const dest = path.join(outputNodeModules, name);
+
+  // Copy the package itself
+  if (!fs.existsSync(dest)) {
+    fs.cpSync(pkgReal, dest, { recursive: true, dereference: true });
+  }
+
+  // Copy its dependencies (resolve from its virtual store node_modules)
+  const pkgVirtualNM = getVirtualStoreNodeModules(pkgReal);
+  if (pkgVirtualNM) {
+    const pkgDeps = listPackages(pkgVirtualNM);
+    for (const { name: depName, fullPath: depFullPath } of pkgDeps) {
+      if (depName === name) continue; // skip self
+      const depDest = path.join(outputNodeModules, depName);
+      if (fs.existsSync(depDest)) continue; // already in bundle
+      let depReal;
+      try { depReal = fs.realpathSync(depFullPath); } catch { continue; }
+      try {
+        fs.mkdirSync(path.dirname(depDest), { recursive: true });
+        fs.cpSync(depReal, depDest, { recursive: true, dereference: true });
+      } catch {}
+    }
+  }
+
+  // Create .bin symlink
+  const binDir = path.join(outputNodeModules, '.bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const symlinkTarget = path.join('..', name, binPath);
+  const symlinkPath = path.join(binDir, binName);
+  if (!fs.existsSync(symlinkPath)) {
+    fs.symlinkSync(symlinkTarget, symlinkPath);
+    // Make executable
+    try { fs.chmodSync(path.join(outputNodeModules, name, binPath), 0o755); } catch {}
+  }
+  echo`   ✅ Bundled CLI tool: ${binName} (from ${name})`;
+}
+
+// 8. Verify the bundle
 const entryExists = fs.existsSync(path.join(OUTPUT, 'openclaw.mjs'));
 const distExists = fs.existsSync(path.join(OUTPUT, 'dist', 'entry.js'));
 
@@ -385,10 +494,23 @@ if (!entryExists || !distExists) {
   process.exit(1);
 }
 
-// 8. Log bundled OpenClaw version (CrawBot version is managed independently)
+// 9. Log bundled OpenClaw version and extensions
 const openclawPkg = JSON.parse(fs.readFileSync(path.join(OUTPUT, 'package.json'), 'utf-8'));
 const rootPkgPath = path.join(ROOT, 'package.json');
 const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, 'utf-8'));
 
+const allExtDirs = [
+  path.join(OUTPUT, 'extensions'),
+  path.join(OUTPUT, 'dist', 'extensions'),
+].filter(d => fs.existsSync(d));
+const bundledExts = [...new Set(
+  allExtDirs.flatMap(d =>
+    fs.readdirSync(d, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+  )
+)].sort();
+
 echo`   Bundled OpenClaw version: ${openclawPkg.version}`;
 echo`   CrawBot version: ${rootPkg.version}`;
+echo`   Bundled extensions (${bundledExts.length}): ${bundledExts.join(', ')}`;

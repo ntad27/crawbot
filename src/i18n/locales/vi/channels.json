@@ -16,8 +16,8 @@
     "toast": {
         "whatsappConnected": "Đã kết nối WhatsApp thành công",
         "whatsappFailed": "Kết nối WhatsApp thất bại: {{error}}",
-        "zalouserConnected": "Đã kết nối Zalo cá nhân thành công",
-        "zalouserFailed": "Kết nối Zalo cá nhân thất bại: {{error}}",
+        "openzaloConnected": "Đã kết nối OpenZalo thành công",
+        "openzaloFailed": "Kết nối OpenZalo thất bại: {{error}}",
         "channelSaved": "Đã lưu kênh {{name}}",
         "channelConnecting": "Đang kết nối đến {{name}}...",
         "restartManual": "Vui lòng khởi động lại gateway thủ công",
@@ -276,30 +276,9 @@
                 "Sao chép access token"
             ]
         },
-        "zalo": {
-            "description": "Kết nối bot Zalo Official Account qua Bot API",
-            "docsUrl": "https://docs.openclaw.ai/channels/zalo",
-            "fields": {
-                "botToken": {
-                    "label": "Token Bot",
-                    "placeholder": "12345689:abc-xyz"
-                },
-                "allowedUsers": {
-                    "label": "ID người dùng được phép",
-                    "placeholder": "Ví dụ: 123456789, 987654321",
-                    "description": "Kiểm soát ai có thể nhắn tin cho bot Zalo:\n• Nhập các ID người dùng cách nhau bằng dấu phẩy → chế độ allowlist (chỉ những người được liệt kê mới có thể chat)\n• Nhập * → chế độ open (ai cũng có thể chat)\n• Để trống → chế độ pairing (người dùng phải nhập mã ghép nối để kết nối)"
-                }
-            },
-            "instructions": [
-                "Tạo bot tại Zalo Bot Platform (bot.zaloplatforms.com)",
-                "Sao chép token bot từ trang quản lý",
-                "Dán token vào bên dưới",
-                "Cấu hình người dùng được phép hoặc để trống cho chế độ ghép nối"
-            ]
-        },
-        "zalouser": {
-            "description": "Kết nối tài khoản Zalo cá nhân qua mã QR",
-            "docsUrl": "https://docs.openclaw.ai/channels/zalouser",
+        "openzalo": {
+            "description": "Kết nối tài khoản Zalo cá nhân qua openzca CLI",
+            "docsUrl": "https://github.com/darkamenosa/openzalo",
             "fields": {
                 "allowedUsers": {
                     "label": "ID người dùng được phép",

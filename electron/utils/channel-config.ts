@@ -13,7 +13,7 @@ const OPENCLAW_DIR = join(homedir(), '.openclaw');
 const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
 
 // Channels that are managed as plugins (config goes under plugins.entries, not channels)
-const PLUGIN_CHANNELS = ['whatsapp', 'zalouser', 'zalo'];
+const PLUGIN_CHANNELS = ['whatsapp', 'openzalo'];
 
 export interface ChannelConfigData {
     enabled?: boolean;
@@ -198,7 +198,7 @@ export function saveChannelConfig(
     }
 
     // Special handling for channels with allowedUsers → dmPolicy + allowFrom transform
-    if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
+    if (channelType === 'telegram' || channelType === 'openzalo') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -319,7 +319,7 @@ export function getChannelFormValues(channelType: string): Record<string, string
                 }
             }
         }
-    } else if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
+    } else if (channelType === 'telegram' || channelType === 'openzalo') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;
@@ -397,18 +397,7 @@ export function deleteChannelConfig(channelType: string): void {
         }
     }
 
-    // Special handling for Zalo Personal credentials
-    if (channelType === 'zalouser') {
-        try {
-            const zalouserDir = join(homedir(), '.openclaw', 'credentials', 'zalouser');
-            if (existsSync(zalouserDir)) {
-                rmSync(zalouserDir, { recursive: true, force: true });
-                console.log('Deleted Zalo Personal credentials directory');
-            }
-        } catch (error) {
-            console.error('Failed to delete Zalo Personal credentials:', error);
-        }
-    }
+    // OpenZalo credentials are managed by openzca CLI, no special cleanup needed
 }
 
 /**
@@ -444,19 +433,7 @@ export function listConfiguredChannels(): string[] {
         // Ignore errors checking whatsapp dir
     }
 
-    // Check for Zalo Personal credentials directory
-    try {
-        const zalouserDir = join(homedir(), '.openclaw', 'credentials', 'zalouser');
-        if (existsSync(zalouserDir)) {
-            const entries = readdirSync(zalouserDir);
-            const hasCredentials = entries.some((entry: string) => entry.endsWith('.json'));
-            if (hasCredentials && !channels.includes('zalouser')) {
-                channels.push('zalouser');
-            }
-        }
-    } catch {
-        // Ignore errors checking zalouser dir
-    }
+    // OpenZalo credentials are managed by openzca CLI — no local credential dir to check
 
     // Check for plugin-only channels enabled in plugins.entries
     const pluginEntries = config.plugins?.entries as Record<string, Record<string, unknown>> | undefined;
@@ -692,7 +669,7 @@ export function saveAccountConfig(
     // Apply the same transforms as saveChannelConfig for specific channel types
     let transformedConfig: ChannelConfigData = { ...config };
 
-    if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
+    if (channelType === 'telegram' || channelType === 'openzalo') {
         const { allowedUsers, ...restConfig } = config;
         transformedConfig = { ...restConfig };
 
@@ -876,7 +853,7 @@ export function getAccountFormValues(
                 }
             }
         }
-    } else if (channelType === 'telegram' || channelType === 'zalouser' || channelType === 'zalo') {
+    } else if (channelType === 'telegram' || channelType === 'openzalo') {
         // Reconstruct allowedUsers from dmPolicy + allowFrom
         const dmPolicy = saved.dmPolicy as string | undefined;
         const allowFrom = saved.allowFrom as string[] | undefined;
