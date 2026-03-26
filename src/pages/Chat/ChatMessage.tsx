@@ -336,6 +336,9 @@ function MessageBubble({
   isUser: boolean;
   isStreaming: boolean;
 }) {
+  // Don't render an empty bubble (e.g. tool_use-only messages with no visible text)
+  if (!text.trim() && !isStreaming) return null;
+
   return (
     <div
       className={cn(
