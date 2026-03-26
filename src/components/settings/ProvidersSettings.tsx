@@ -16,6 +16,7 @@ import {
   Key,
   Shield,
   LogIn,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -304,6 +305,8 @@ function ProviderCard({
 
   const typeInfo = PROVIDER_TYPE_INFO.find((t) => t.id === provider.type);
   const checkOAuthStatus = useProviderStore((s) => s.checkOAuthStatus);
+  const triggerOAuthLogin = useProviderStore((s) => s.triggerOAuthLogin);
+  const [reauthing, setReauthing] = useState(false);
 
   // Check OAuth status on mount for OAuth-capable providers without API keys
   useEffect(() => {
@@ -548,6 +551,22 @@ function ProviderCard({
                   )}
                 />
               </Button>
+              {isOAuthProvider && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={reauthing}
+                  onClick={async () => {
+                    setReauthing(true);
+                    await triggerOAuthLogin(provider.type);
+                    setReauthing(false);
+                  }}
+                  title={t('aiProviders.oauth.reauth', 'Re-authenticate')}
+                >
+                  <RefreshCw className={cn('h-3.5 w-3.5', reauthing && 'animate-spin')} />
+                </Button>
+              )}
               {/* Only show Edit for non-OAuth providers, or if provider has model options */}
               {(!isOAuthProvider || typeInfo?.defaultModelId) && (
                 <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onEdit} title={isOAuthProvider ? t('aiProviders.dialog.defaultModel') : t('aiProviders.card.editKey')}>
