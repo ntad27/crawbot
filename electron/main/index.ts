@@ -328,6 +328,36 @@ async function initialize(): Promise<void> {
     logger.warn('Browser config / CDP proxy failed:', err);
   }
 
+  // Migrate deprecated config keys from openclaw.json before starting Gateway.
+  // OpenClaw validates config strictly and refuses to start if unknown keys exist.
+  // e.g. channels.zalo / channels.zalouser were replaced by channels.openzalo in 2026.3.14.
+  try {
+    const { existsSync, readFileSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const configPath = join(homedir(), '.openclaw', 'openclaw.json');
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, 'utf-8');
+      const config = JSON.parse(raw);
+      const deprecated = ['zalo', 'zalouser'];
+      let changed = false;
+      if (config.channels && typeof config.channels === 'object') {
+        for (const key of deprecated) {
+          if (key in config.channels) {
+            delete config.channels[key];
+            changed = true;
+            logger.info(`Removed deprecated channels.${key} from openclaw.json`);
+          }
+        }
+      }
+      if (changed) {
+        writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      }
+    }
+  } catch (err) {
+    logger.warn('Config migration failed (non-fatal):', err);
+  }
+
   // Start Gateway automatically
   try {
     logger.debug('Auto-starting Gateway...');

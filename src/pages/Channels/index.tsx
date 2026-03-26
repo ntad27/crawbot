@@ -1140,7 +1140,21 @@ function AddChannelDialog({
                   id="accountId"
                   placeholder={t('dialog.accountIdPlaceholder')}
                   value={accountId}
-                  onChange={(e) => setAccountId(e.target.value)}
+                  onChange={(e) => {
+                    // Normalize: lowercase, replace spaces with hyphens, remove diacritics, strip special chars
+                    const raw = e.target.value;
+                    const normalized = raw
+                      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove diacritics
+                      .toLowerCase()
+                      .replace(/\s+/g, '-')        // spaces → hyphens
+                      .replace(/[^a-z0-9-]/g, '')  // keep only a-z, 0-9, hyphens
+                      .replace(/-+/g, '-');         // collapse multiple hyphens
+                    setAccountId(normalized);
+                  }}
+                  onBlur={() => {
+                    // Clean up trailing/leading hyphens when user leaves the field
+                    setAccountId((v) => v.replace(/^-+|-+$/g, ''));
+                  }}
                 />
                 <p className="text-xs text-muted-foreground">
                   {t('dialog.accountIdHelp')}
