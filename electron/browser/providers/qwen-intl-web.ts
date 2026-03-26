@@ -227,7 +227,7 @@ export class QwenIntlWebProvider implements WebProvider {
           return JSON.stringify({ error: e.message });
         }
       })()
-    `) as string;
+    `, 300_000) as string;
 
     const parsed = JSON.parse(resultStr);
     if (parsed.error) {

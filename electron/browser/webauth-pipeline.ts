@@ -140,7 +140,7 @@ class WebAuthPipeline {
         `${LOG_TAG} Updated OpenClaw config with ${authenticatedModels.length} WebAuth models`,
       );
       // Restart Gateway so it picks up the new webauth provider config
-      await this.restartGateway();
+      await this.restartGatewayIfNeeded(authenticatedModels.length);
     } else {
       removeOpenClawWebAuthConfig();
     }
@@ -287,22 +287,23 @@ class WebAuthPipeline {
   }
 
   /** Restart Gateway so it reloads openclaw.json with webauth models */
-  private gatewayRestarted = false;
+  private _lastRestartModelCount = 0;
   private _gatewayRestartFn: (() => Promise<void>) | null = null;
 
   setGatewayRestartFn(fn: () => Promise<void>): void {
     this._gatewayRestartFn = fn;
   }
 
-  private async restartGateway(): Promise<void> {
-    if (this.gatewayRestarted) return;
-    this.gatewayRestarted = true;
+  private async restartGatewayIfNeeded(modelCount: number): Promise<void> {
+    // Only restart when model count changes (new provider authenticated)
+    if (modelCount <= this._lastRestartModelCount) return;
+    this._lastRestartModelCount = modelCount;
     if (!this._gatewayRestartFn) {
       logger.warn(`${LOG_TAG} No gateway restart function set — models may not appear until manual restart`);
       return;
     }
     try {
-      logger.info(`${LOG_TAG} Restarting Gateway to reload webauth config...`);
+      logger.info(`${LOG_TAG} Restarting Gateway to reload webauth config (${modelCount} models)...`);
       await this._gatewayRestartFn();
       logger.info(`${LOG_TAG} Gateway restarted successfully`);
     } catch (err) {

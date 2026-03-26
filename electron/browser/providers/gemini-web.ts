@@ -48,60 +48,80 @@ export class GeminiWebProvider implements WebProvider {
     webview: WebviewLike,
     request: OpenAIChatRequest,
   ): AsyncGenerator<OpenAIChatChunk> {
-    // Consolidate ALL messages (system, user, assistant, tool) into a single prompt.
-    // Gemini web chat only accepts a single text input, so we must flatten the
-    // entire conversation context into one message.
     const prompt = consolidateMessages(request.messages, transformSystemPromptForGemini);
-
-    // Only extract images from the LAST user message (not entire conversation).
-    // Previous messages may reference old images that shouldn't be re-uploaded.
     const lastUserMsg = [...request.messages].reverse().find(m => m.role === 'user');
     const images = lastUserMsg ? extractImages([lastUserMsg]) : [];
+    const completionId = `chatcmpl-${Date.now()}`;
+    const ts = () => Math.floor(Date.now() / 1000);
 
-    let responseText: string;
+    // Image flow — non-streaming (sendWithImage uses CDP Network capture)
     if (images.length > 0) {
-      // Two-step image flow:
-      // 1. Upload image to Gemini webchat → get detailed description
-      // 2. Append description as context, then call apiChat with full prompt
       logger.info('[Gemini] Image detected, step 1: getting image description...');
       const imageDescription = await this.sendWithImage(webview, 'describe this image in detail', images);
-
-      if (imageDescription) {
-        // Step 2: Build prompt with image description appended as tool result
-        const imageContext = `\n\n<image_description>\nThe user attached an image. Here is a detailed description of the image:\n${imageDescription}\n</image_description>`;
-        const promptWithImage = prompt + imageContext;
-        logger.info('[Gemini] Step 2: calling apiChat with image context...');
-        responseText = await this.apiChat(webview, promptWithImage);
-      } else {
-        responseText = '';
+      if (!imageDescription) throw new Error('Gemini: no response. Ensure you are logged in.');
+      const imageContext = `\n\n<image_description>\nThe user attached an image. Here is a detailed description of the image:\n${imageDescription}\n</image_description>`;
+      const responseText = await this.apiChat(webview, prompt + imageContext);
+      if (responseText) {
+        yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+          choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
       }
-    } else {
-      responseText = await this.apiChat(webview, prompt);
+      return;
     }
 
-    if (!responseText) {
+    // ── Text-only flow with streaming ──
+    // Stream text deltas, but hold back text that might be tool call JSON.
+    // Tool calls look like: {"action": "function_call", "name": "...", ...}
+    // We buffer text and only yield the "safe" prefix before any potential JSON.
+    let fullText = '';
+    let yieldedUpTo = 0;
+
+    for await (const delta of this.apiChatStreaming(webview, prompt)) {
+      fullText += delta;
+
+      // Find the safe-to-yield boundary: everything before the first '{' that
+      // could be a tool call JSON. We hold back from the first unmatched '{'.
+      let safeEnd = fullText.length;
+      const braceIdx = fullText.indexOf('{', yieldedUpTo);
+      if (braceIdx !== -1) {
+        safeEnd = braceIdx;
+      }
+
+      if (safeEnd > yieldedUpTo) {
+        const safeChunk = fullText.substring(yieldedUpTo, safeEnd);
+        yieldedUpTo = safeEnd;
+        yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+          choices: [{ index: 0, delta: { content: safeChunk }, finish_reason: null }] };
+      }
+    }
+
+    if (!fullText) {
       throw new Error('Gemini: no response. Ensure you are logged in.');
     }
 
-    const completionId = `chatcmpl-${Date.now()}`;
-
-    // Check if response contains text-based tool calls
-    const toolCalls = parseTextToolCalls(responseText);
-
-    // Intercept `image` tool calls — use Gemini's two-step vision flow.
-    // Upload image → Gemini analyzes → feed analysis back → Gemini continues.
+    // Parse tool calls from the complete response
+    const toolCalls = parseTextToolCalls(fullText);
     const imageCalls = toolCalls.filter((tc) => tc.name === 'image');
     const otherCalls = toolCalls.filter((tc) => tc.name !== 'image');
-    // Convert image tool calls to read tool calls so OpenClaw UI shows the widget
     for (const ic of imageCalls) {
       const imgPath = (ic.params.path || ic.params.image || '') as string;
-      if (imgPath) {
-        otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
+      if (imgPath) otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
+    }
+    const allCalls = [...toolCalls]; // Keep original list for stripping
+
+    // Yield remaining text (excluding tool call JSON)
+    if (fullText.length > yieldedUpTo) {
+      let remaining = fullText.substring(yieldedUpTo);
+      // Strip tool call raw JSON from remaining text
+      for (const tc of allCalls) remaining = remaining.replace(tc.raw, '');
+      remaining = remaining.trim();
+      if (remaining) {
+        yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+          choices: [{ index: 0, delta: { content: remaining }, finish_reason: null }] };
       }
     }
 
+    // Handle image tool calls (vision flow)
     if (imageCalls.length > 0) {
-      // Step 1: Get image analysis via Gemini two-step vision flow
       const analyses: string[] = [];
       for (const ic of imageCalls) {
         const imgPath = (ic.params.path || ic.params.image || '') as string;
@@ -115,26 +135,22 @@ export class GeminiWebProvider implements WebProvider {
           analyses.push(`[Image analysis failed: ${err}]`);
         }
       }
-
-      // Step 2: Feed analysis back to Gemini as context → let it continue responding
       if (analyses.length > 0) {
         const contextMsg = prompt + `\n\n<tool_result>\nImage analysis result:\n${analyses.join('\n---\n')}\n</tool_result>\n\nNow continue with the user's request based on this image analysis. Respond naturally.`;
         const finalResponse = await this.apiChat(webview, contextMsg);
-
         if (finalResponse) {
           const finalToolCalls = parseTextToolCalls(finalResponse);
-
           if (finalToolCalls.length > 0) {
             otherCalls.push(...finalToolCalls);
             let textContent = finalResponse;
             for (const tc of finalToolCalls) textContent = textContent.replace(tc.raw, '');
             textContent = textContent.trim();
             if (textContent) {
-              yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+              yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
                 choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
             }
           } else {
-            yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+            yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
               choices: [{ index: 0, delta: { content: finalResponse }, finish_reason: otherCalls.length > 0 ? null : 'stop' }] };
           }
         }
@@ -142,15 +158,8 @@ export class GeminiWebProvider implements WebProvider {
     }
 
     if (otherCalls.length > 0) {
-      let textContent = responseText;
-      for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
-      textContent = textContent.trim();
-      // Only emit text if no image analysis was already emitted
-      if (textContent && imageCalls.length === 0) {
-        yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
-      }
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+      // Emit tool calls as structured chunk
+      yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
         choices: [{ index: 0, delta: {
           tool_calls: otherCalls.map((tc, i) => ({
             index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
@@ -158,9 +167,10 @@ export class GeminiWebProvider implements WebProvider {
           }))
         } as unknown as { content: string }, finish_reason: 'tool_calls' }],
       } as unknown as OpenAIChatChunk;
-    } else if (imageCalls.length === 0) {
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
+    } else {
+      // Signal end of text stream
+      yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
     }
   }
 
@@ -168,13 +178,234 @@ export class GeminiWebProvider implements WebProvider {
 
   private _apiRetryCount = 0;
 
-  private async apiChat(webview: WebviewLike, message: string): Promise<string> {
+  /** Parse Gemini batchexecute response, extracting the longest answer text */
+  private parseBatchResponse(text: string): string {
+    let answer = '';
+    for (const line of text.split('\n')) {
+      try {
+        const p = JSON.parse(line);
+        if (Array.isArray(p)) {
+          for (const item of p) {
+            if (Array.isArray(item) && item[0] === 'wrb.fr') {
+              const data = JSON.parse(item[2]);
+              if (data?.[4]?.[0]?.[1]) {
+                const parts = data[4][0][1];
+                const t = Array.isArray(parts)
+                  ? parts.filter((x: unknown) => typeof x === 'string').join('')
+                  : String(parts);
+                if (t.length > answer.length) answer = t;
+              }
+            }
+          }
+        }
+      } catch { /* skip unparseable lines */ }
+    }
+    return answer;
+  }
+
+  // 5-minute timeout for the Gemini API fetch — complex agentic queries
+  // with many tool calls can take well over 30s on Gemini's side.
+  private static readonly API_FETCH_TIMEOUT = 300_000;
+
+  /**
+   * Streaming version of apiChat — yields text deltas as Gemini generates them.
+   *
+   * Strategy: "polling" — the injected JS writes partial results to
+   * window.__geminiPartial. A polling loop on the Node side reads it
+   * via short executeJavaScript calls every 500ms. This avoids IPC entirely
+   * and uses the proven CDP executeJavaScript mechanism.
+   *
+   * The main fetch runs in a SEPARATE executeJavaScript call with 5-min
+   * timeout. CDP supports concurrent Runtime.evaluate calls.
+   */
+  private async *apiChatStreaming(webview: WebviewLike, message: string): AsyncGenerator<string> {
+    await this.prepareForApiCall(webview);
+
+    if (!this.cachedTemplate) {
+      logger.info('[Gemini] No cached template, capturing (attempt 1)...');
+      this.cachedTemplate = await this.captureTemplate(webview);
+    }
+    if (!this.cachedTemplate) {
+      logger.warn('[Gemini] First capture failed, retrying (attempt 2)...');
+      this.cachedTemplate = await this.captureTemplate(webview);
+    }
+    if (!this.cachedTemplate) {
+      throw new Error('Failed to capture Gemini API template. Try reloading the Gemini tab.');
+    }
+
+    const template = JSON.parse(JSON.stringify(this.cachedTemplate.inner));
+    template[0][0] = message;
+    template[2] = ['', '', '', null, null, null, null, null, null, ''];
+
+    const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(template)]))
+      + '&at=' + encodeURIComponent(this.cachedTemplate.atToken) + '&';
+
+    logger.info(`[Gemini] Streaming API request (${message.length} chars)...`);
+
+    // Inject the fetch code that stores partial results in window.__geminiPartial
+    const fetchCode = `
+      (async () => {
+        window.__geminiPartial = '';
+        window.__geminiDone = false;
+        window.__geminiError = null;
+        try {
+          var res = await fetch(${JSON.stringify(this.cachedTemplate!.url)}, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'X-Same-Domain': '1' },
+            credentials: 'include',
+            body: ${JSON.stringify(body)},
+          });
+          if (!res.ok) {
+            window.__geminiError = 'HTTP ' + res.status;
+            window.__geminiDone = true;
+            return JSON.stringify({ error: 'HTTP ' + res.status });
+          }
+          var reader = res.body.getReader();
+          var decoder = new TextDecoder();
+          var buffer = '';
+          while (true) {
+            var r = await reader.read();
+            if (r.done) break;
+            buffer += decoder.decode(r.value, { stream: true });
+            var lines = buffer.split('\\n');
+            buffer = lines.pop() || '';
+            for (var i = 0; i < lines.length; i++) {
+              var line = lines[i];
+              if (!line.trim()) continue;
+              try {
+                var p = JSON.parse(line);
+                if (Array.isArray(p)) {
+                  for (var j = 0; j < p.length; j++) {
+                    var item = p[j];
+                    if (Array.isArray(item) && item[0] === 'wrb.fr') {
+                      var data = JSON.parse(item[2]);
+                      if (data && data[4] && data[4][0] && data[4][0][1]) {
+                        var parts = data[4][0][1];
+                        var t = Array.isArray(parts)
+                          ? parts.filter(function(x) { return typeof x === 'string'; }).join('')
+                          : String(parts);
+                        if (t.length > window.__geminiPartial.length) {
+                          window.__geminiPartial = t;
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch(e) {}
+            }
+          }
+          // Parse remaining buffer
+          if (buffer.trim()) {
+            try {
+              var p2 = JSON.parse(buffer);
+              if (Array.isArray(p2)) {
+                for (var k = 0; k < p2.length; k++) {
+                  var item2 = p2[k];
+                  if (Array.isArray(item2) && item2[0] === 'wrb.fr') {
+                    var data2 = JSON.parse(item2[2]);
+                    if (data2 && data2[4] && data2[4][0] && data2[4][0][1]) {
+                      var parts2 = data2[4][0][1];
+                      var t2 = Array.isArray(parts2)
+                        ? parts2.filter(function(x) { return typeof x === 'string'; }).join('')
+                        : String(parts2);
+                      if (t2.length > window.__geminiPartial.length) {
+                        window.__geminiPartial = t2;
+                      }
+                    }
+                  }
+                }
+              }
+            } catch(e) {}
+          }
+          window.__geminiDone = true;
+          return JSON.stringify({ answer: window.__geminiPartial });
+        } catch (e) {
+          window.__geminiError = e.message || String(e);
+          window.__geminiDone = true;
+          return JSON.stringify({ error: e.message || String(e) });
+        }
+      })()
+    `;
+
+    // Start the fetch (fire and forget — we'll poll for results)
+    let fetchResult: string | null = null;
+    let fetchError: string | null = null;
+    let fetchDone = false;
+
+    const fetchPromise = webview.executeJavaScript(fetchCode, GeminiWebProvider.API_FETCH_TIMEOUT)
+      .then((result) => {
+        fetchResult = result as string;
+        fetchDone = true;
+      })
+      .catch((err: Error) => {
+        fetchError = err.message;
+        fetchDone = true;
+      });
+
+    // Poll for partial results every 500ms
+    let lastYielded = 0;
+    const pollInterval = 500;
+
+    while (!fetchDone) {
+      await new Promise(r => setTimeout(r, pollInterval));
+
+      // Read partial result from the page
+      try {
+        const partial = await webview.executeJavaScript(
+          `JSON.stringify({ t: window.__geminiPartial || '', d: !!window.__geminiDone, e: window.__geminiError })`
+        ) as string;
+        const state = JSON.parse(partial);
+
+        if (state.t && state.t.length > lastYielded) {
+          const delta = state.t.substring(lastYielded);
+          lastYielded = state.t.length;
+          yield delta;
+        }
+
+        if (state.d) {
+          fetchDone = true;
+          if (state.e) fetchError = state.e;
+        }
+      } catch {
+        // Page might be navigating — skip this poll
+      }
+    }
+
+    // Wait for the fetch promise to settle
+    await fetchPromise;
+
+    // Check for any remaining text from the final result
+    if (fetchResult) {
+      try {
+        const parsed = JSON.parse(fetchResult);
+        if (parsed.answer && parsed.answer.length > lastYielded) {
+          yield parsed.answer.substring(lastYielded);
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (fetchError) {
+      if ((fetchError.includes('400') || fetchError.includes('401')) && this._apiRetryCount < 2) {
+        logger.warn(`[Gemini] Stream error ${fetchError}, clearing template and retrying (${this._apiRetryCount + 1}/2)...`);
+        this._apiRetryCount++;
+        this.cachedTemplate = null;
+        yield* this.apiChatStreaming(webview, message);
+        return;
+      }
+      this._apiRetryCount = 0;
+      throw new Error(`Gemini API: ${fetchError}`);
+    }
+    this._apiRetryCount = 0;
+
+    logger.info(`[Gemini] Streaming complete (${lastYielded} chars)`);
+  }
+
+  /** Navigate to clean /app and validate template cache — shared by apiChat and apiChatStreaming */
+  private async prepareForApiCall(webview: WebviewLike): Promise<void> {
     // Navigate to clean /app to ensure each message starts a new conversation
-    // (staying on /app/UUID makes Gemini append to existing thread)
     try {
       const currentUrl = await webview.executeJavaScript('location.href') as string;
       if (currentUrl.includes('/app/')) {
-        // On a conversation page — navigate back to clean /app
         const accountMatch = currentUrl.match(/\/u\/(\d+)\//);
         const prefix = accountMatch ? '/u/' + accountMatch[1] : '';
         await webview.executeJavaScript(`window.location.href = 'https://gemini.google.com${prefix}/app?hl=en'`);
@@ -199,6 +430,10 @@ export class GeminiWebProvider implements WebProvider {
       }
       this.cachedPageUrl = currentUrl;
     } catch { /* page might not be ready */ }
+  }
+
+  private async apiChat(webview: WebviewLike, message: string): Promise<string> {
+    await this.prepareForApiCall(webview);
 
     if (!this.cachedTemplate) {
       logger.info('[Gemini] No cached template, capturing (attempt 1)...');
@@ -223,6 +458,9 @@ export class GeminiWebProvider implements WebProvider {
     const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(template)]))
       + '&at=' + encodeURIComponent(this.cachedTemplate.atToken) + '&';
 
+    logger.info(`[Gemini] Sending API request (${message.length} chars, timeout ${GeminiWebProvider.API_FETCH_TIMEOUT / 1000}s)...`);
+
+    // Use extended timeout (5 min) for the fetch — complex queries can take minutes
     const resultStr = await webview.executeJavaScript(`
       (async () => {
         try {
@@ -234,31 +472,12 @@ export class GeminiWebProvider implements WebProvider {
           });
           if (!res.ok) return JSON.stringify({ error: 'HTTP ' + res.status });
           const text = await res.text();
-          let answer = '';
-          for (const line of text.split('\\n')) {
-            try {
-              const p = JSON.parse(line);
-              if (Array.isArray(p)) {
-                for (const item of p) {
-                  if (Array.isArray(item) && item[0] === 'wrb.fr') {
-                    const data = JSON.parse(item[2]);
-                    // Response text is at data[4][0][1] = ["full text"]
-                    if (data?.[4]?.[0]?.[1]) {
-                      const parts = data[4][0][1];
-                      const t = Array.isArray(parts) ? parts.filter(x => typeof x === 'string').join('') : String(parts);
-                      if (t.length > answer.length) answer = t;
-                    }
-                  }
-                }
-              }
-            } catch {}
-          }
-          return JSON.stringify({ status: res.status, answer });
+          return JSON.stringify({ status: res.status, text });
         } catch(e) {
           return JSON.stringify({ error: e.message });
         }
       })()
-    `) as string;
+    `, GeminiWebProvider.API_FETCH_TIMEOUT) as string;
 
     const parsed = JSON.parse(resultStr);
     if (parsed.error) {
@@ -272,7 +491,10 @@ export class GeminiWebProvider implements WebProvider {
       throw new Error(`Gemini API: ${parsed.error}`);
     }
     this._apiRetryCount = 0;
-    return parsed.answer || '';
+
+    const answer = this.parseBatchResponse(parsed.text || '');
+    logger.info(`[Gemini] Response received (${answer.length} chars)`);
+    return answer;
   }
 
   /**
@@ -530,25 +752,7 @@ export class GeminiWebProvider implements WebProvider {
       if (!rawResponse) return '';
 
       // Parse batchexecute response
-      let answer = '';
-      for (const line of rawResponse.split('\n')) {
-        try {
-          const p = JSON.parse(line);
-          if (Array.isArray(p)) {
-            for (const item of p) {
-              if (Array.isArray(item) && item[0] === 'wrb.fr') {
-                const data = JSON.parse(item[2]);
-                if (data?.[4]?.[0]?.[1]) {
-                  const parts = data[4][0][1];
-                  const t = Array.isArray(parts) ? parts.filter((x: unknown) => typeof x === 'string').join('') : String(parts);
-                  if (t.length > answer.length) answer = t;
-                }
-              }
-            }
-          }
-        } catch { /* skip */ }
-      }
-      return answer;
+      return this.parseBatchResponse(rawResponse);
     } catch (err) {
       // CRITICAL: Always hide webview on error to prevent it blocking the screen
       logger.error('[Gemini] sendWithImage error:', err);

@@ -120,7 +120,7 @@ export class WebContentsViewAdapter implements WebviewLike {
     }
   }
 
-  async executeJavaScript(code: string): Promise<unknown> {
+  async executeJavaScript(code: string, timeout = 30000): Promise<unknown> {
     if (this.view.webContents.isDestroyed()) {
       throw new Error('WebContentsView is destroyed');
     }
@@ -131,8 +131,8 @@ export class WebContentsViewAdapter implements WebviewLike {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(id);
-        reject(new Error('CDP evaluate timeout (30s)'));
-      }, 30000);
+        reject(new Error(`CDP evaluate timeout (${Math.round(timeout / 1000)}s)`));
+      }, timeout);
 
       this._pending.set(id, {
         resolve: (result) => {

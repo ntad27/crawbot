@@ -60,7 +60,7 @@ export interface WebProvider {
  * (matches both real Electron webview and mock)
  */
 export interface WebviewLike {
-  executeJavaScript(code: string): Promise<unknown>;
+  executeJavaScript(code: string, timeout?: number): Promise<unknown>;
   addEventListener(event: string, listener: (...args: unknown[]) => void): void;
   removeEventListener(event: string, listener: (...args: unknown[]) => void): void;
   /** Optional: send raw CDP command (available on WebContentsViewAdapter) */

@@ -148,7 +148,7 @@ export class KimiWebProvider implements WebProvider {
           return { ok: false, error: e.message || String(e) };
         }
       })()
-    `) as { ok: boolean; text?: string; error?: string };
+    `, 300_000) as { ok: boolean; text?: string; error?: string };
 
     if (!result.ok) {
       throw new Error(`Kimi API error: ${result.error}`);

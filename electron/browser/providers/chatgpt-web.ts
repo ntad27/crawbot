@@ -50,32 +50,85 @@ export class ChatGPTWebProvider implements WebProvider {
   ): AsyncGenerator<OpenAIChatChunk> {
     const prompt = consolidateMessages(request.messages, transformSystemPromptForChatGPT);
     const images = extractImages(request.messages);
-    const responseText = await this.sendAndCapture(webview, prompt, images);
+    const completionId = `chatcmpl-${Date.now()}`;
+    const ts = () => Math.floor(Date.now() / 1000);
 
-    if (!responseText) {
-      throw new Error('ChatGPT: no response. Ensure you are logged in.');
+    // Start sendAndCapture in background
+    let capturedText: string | null = null;
+    let captureError: string | null = null;
+    let captureDone = false;
+
+    const capturePromise = this.sendAndCapture(webview, prompt, images)
+      .then((text) => { capturedText = text; captureDone = true; })
+      .catch((err) => { captureError = String(err); captureDone = true; });
+
+    // Poll window.__chatgptPartial (set by fetch monkey-patch SSE reader)
+    // Same approach as Gemini streaming — proven to work with hidden webviews.
+    let yieldedUpTo = 0;
+    let yieldedText = '';
+    await new Promise(r => setTimeout(r, 3000)); // Wait for SSE to start
+
+    while (!captureDone) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const state = await webview.executeJavaScript(
+          `JSON.stringify({ t: window.__chatgptPartial || '', d: !!window.__chatgptDone })`
+        ) as string;
+        const { t, d } = JSON.parse(state);
+
+        if (t && t.length > yieldedUpTo) {
+          let safeEnd = t.length;
+          const braceIdx = t.indexOf('{', yieldedUpTo);
+          if (braceIdx !== -1) safeEnd = braceIdx;
+
+          if (safeEnd > yieldedUpTo) {
+            const delta = t.substring(yieldedUpTo, safeEnd);
+            yieldedUpTo = safeEnd;
+            yieldedText += delta;
+            yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] };
+          }
+        }
+
+        if (d) break;
+      } catch { /* page navigating */ }
     }
 
-    const completionId = `chatcmpl-${Date.now()}`;
-    // Try blockquote format first (ChatGPT copilot), then fall back to raw JSON
+    await capturePromise;
+
+    if (captureError || !capturedText) {
+      throw new Error(captureError || 'ChatGPT: no response. Ensure you are logged in.');
+    }
+
+    const responseText = capturedText;
+
+    // Parse tool calls from the complete SSE-parsed response
     let toolCalls = parseBlockquoteToolCalls(responseText);
     if (toolCalls.length === 0) toolCalls = parseJsonToolCalls(responseText);
 
-    // Intercept `image` tool calls — ChatGPT has built-in vision.
-    // Upload image → ChatGPT analyzes → feed analysis back as context → ChatGPT continues.
     const imageCalls = toolCalls.filter((tc) => tc.name === 'image');
     const otherCalls = toolCalls.filter((tc) => tc.name !== 'image');
-    // Convert image tool calls to read tool calls so OpenClaw UI shows the widget
-    // (read tool supports images — returns as attachment, no infinite loop)
     for (const ic of imageCalls) {
       const imgPath = (ic.params.path || ic.params.image || '') as string;
-      if (imgPath) {
-        otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
-      }
+      if (imgPath) otherCalls.push({ name: 'read', params: { path: imgPath }, raw: ic.raw });
     }
 
+    // Yield remaining clean text: strip ALL tool call JSON from full response,
+    // then only yield what wasn't already streamed.
+    let cleanText = responseText;
+    for (const tc of toolCalls) cleanText = cleanText.replace(tc.raw, '');
+    cleanText = cleanText.trim();
+    // Remove the portion already yielded during streaming
+    if (yieldedText && cleanText.startsWith(yieldedText)) {
+      cleanText = cleanText.substring(yieldedText.length).trim();
+    }
+    if (cleanText) {
+      yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+        choices: [{ index: 0, delta: { content: cleanText }, finish_reason: null }] };
+    }
+
+    // Handle image tool calls (vision flow)
     if (imageCalls.length > 0) {
-      // Step 1: Get image analysis from ChatGPT
       const analyses: string[] = [];
       for (const ic of imageCalls) {
         const imgPath = (ic.params.path || ic.params.image || '') as string;
@@ -89,28 +142,23 @@ export class ChatGPTWebProvider implements WebProvider {
           analyses.push(`[Image analysis failed: ${err}]`);
         }
       }
-
-      // Step 2: Feed analysis back to ChatGPT as context → let it continue responding
       if (analyses.length > 0) {
         const contextMsg = `<tool_result>\nImage analysis result:\n${analyses.join('\n---\n')}\n</tool_result>\n\nNow continue with the user's request based on this image analysis. Respond naturally.`;
         const finalResponse = await this.sendAndCapture(webview, contextMsg);
-
         if (finalResponse) {
-          // Check if the final response also contains tool calls
           let finalToolCalls = parseBlockquoteToolCalls(finalResponse);
           if (finalToolCalls.length === 0) finalToolCalls = parseJsonToolCalls(finalResponse);
-
           if (finalToolCalls.length > 0) {
             otherCalls.push(...finalToolCalls);
             let textContent = finalResponse;
             for (const tc of finalToolCalls) textContent = textContent.replace(tc.raw, '');
             textContent = textContent.trim();
             if (textContent) {
-              yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+              yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
                 choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
             }
           } else {
-            yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+            yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
               choices: [{ index: 0, delta: { content: finalResponse }, finish_reason: otherCalls.length > 0 ? null : 'stop' }] };
           }
         }
@@ -118,15 +166,7 @@ export class ChatGPTWebProvider implements WebProvider {
     }
 
     if (otherCalls.length > 0) {
-      let textContent = responseText;
-      for (const tc of toolCalls) textContent = textContent.replace(tc.raw, '');
-      textContent = textContent.trim();
-      // Only emit text if no image analysis was already emitted
-      if (textContent && imageCalls.length === 0) {
-        yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-          choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }] };
-      }
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
+      yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
         choices: [{ index: 0, delta: {
           tool_calls: otherCalls.map((tc, i) => ({
             index: i, id: `call_${Date.now()}_${i}`, type: 'function' as const,
@@ -134,9 +174,9 @@ export class ChatGPTWebProvider implements WebProvider {
           }))
         } as unknown as { content: string }, finish_reason: 'tool_calls' }],
       } as unknown as OpenAIChatChunk;
-    } else if (imageCalls.length === 0) {
-      yield { id: completionId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model,
-        choices: [{ index: 0, delta: { content: responseText }, finish_reason: 'stop' }] };
+    } else {
+      yield { id: completionId, object: 'chat.completion.chunk', created: ts(), model: request.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
     }
   }
 
@@ -257,7 +297,65 @@ export class ChatGPTWebProvider implements WebProvider {
             }
           }
 
-          return _fetch.apply(this, args);
+          // Call original fetch, then tap into the response stream
+          // to capture progressive SSE text for streaming
+          var promise = _fetch.apply(this, args);
+          if (urlStr.indexOf('/f/conversation') !== -1 && urlStr.indexOf('prepare') === -1) {
+            window.__chatgptPartial = '';
+            window.__chatgptDone = false;
+            promise.then(function(response) {
+              var clone = response.clone();
+              var reader = clone.body.getReader();
+              var decoder = new TextDecoder();
+              var useDelta = false;
+              var role = '';
+              var ctype = '';
+              function pump() {
+                reader.read().then(function(result) {
+                  if (result.done) { window.__chatgptDone = true; return; }
+                  var chunk = decoder.decode(result.value, { stream: true });
+                  var lines = chunk.split('\\n');
+                  for (var li = 0; li < lines.length; li++) {
+                    var line = lines[li];
+                    if (!line.startsWith('data: ')) continue;
+                    var d = line.slice(6).trim();
+                    if (d === '[DONE]') { window.__chatgptDone = true; continue; }
+                    if (d === '"v1"') { useDelta = true; continue; }
+                    try {
+                      var p = JSON.parse(d);
+                      if (useDelta) {
+                        if (p.v && p.v.message) {
+                          role = (p.v.message.author && p.v.message.author.role) || '';
+                          ctype = (p.v.message.content && p.v.message.content.content_type) || '';
+                          if (role === 'assistant' && ctype === 'text') {
+                            var parts = p.v.message.content && p.v.message.content.parts;
+                            var init = (Array.isArray(parts) && parts[0]) ? String(parts[0]) : '';
+                            if (window.__chatgptPartial) window.__chatgptPartial += '\\n';
+                            if (init) window.__chatgptPartial += init;
+                          }
+                        } else if (p.v && Array.isArray(p.v)) {
+                          if (role === 'assistant' && ctype === 'text') {
+                            for (var pi = 0; pi < p.v.length; pi++) {
+                              if (p.v[pi].o === 'append' && p.v[pi].p === '/message/content/parts/0') {
+                                window.__chatgptPartial += p.v[pi].v;
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        if (p.message && p.message.content && p.message.content.parts && p.message.content.parts[0] && p.message.role === 'assistant') {
+                          window.__chatgptPartial = p.message.content.parts[0];
+                        }
+                      }
+                    } catch(e) {}
+                  }
+                  pump();
+                }).catch(function() { window.__chatgptDone = true; });
+              }
+              pump();
+            }).catch(function() {});
+          }
+          return promise;
         };
       })()
     `);
@@ -342,12 +440,10 @@ export class ChatGPTWebProvider implements WebProvider {
 
       // Fallback: if loadingFinished never fires (SSE stream stays open),
       // poll getResponseBody every 3s after data starts arriving.
-      // SSE response body accumulates even before stream closes.
       let pollCount = 0;
       const pollInterval = setInterval(async () => {
         pollCount++;
         if (!targetRequestId || !dataReceivedForTarget) return;
-        // Start polling after 10s of data received
         if (pollCount < 4) return;
         try {
           const result = await webview.sendCDPCommand!('Network.getResponseBody', { requestId: targetRequestId });
@@ -355,7 +451,6 @@ export class ChatGPTWebProvider implements WebProvider {
           const body = r.base64Encoded
             ? Buffer.from(r.body || '', 'base64').toString()
             : (r.body || '');
-          // Check if response contains [DONE] marker (SSE complete)
           if (body.includes('[DONE]') || body.includes('"is_completion":true')) {
             clearInterval(pollInterval);
             if (responseResolveFn) { responseResolveFn(body); responseResolveFn = null; }
@@ -363,11 +458,11 @@ export class ChatGPTWebProvider implements WebProvider {
         } catch { /* request still streaming, getResponseBody may fail */ }
       }, 3000);
 
-      // Hard timeout
+      // Hard timeout (5 min — complex agentic queries can take minutes)
       setTimeout(() => {
         clearInterval(pollInterval);
         if (responseResolveFn) { responseResolveFn(''); responseResolveFn = null; }
-      }, 120000);
+      }, 300_000);
     });
 
     // 6. Disable Network + clean up listener (prevent accumulation)
@@ -377,33 +472,31 @@ export class ChatGPTWebProvider implements WebProvider {
 
     if (!rawResponse) return '';
 
-    // 7. Parse SSE — delta encoding v1 + old cumulative fallback
+    // 7. Parse SSE — reuse shared parser
+    return this.parseSSEPartial(rawResponse);
+  }
+
+  /** Parse partial SSE response to extract cumulative assistant text */
+  private parseSSEPartial(rawSSE: string): string {
     let useDeltaEncoding = false;
     let answer = '';
     let currentMessageRole = '';
     let currentContentType = '';
 
-    for (const line of rawResponse.split('\n')) {
+    for (const line of rawSSE.split('\n')) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
       if (data === '[DONE]') continue;
-      if (data === '"v1"') {
-        useDeltaEncoding = true;
-        continue;
-      }
+      if (data === '"v1"') { useDeltaEncoding = true; continue; }
 
       try {
         const parsed = JSON.parse(data);
-
         if (useDeltaEncoding) {
           if (parsed.v && parsed.v.message) {
             const msg = parsed.v.message;
             currentMessageRole = msg.author?.role || '';
             currentContentType = msg.content?.content_type || '';
             if (currentMessageRole === 'assistant' && currentContentType === 'text') {
-              // ACCUMULATE — don't reset. ChatGPT sends multiple assistant text
-              // messages: first with tool call JSON, then with greeting text.
-              // Always add \n separator so last tool call JSON doesn't merge with greeting.
               const parts = msg.content?.parts;
               const initial = Array.isArray(parts) && parts[0] ? String(parts[0]) : '';
               if (answer) answer += '\n';
@@ -423,9 +516,8 @@ export class ChatGPTWebProvider implements WebProvider {
             answer = parsed.message.content.parts[0];
           }
         }
-      } catch { }
+      } catch { /* skip */ }
     }
-
     return answer;
   }
 

@@ -239,6 +239,7 @@ export class ClaudeWebProvider implements WebProvider {
       tools: [],
     });
 
+    // Use 5-min timeout — SSE streaming can take minutes for complex responses
     const resultStr = await webview.executeJavaScript(`
       (async () => {
         try {
@@ -277,7 +278,7 @@ export class ClaudeWebProvider implements WebProvider {
           return JSON.stringify({ error: e.message });
         }
       })()
-    `) as string;
+    `, 300_000) as string;
 
     const parsed = JSON.parse(resultStr);
     if (parsed.error) {

@@ -166,7 +166,9 @@ export function streamFromWebview(
     })()
   `;
 
-  webview.executeJavaScript(code).catch(() => {
+  // Use 5-minute timeout — SSE streams can run much longer than the
+  // default 30s CDP evaluate timeout (the stream keeps producing data).
+  webview.executeJavaScript(code, 300_000).catch(() => {
     error = 'Failed to execute JavaScript in webview';
     done = true;
     resolveWait?.();
