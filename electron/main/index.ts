@@ -109,6 +109,9 @@ function createWindow(startMinimized = false): BrowserWindow {
 
   // Show window when ready (unless starting minimized to tray)
   win.once('ready-to-show', () => {
+    // Reset zoom to 100% — Electron persists zoom level across sessions,
+    // so an accidental Cmd++ can permanently enlarge the UI with no easy reset.
+    win.webContents.setZoomFactor(1.0);
     if (!startMinimized) {
       win.show();
     }

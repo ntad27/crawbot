@@ -1341,16 +1341,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         saveImageCache(_imageCache);
       }
 
-      // Ensure session model is set before sending (handles new sessions
-      // where sessions.patch may have failed because the session didn't exist yet)
+      // Ensure session model is set before sending.
+      // When selectedModel is null (user is on agent default), resolve the
+      // effective default model and still patch — otherwise OpenClaw falls back
+      // to its hardcoded DEFAULT_PROVIDER ("anthropic") which fails for users
+      // who only have non-Anthropic keys configured.
       try {
         const { useModelsStore } = await import('./models');
-        const selectedModel = useModelsStore.getState().selectedModel;
-        if (selectedModel) {
+        const { useAgentsStore } = await import('./agents');
+        let modelToPatch = useModelsStore.getState().selectedModel;
+        if (!modelToPatch) {
+          const { agents, defaults } = useAgentsStore.getState();
+          const agentId = get().selectedAgentId;
+          const agent = agents.find((a) => a.id === agentId);
+          if (agent) {
+            modelToPatch = resolveAgentModel(agent, defaults) || null;
+          } else {
+            modelToPatch = defaults?.model?.primary || null;
+          }
+        }
+        if (modelToPatch) {
           const patchRes = await window.electron.ipcRenderer.invoke(
             'gateway:rpc',
             'sessions.patch',
-            { key: currentSessionKey, model: selectedModel },
+            { key: currentSessionKey, model: modelToPatch },
           ) as { success: boolean; error?: string };
           if (!patchRes.success) {
             console.warn('Pre-send sessions.patch failed:', patchRes.error);

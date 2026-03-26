@@ -134,7 +134,7 @@ const loaderSource = [
   '}',
   '',
   'export async function load(url, context, nextLoad) {',
-  '  if (!url.startsWith("file://") || !url.includes("openclaw")) return nextLoad(url, context);',
+  '  if (!url.startsWith("file://") || (!url.includes("openclaw") && !url.includes("pi-ai"))) return nextLoad(url, context);',
   '  const base = url.split("/").pop() || "";',
   '  if (!base.endsWith(".js")) return nextLoad(url, context);',
   '',
