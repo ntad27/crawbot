@@ -166,6 +166,8 @@ export class GeminiWebProvider implements WebProvider {
 
   private cachedPageUrl: string | null = null;
 
+  private _apiRetryCount = 0;
+
   private async apiChat(webview: WebviewLike, message: string): Promise<string> {
     // Navigate to clean /app to ensure each message starts a new conversation
     // (staying on /app/UUID makes Gemini append to existing thread)
@@ -199,7 +201,13 @@ export class GeminiWebProvider implements WebProvider {
     } catch { /* page might not be ready */ }
 
     if (!this.cachedTemplate) {
-      logger.info('[Gemini] No cached template, capturing...');
+      logger.info('[Gemini] No cached template, capturing (attempt 1)...');
+      this.cachedTemplate = await this.captureTemplate(webview);
+    }
+
+    if (!this.cachedTemplate) {
+      // Retry once — first attempt may fail due to stale page state or slow load
+      logger.warn('[Gemini] First capture failed, retrying (attempt 2)...');
       this.cachedTemplate = await this.captureTemplate(webview);
     }
 
@@ -254,12 +262,16 @@ export class GeminiWebProvider implements WebProvider {
 
     const parsed = JSON.parse(resultStr);
     if (parsed.error) {
-      if (parsed.error.includes('400') || parsed.error.includes('401')) {
+      if ((parsed.error.includes('400') || parsed.error.includes('401')) && this._apiRetryCount < 2) {
+        logger.warn(`[Gemini] API error ${parsed.error}, clearing template and retrying (${this._apiRetryCount + 1}/2)...`);
+        this._apiRetryCount++;
         this.cachedTemplate = null;
         return this.apiChat(webview, message);
       }
+      this._apiRetryCount = 0;
       throw new Error(`Gemini API: ${parsed.error}`);
     }
+    this._apiRetryCount = 0;
     return parsed.answer || '';
   }
 
@@ -604,10 +616,10 @@ export class GeminiWebProvider implements WebProvider {
 
       // Type and click send
       logger.info('[Gemini] Sending via DOM to trigger StreamGenerate...');
-      await webview.executeJavaScript(`
+      const domResult = await webview.executeJavaScript(`
         (async () => {
           const input = document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
-          if (!input) return;
+          if (!input) return JSON.stringify({ error: 'no input found' });
           input.focus();
           if (input.tagName === 'TEXTAREA') {
             const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -617,11 +629,26 @@ export class GeminiWebProvider implements WebProvider {
             input.innerText = 'Hello';
           }
           input.dispatchEvent(new Event('input', { bubbles: true }));
-          await new Promise(r => setTimeout(r, 1000));
-          const btn = document.querySelector('button[aria-label="Send message"]');
-          if (btn && !btn.disabled) btn.click();
+          await new Promise(r => setTimeout(r, 1500));
+          const btn = document.querySelector('button[aria-label*="Send"]')
+            || document.querySelector('button[aria-label*="send"]')
+            || document.querySelector('button.send-button');
+          if (!btn) return JSON.stringify({ error: 'no send button found' });
+          if (btn.disabled) return JSON.stringify({ error: 'send button disabled' });
+          btn.click();
+          return JSON.stringify({ ok: true, label: btn.getAttribute('aria-label') });
         })()
-      `);
+      `) as string;
+      try {
+        const parsed = JSON.parse(domResult as string);
+        if (parsed.error) {
+          logger.warn('[Gemini] DOM interaction failed:', parsed.error);
+        } else {
+          logger.info('[Gemini] Clicked send button:', parsed.label);
+        }
+      } catch {
+        logger.warn('[Gemini] DOM result:', domResult);
+      }
 
       // Wait for interception
       await capturePromise;
