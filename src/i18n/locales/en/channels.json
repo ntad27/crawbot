@@ -56,11 +56,13 @@
         "saveAndConnect": "Save & Connect",
         "envVar": "Environment Variable: {{var}}",
         "accountId": "Account ID",
-        "accountIdPlaceholder": "e.g. annie-bot (leave empty for default)",
+        "accountIdPlaceholder": "e.g. annie-bot",
         "accountIdHelp": "Enter a unique ID for additional accounts of the same type.",
-        "binding": "Agent Binding (Optional)",
+        "accountIdRequired": "Account ID is required",
+        "binding": "Agent Binding",
         "bindingAgent": "Assigned Agent",
-        "bindingAgentNone": "None"
+        "bindingAgentNone": "Select an agent...",
+        "bindingAgentRequired": "Assigned Agent is required"
     },
     "binding": {
         "noneAssigned": "No agent assigned"

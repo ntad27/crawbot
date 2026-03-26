@@ -553,6 +553,9 @@ function AddChannelDialog({
   // Binding state
   const [bindingAgentId, setBindingAgentId] = useState('');
 
+  // Track touched fields for validation display
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
   // Refs for mutable form values so QR login callbacks stay stable
   // (prevents useEffect re-runs that cancel active QR sessions)
   const accountIdRef = useRef(accountId);
@@ -1015,6 +1018,10 @@ function AddChannelDialog({
   const isFormValid = () => {
     if (!meta) return false;
 
+    // Account ID and Assigned Agent are always required
+    if (!accountId.trim()) return false;
+    if (!bindingAgentId) return false;
+
     // Check all required fields are filled
     return meta.configFields
       .filter((field) => field.required)
@@ -1150,15 +1157,22 @@ function AddChannelDialog({
                       .replace(/[^a-z0-9-]/g, '')  // keep only a-z, 0-9, hyphens
                       .replace(/-+/g, '-');         // collapse multiple hyphens
                     setAccountId(normalized);
+                    setTouched((prev) => ({ ...prev, accountId: true }));
                   }}
                   onBlur={() => {
                     // Clean up trailing/leading hyphens when user leaves the field
                     setAccountId((v) => v.replace(/^-+|-+$/g, ''));
+                    setTouched((prev) => ({ ...prev, accountId: true }));
                   }}
+                  className={touched.accountId && !accountId.trim() ? 'border-destructive' : ''}
                 />
-                <p className="text-xs text-muted-foreground">
-                  {t('dialog.accountIdHelp')}
-                </p>
+                {touched.accountId && !accountId.trim() ? (
+                  <p className="text-xs text-destructive">{t('dialog.accountIdRequired')}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t('dialog.accountIdHelp')}
+                  </p>
+                )}
               </div>
 
               {/* Agent Binding */}
@@ -1173,7 +1187,12 @@ function AddChannelDialog({
                   </Label>
                   <Select
                     value={bindingAgentId}
-                    onChange={(e) => setBindingAgentId(e.target.value)}
+                    onChange={(e) => {
+                      setBindingAgentId(e.target.value);
+                      setTouched((prev) => ({ ...prev, bindingAgent: true }));
+                    }}
+                    onBlur={() => setTouched((prev) => ({ ...prev, bindingAgent: true }))}
+                    className={touched.bindingAgent && !bindingAgentId ? 'border-destructive' : ''}
                   >
                     <option value="">{t('dialog.bindingAgentNone')}</option>
                     {agents.map((a) => (
@@ -1183,6 +1202,9 @@ function AddChannelDialog({
                       </option>
                     ))}
                   </Select>
+                  {touched.bindingAgent && !bindingAgentId && (
+                    <p className="text-xs text-destructive">{t('dialog.bindingAgentRequired')}</p>
+                  )}
                 </div>
 
               </div>
@@ -1259,7 +1281,7 @@ function AddChannelDialog({
                 <div className="flex gap-2">
                   {/* Validation Button - Only for token-based channels for now */}
                   {meta?.connectionType === 'token' && (
-                    <Button variant="secondary" onClick={handleValidate} disabled={validating}>
+                    <Button variant="secondary" onClick={handleValidate} disabled={validating || !isFormValid()}>
                       {validating ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -1275,7 +1297,7 @@ function AddChannelDialog({
                   )}
                   {/* Save button for QR channels with config fields (e.g. allowedUsers) */}
                   {meta?.connectionType === 'qr' && meta.configFields.length > 0 && isEditMode && (
-                    <Button onClick={handleSaveQrConfig} disabled={connecting}>
+                    <Button onClick={handleSaveQrConfig} disabled={connecting || !isFormValid()}>
                       {connecting ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       ) : (

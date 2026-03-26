@@ -50,7 +50,15 @@
         "generateQRCode": "Tạo mã QR",
         "updateAndReconnect": "Cập nhật & Kết nối lại",
         "saveAndConnect": "Lưu & Kết nối",
-        "envVar": "Biến môi trường: {{var}}"
+        "envVar": "Biến môi trường: {{var}}",
+        "accountId": "Mã tài khoản",
+        "accountIdPlaceholder": "vd: annie-bot",
+        "accountIdHelp": "Nhập mã duy nhất cho các tài khoản cùng loại.",
+        "accountIdRequired": "Mã tài khoản là bắt buộc",
+        "binding": "Gán Agent",
+        "bindingAgent": "Agent được gán",
+        "bindingAgentNone": "Chọn agent...",
+        "bindingAgentRequired": "Agent được gán là bắt buộc"
     },
     "pairing": {
         "title": "Yêu cầu ghép nối",
