@@ -14,14 +14,15 @@ import { homedir } from 'node:os';
 import { openExternalInDefaultProfile } from './open-external';
 import { logger } from './logger';
 
-// ── OAuth constants (extracted from Claude Code CLI v2.1.69 prod config) ──
+// ── OAuth constants (extracted from Claude Code CLI v2.1.83) ──
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const AUTH_URL = 'https://claude.ai/oauth/authorize';
 const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-// Must match pi-ai's SCOPES exactly so token refresh (which sends scope param) succeeds.
-// Mismatched scopes cause Anthropic to reject refresh with "invalid_scope".
-const SCOPES = ['org:create_api_key', 'user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload'];
+// Full scopes — matches Claude Code CLI "auth login" mode.
+// Anthropic issues 8h tokens with refresh tokens for these scopes.
+// Proactive refresh (below) keeps the token alive continuously.
+const SCOPES = ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload'];
 
 // ── PKCE ──
 
@@ -234,6 +235,159 @@ function writeAuthProfile(credential: {
   writeFileSync(authProfilesPath, JSON.stringify(store, null, 2), 'utf-8');
 }
 
+// ── Proactive Token Refresh ──
+
+// Refresh the access token BEFORE it expires so the refresh token stays valid.
+// Anthropic refresh tokens have a limited lifetime — if the access token expires
+// and the app stays idle, the refresh token also expires, requiring full re-auth.
+// By refreshing proactively (10 min before expiry), we keep both tokens fresh.
+
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function refreshAccessToken(refreshToken: string): Promise<{
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+} | null> {
+  try {
+    // Do NOT send scope — Anthropic rejects it with "invalid_scope"
+    const body = JSON.stringify({
+      grant_type: 'refresh_token',
+      client_id: CLIENT_ID,
+      refresh_token: refreshToken,
+    });
+
+    const response = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error(`[claude-oauth] Token refresh failed (${response.status}): ${errorText}`);
+      return null;
+    }
+
+    const data = await response.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    if (!data.access_token) {
+      logger.error('[claude-oauth] No access token in refresh response');
+      return null;
+    }
+
+    return data;
+  } catch (err) {
+    logger.error('[claude-oauth] Token refresh error:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+function readAnthropicOAuthProfile(): {
+  access: string;
+  refresh: string;
+  expires: number;
+} | null {
+  const authPath = join(homedir(), '.openclaw', 'agents', 'main', 'agent', 'auth-profiles.json');
+  try {
+    if (!existsSync(authPath)) return null;
+    const store = JSON.parse(readFileSync(authPath, 'utf-8'));
+    const profile = store?.profiles?.['anthropic:default'];
+    if (profile?.type === 'oauth' && profile.refresh && profile.expires) {
+      return { access: profile.access, refresh: profile.refresh, expires: profile.expires };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function scheduleNextRefresh(): void {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+
+  const profile = readAnthropicOAuthProfile();
+  if (!profile) {
+    logger.debug('[claude-oauth] No OAuth profile found, skipping proactive refresh');
+    return;
+  }
+
+  // Refresh 10 minutes before expiry
+  const refreshAt = profile.expires - 10 * 60 * 1000;
+  const delayMs = Math.max(refreshAt - Date.now(), 5000); // minimum 5s delay
+
+  if (Date.now() >= profile.expires) {
+    // Already expired — try to refresh immediately
+    logger.warn('[claude-oauth] Token already expired, attempting immediate refresh...');
+    void doProactiveRefresh();
+    return;
+  }
+
+  logger.info(`[claude-oauth] Scheduling proactive refresh in ${Math.round(delayMs / 60000)} min (expires: ${new Date(profile.expires).toISOString()})`);
+
+  refreshTimer = setTimeout(() => {
+    void doProactiveRefresh();
+  }, delayMs);
+
+  // Don't let the timer prevent process exit
+  if (refreshTimer && typeof refreshTimer === 'object' && 'unref' in refreshTimer) {
+    refreshTimer.unref();
+  }
+}
+
+async function doProactiveRefresh(): Promise<void> {
+  const profile = readAnthropicOAuthProfile();
+  if (!profile) return;
+
+  logger.info('[claude-oauth] Proactive token refresh starting...');
+
+  const tokens = await refreshAccessToken(profile.refresh);
+  if (tokens) {
+    writeAuthProfile({
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || profile.refresh,
+      expiresAt: tokens.expires_in
+        ? Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000
+        : undefined,
+    });
+    logger.info('[claude-oauth] Proactive refresh successful, new token written');
+
+    // Schedule next refresh
+    scheduleNextRefresh();
+  } else {
+    logger.error('[claude-oauth] Proactive refresh failed — user will need to re-authenticate');
+    // Retry in 5 minutes in case it was a transient error
+    refreshTimer = setTimeout(() => void doProactiveRefresh(), 5 * 60 * 1000);
+    if (refreshTimer && typeof refreshTimer === 'object' && 'unref' in refreshTimer) {
+      refreshTimer.unref();
+    }
+  }
+}
+
+/**
+ * Start proactive OAuth token refresh for Anthropic.
+ * Call this once during app startup. It monitors the token expiry
+ * and refreshes before it expires, keeping the refresh token alive.
+ */
+export function startProactiveTokenRefresh(): void {
+  scheduleNextRefresh();
+}
+
+/**
+ * Stop proactive token refresh (for cleanup).
+ */
+export function stopProactiveTokenRefresh(): void {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
 // ── Public API ──
 
 export async function runClaudeOAuthFlow(): Promise<{
@@ -252,6 +406,7 @@ export async function runClaudeOAuthFlow(): Promise<{
 
     // 3. Build authorization URL
     const params = new URLSearchParams({
+      code: 'true',
       client_id: CLIENT_ID,
       response_type: 'code',
       redirect_uri: redirectUri,
@@ -287,6 +442,9 @@ export async function runClaudeOAuthFlow(): Promise<{
         : undefined,
     });
     logger.info('[claude-oauth] Anthropic OAuth credentials saved to auth-profiles.json');
+
+    // Kick off proactive refresh for the new token
+    scheduleNextRefresh();
 
     return { success: true };
   } catch (error) {

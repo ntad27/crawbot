@@ -334,6 +334,15 @@ async function initialize(): Promise<void> {
     await gatewayManager.start();
     logger.info('Gateway auto-start succeeded');
 
+    // Start proactive OAuth token refresh for Anthropic.
+    // Refreshes access token before it expires so the refresh token stays valid.
+    try {
+      const { startProactiveTokenRefresh } = await import('../utils/claude-oauth');
+      startProactiveTokenRefresh();
+    } catch (err) {
+      logger.warn('Failed to start proactive token refresh:', err);
+    }
+
     // Inject CrawBot context into AGENTS.md after workspace files settle
     setTimeout(async () => {
       try {
