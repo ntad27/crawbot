@@ -32,7 +32,7 @@ class WebAuthViewManager {
   private mainWindow: BrowserWindow | null = null;
   private tabs = new Map<string, WebAuthTab>();
   private activeTabId: string | null = null;
-  private panelBounds = { x: 0, y: 0, width: 800, height: 600 };
+  private panelBounds = { x: -9999, y: -9999, width: 0, height: 0 };
   /** Tabs created by the pipeline for API use only — must NEVER be shown in UI */
   private pipelineTabs = new Set<string>();
 

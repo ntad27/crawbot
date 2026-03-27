@@ -28,7 +28,7 @@ class AutomationViewManager {
   private mainWindow: BrowserWindow | null = null;
   private tabs = new Map<string, AutomationTab>();
   private activeTabId: string | null = null;
-  private panelBounds = { x: 0, y: 0, width: 800, height: 600 };
+  private panelBounds = { x: -9999, y: -9999, width: 0, height: 0 };
 
   setMainWindow(win: BrowserWindow): void {
     this.mainWindow = win;
@@ -284,9 +284,12 @@ class AutomationViewManager {
           this.mainWindow.contentView.addChildView(tab.view);
         }
         if (tab.view.webContents.isDestroyed()) continue;
-        tab.view.setVisible(true);
-        if (this.panelBounds.width > 0 && this.panelBounds.height > 0) {
+        // Only show tab when renderer has reported valid panel bounds
+        if (this.panelBounds.width > 0 && this.panelBounds.height > 0 && this.panelBounds.x > -9000) {
+          tab.view.setVisible(true);
           tab.view.setBounds(this.panelBounds);
+        } else {
+          tab.view.setVisible(false);
         }
       } else {
         tab.view.setVisible(false);
