@@ -282,6 +282,12 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
             [providerType]: { authenticated: true, checking: false },
           },
         }));
+        // Restart Gateway so it picks up the new OAuth token from disk
+        try {
+          await window.electron.ipcRenderer.invoke('gateway:restart');
+        } catch {
+          // Non-fatal — token is saved, Gateway will use it on next manual restart
+        }
         return { success: true };
       } else {
         set((state) => ({
@@ -333,6 +339,12 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
             [providerType]: { authenticated: true, checking: false },
           },
         }));
+        // Restart Gateway so it picks up the new token from disk
+        try {
+          await window.electron.ipcRenderer.invoke('gateway:restart');
+        } catch {
+          // Non-fatal — token is saved, Gateway will use it on next manual restart
+        }
         return { success: true };
       } else {
         set((state) => ({
