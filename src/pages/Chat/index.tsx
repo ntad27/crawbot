@@ -87,15 +87,22 @@ export function Chat() {
     }
   }, [sending, streamingTimestamp]);
 
-  // Hide the native WebContentsView when navigating away from Chat page.
+  // Hide the native WebContentsView when navigating away from Chat page
+  // or when the gateway stops (overlay replaces the chat UI, but the
+  // WebContentsView is still visible underneath).
   // Must be before any early returns to satisfy React hooks rules.
   useEffect(() => {
+    if (!isGatewayRunning) {
+      window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
+        x: -9999, y: 0, width: 0, height: 0,
+      });
+    }
     return () => {
       window.electron?.ipcRenderer?.invoke('browser:panel:setBounds', {
         x: -9999, y: 0, width: 0, height: 0,
       });
     };
-  }, []);
+  }, [isGatewayRunning]);
 
   // Gateway not running
   if (!isGatewayRunning) {
