@@ -7,6 +7,24 @@ import type { GatewayStatus } from '../types/gateway';
 
 let gatewayInitPromise: Promise<void> | null = null;
 
+// Pre-cache the chat store import to avoid microtask deferral on every streaming event.
+// Dynamic import('./chat') returns a Promise even when cached, pushing the callback
+// to the microtask queue. By resolving it once upfront, we can call handleChatEvent
+// synchronously on subsequent events, eliminating per-event deferral.
+let _cachedChatStore: { useChatStore: typeof import('./chat')['useChatStore'] } | null = null;
+function getChatStore(cb: (store: typeof import('./chat')['useChatStore']) => void): void {
+  if (_cachedChatStore) {
+    cb(_cachedChatStore.useChatStore);
+    return;
+  }
+  import('./chat').then((mod) => {
+    _cachedChatStore = mod;
+    cb(mod.useChatStore);
+  }).catch((err) => {
+    console.warn('Failed to load chat store:', err);
+  });
+}
+
 interface GatewayHealth {
   ok: boolean;
   error?: string;
@@ -87,13 +105,9 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
             message: p.message ?? data.message,
           };
 
-          import('./chat')
-            .then(({ useChatStore }) => {
-              useChatStore.getState().handleChatEvent(normalizedEvent);
-            })
-            .catch((err) => {
-              console.warn('Failed to forward gateway notification event:', err);
-            });
+          getChatStore((useChatStore) => {
+            useChatStore.getState().handleChatEvent(normalizedEvent);
+          });
         });
 
         // Listen for chat events from the gateway and forward to chat store.
@@ -102,8 +116,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
         // or the raw chat message itself. We need to handle both.
         window.electron.ipcRenderer.on('gateway:chat-message', (data) => {
           try {
-            // Dynamic import to avoid circular dependency
-            import('./chat').then(({ useChatStore }) => {
+            getChatStore((useChatStore) => {
               const chatData = data as Record<string, unknown>;
               // Unwrap the { message: payload } wrapper from handleProtocolEvent
               const payload = ('message' in chatData && typeof chatData.message === 'object')
@@ -136,7 +149,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
         // agent is executing tools. Each event carries tool start/result data.
         window.electron.ipcRenderer.on('gateway:agent-event', (data) => {
           try {
-            import('./chat').then(({ useChatStore }) => {
+            getChatStore((useChatStore) => {
               useChatStore.getState().handleAgentEvent(data as Record<string, unknown>);
             });
           } catch (err) {

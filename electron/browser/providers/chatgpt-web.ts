@@ -66,10 +66,10 @@ export class ChatGPTWebProvider implements WebProvider {
     // Same approach as Gemini streaming — proven to work with hidden webviews.
     let yieldedUpTo = 0;
     let yieldedText = '';
-    await new Promise(r => setTimeout(r, 3000)); // Wait for SSE to start
+    await new Promise(r => setTimeout(r, 500)); // Brief wait for SSE to start
 
     while (!captureDone) {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 100));
       try {
         const state = await webview.executeJavaScript(
           `JSON.stringify({ t: window.__chatgptPartial || '', d: !!window.__chatgptDone })`

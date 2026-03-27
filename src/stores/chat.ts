@@ -1290,7 +1290,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    const { currentSessionKey } = get();
+    const { currentSessionKey, activeRunId: prevRunId } = get();
+
+    // Abort any stuck/failed run before sending a new message.
+    // After an error (e.g. "overloaded"), the Gateway may still hold the previous
+    // run as active, causing new chat.send to be queued or ignored.
+    if (prevRunId) {
+      try {
+        await window.electron.ipcRenderer.invoke(
+          'gateway:rpc',
+          'chat.abort',
+          { sessionKey: currentSessionKey },
+        );
+      } catch {
+        // Non-fatal — Gateway may have already cleaned up the run
+      }
+    }
 
     // Add user message optimistically (with local file metadata for UI display)
     const userMsg: RawMessage = {

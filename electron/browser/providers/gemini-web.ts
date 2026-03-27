@@ -342,9 +342,9 @@ export class GeminiWebProvider implements WebProvider {
         fetchDone = true;
       });
 
-    // Poll for partial results every 500ms
+    // Poll for partial results every 100ms
     let lastYielded = 0;
-    const pollInterval = 500;
+    const pollInterval = 100;
 
     while (!fetchDone) {
       await new Promise(r => setTimeout(r, pollInterval));
