@@ -707,6 +707,20 @@ export class GatewayManager extends EventEmitter {
     );
     this.lastSpawnSummary = `mode=${mode}, command="${command}", args="${this.sanitizeSpawnArgs(args).join(' ')}", cwd="${openclawDir}"`;
     
+    // Resolve openzca binary path for the openzalo extension.
+    // On Windows, .cmd wrappers require cmd.exe shell which mangles special characters
+    // in message bodies (quotes, &, !, emojis). Instead, point OPENZCA_BINARY to the
+    // actual .js entry script — the extension patch will spawn it via process.execPath
+    // (node.exe / Electron-as-node) directly, bypassing shell entirely.
+    const openzcaJsPath = path.join(openclawDir, 'node_modules', 'openzca', 'dist', 'cli.js');
+    const openzcaBinaryPath = openzcaJsPath;
+    const openzcaBinaryExists = existsSync(openzcaBinaryPath);
+    if (openzcaBinaryExists) {
+      logger.info(`openzca entry script found at: ${openzcaBinaryPath}`);
+    } else {
+      logger.warn(`openzca entry script NOT found at: ${openzcaBinaryPath}`);
+    }
+
     return new Promise((resolve, reject) => {
       const spawnEnv: Record<string, string | undefined> = {
         ...process.env,
@@ -716,6 +730,7 @@ export class GatewayManager extends EventEmitter {
         OPENCLAW_GATEWAY_TOKEN: gatewayToken,
         OPENCLAW_SKIP_CHANNELS: '',
         CLAWDBOT_SKIP_CHANNELS: '',
+        ...(openzcaBinaryExists ? { OPENZCA_BINARY: openzcaBinaryPath } : {}),
       };
 
       // In dev-pnpm mode, inject preload patches via NODE_OPTIONS

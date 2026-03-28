@@ -423,6 +423,89 @@ for (const { name, repo } of THIRD_PARTY_EXTENSIONS) {
   echo`   ✅ Bundled extension: ${name}`;
 }
 
+// 7a. Patch openzalo extension for Windows compatibility
+//
+// WHY THIS PATCH EXISTS:
+//   openzalo spawns `openzca` CLI via child_process.spawn(binary, args, { shell: false }).
+//   On Windows this fails because:
+//   - shell: false cannot execute .cmd wrappers (ENOENT)
+//   - shell: true causes cmd.exe to mangle special characters in message bodies
+//     (quotes " , & , ! , ^ , emojis, Unicode text → garbled or dropped)
+//
+// WHAT THE PATCH DOES:
+//   CrawBot's Gateway manager sets OPENZCA_BINARY to the actual .js entry script
+//   (e.g. resources/openclaw/node_modules/openzca/dist/cli.js).
+//   This patch injects _resolveSpawn() into openzca.ts which detects .js binary paths
+//   and spawns process.execPath (node.exe / Electron-as-node) directly with the script
+//   as the first arg. Result: no shell, no .cmd, no escaping issues.
+//
+// IF OPENZALO UPDATES BREAK THIS PATCH:
+//   The patch matches two things:
+//   1. `import ... from "node:child_process"` — to locate where to insert the helper
+//   2. `const child = spawn(binary, args, {` — to wrap spawn calls
+//   If openzalo renames variables or restructures spawn calls, the patch count below
+//   will be 0 and the build will FAIL with an error message explaining what to fix.
+//   Check the latest openzalo source at: https://github.com/darkamenosa/openzalo
+//
+const OPENZALO_PATCH_EXPECTED_SPAWN_COUNT = 3; // runOpenzcaCommand, runOpenzcaInteractive, runOpenzcaStreaming
+const openzaloOpenzcaTs = path.join(thirdPartyExtDir, 'openzalo', 'src', 'openzca.ts');
+if (fs.existsSync(openzaloOpenzcaTs)) {
+  let content = fs.readFileSync(openzaloOpenzcaTs, 'utf-8');
+
+  // Validate: the file must contain spawn calls matching our expected pattern
+  const spawnPattern = /const child = spawn\(binary, args, \{/g;
+  const originalSpawnCount = (content.match(spawnPattern) || []).length;
+
+  if (originalSpawnCount === 0) {
+    echo`   ❌ PATCH FAILED: openzalo/src/openzca.ts no longer contains the expected spawn pattern.`;
+    echo`      Expected pattern: "const child = spawn(binary, args, {"`;
+    echo`      openzalo may have updated its code structure. Manual review needed.`;
+    echo`      See: https://github.com/darkamenosa/openzalo/blob/main/src/openzca.ts`;
+    process.exit(1);
+  }
+
+  if (originalSpawnCount !== OPENZALO_PATCH_EXPECTED_SPAWN_COUNT) {
+    echo`   ⚠️  WARNING: Expected ${OPENZALO_PATCH_EXPECTED_SPAWN_COUNT} spawn calls but found ${originalSpawnCount}.`;
+    echo`      openzalo may have added/removed spawn sites. Review the patch output carefully.`;
+  }
+
+  // Step 1: Inject _resolveSpawn helper after the last import statement
+  const helperCode = `
+// [CrawBot patch] Windows compatibility: spawn .js binaries via process.execPath (node.exe)
+// directly, bypassing cmd.exe shell which mangles special chars in message bodies.
+// See: scripts/bundle-openclaw.mjs section 7a for full explanation.
+function _resolveSpawn(binary: string, args: string[]): { cmd: string; cmdArgs: string[] } {
+  if (binary.endsWith(".js") || binary.endsWith(".mjs") || binary.endsWith(".cjs")) {
+    return { cmd: process.execPath, cmdArgs: [binary, ...args] };
+  }
+  return { cmd: binary, cmdArgs: args };
+}
+`;
+  const lastImportIdx = content.lastIndexOf('import ');
+  const insertIdx = content.indexOf('\n', content.indexOf(';', lastImportIdx)) + 1;
+  content = content.slice(0, insertIdx) + helperCode + content.slice(insertIdx);
+
+  // Step 2: Wrap all spawn(binary, args, ...) calls to use _resolveSpawn
+  content = content.replace(
+    spawnPattern,
+    'const { cmd: _cmd, cmdArgs: _cmdArgs } = _resolveSpawn(binary, args);\n    const child = spawn(_cmd, _cmdArgs, {'
+  );
+
+  // Step 3: Validate the patch applied correctly
+  // Count spawn calls that were successfully wrapped (look for the replacement pattern)
+  const patchedCallCount = (content.match(/const \{ cmd: _cmd, cmdArgs: _cmdArgs \} = _resolveSpawn/g) || []).length;
+  if (patchedCallCount !== originalSpawnCount) {
+    echo`   ❌ PATCH FAILED: Expected to patch ${originalSpawnCount} spawn calls but only patched ${patchedCallCount}.`;
+    process.exit(1);
+  }
+
+  fs.writeFileSync(openzaloOpenzcaTs, content, 'utf-8');
+  echo`   🔧 Patched openzalo/src/openzca.ts: ${patchedCallCount}/${originalSpawnCount} spawn calls wrapped with _resolveSpawn`;
+} else {
+  echo`   ❌ PATCH FAILED: openzalo/src/openzca.ts not found. Extension structure may have changed.`;
+  process.exit(1);
+}
+
 // 7b. Bundle extra CLI tools required by third-party extensions
 //
 // openzalo spawns `openzca` CLI binary at runtime. Since openzca is a CrawBot
@@ -448,32 +531,52 @@ for (const { name, binName, binPath } of EXTRA_CLI_PACKAGES) {
     fs.cpSync(pkgReal, dest, { recursive: true, dereference: true });
   }
 
-  // Copy its dependencies (resolve from its virtual store node_modules)
+  // Copy its dependencies via BFS (same approach as openclaw bundling above)
+  // to ensure ALL transitive deps are included (e.g. zca-js -> crypto-js, tough-cookie, etc.)
+  const extraQueue = [];
+  const extraVisited = new Set();
   const pkgVirtualNM = getVirtualStoreNodeModules(pkgReal);
   if (pkgVirtualNM) {
-    const pkgDeps = listPackages(pkgVirtualNM);
+    extraQueue.push({ nodeModulesDir: pkgVirtualNM, skipPkg: name });
+  }
+  while (extraQueue.length > 0) {
+    const { nodeModulesDir, skipPkg } = extraQueue.shift();
+    const pkgDeps = listPackages(nodeModulesDir);
     for (const { name: depName, fullPath: depFullPath } of pkgDeps) {
-      if (depName === name) continue; // skip self
-      const depDest = path.join(outputNodeModules, depName);
-      if (fs.existsSync(depDest)) continue; // already in bundle
+      if (depName === skipPkg) continue; // skip self
       let depReal;
       try { depReal = fs.realpathSync(depFullPath); } catch { continue; }
-      try {
-        fs.mkdirSync(path.dirname(depDest), { recursive: true });
-        fs.cpSync(depReal, depDest, { recursive: true, dereference: true });
-      } catch {}
+      if (extraVisited.has(depReal)) continue;
+      extraVisited.add(depReal);
+      const depDest = path.join(outputNodeModules, depName);
+      if (!fs.existsSync(depDest)) {
+        try {
+          fs.mkdirSync(path.dirname(depDest), { recursive: true });
+          fs.cpSync(depReal, depDest, { recursive: true, dereference: true });
+        } catch {}
+      }
+      // BFS into this dep's own virtual store to find its transitive deps
+      const depVirtualNM = getVirtualStoreNodeModules(depReal);
+      if (depVirtualNM && depVirtualNM !== nodeModulesDir) {
+        extraQueue.push({ nodeModulesDir: depVirtualNM, skipPkg: depName });
+      }
     }
   }
 
-  // Create .bin wrapper script (NOT a symlink — symlinks break macOS codesign)
+  // Create .bin wrapper scripts (NOT symlinks — symlinks break macOS codesign)
   const binDir = path.join(outputNodeModules, '.bin');
   fs.mkdirSync(binDir, { recursive: true });
   const binScriptPath = path.join(binDir, binName);
   if (!fs.existsSync(binScriptPath)) {
     const targetPath = path.join('..', name, binPath);
+    // Unix wrapper (macOS/Linux)
     fs.writeFileSync(binScriptPath, `#!/usr/bin/env node\nrequire("./${targetPath}");\n`, 'utf-8');
     fs.chmodSync(binScriptPath, 0o755);
     try { fs.chmodSync(path.join(outputNodeModules, name, binPath), 0o755); } catch {}
+    // Windows .cmd wrapper — required because resolveOpenzcaBinary() appends .cmd on win32
+    const cmdPath = binScriptPath + '.cmd';
+    const targetRelative = path.join('..', name, binPath).split(path.sep).join('\\');
+    fs.writeFileSync(cmdPath, `@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${targetRelative}" %*\r\n) ELSE (\r\n  @SETLOCAL\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${targetRelative}" %*\r\n)\r\n`, 'utf-8');
   }
   echo`   ✅ Bundled CLI tool: ${binName} (from ${name})`;
 }
