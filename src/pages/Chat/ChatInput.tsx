@@ -10,6 +10,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, CircleStop, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { useChatStore } from '@/stores/chat';
 import { useSlashCommands } from './useSlashCommands';
 import { SlashCommandMenu } from './SlashCommandMenu';
 
@@ -29,6 +30,7 @@ export interface FileAttachment {
 interface ChatInputProps {
   onSend: (text: string, attachments?: FileAttachment[]) => void;
   onStop?: () => void;
+  onStopMainOnly?: () => void;
   disabled?: boolean;
   sending?: boolean;
 }
@@ -77,13 +79,40 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, onStopMainOnly, disabled = false, sending = false }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+  const [showStopMenu, setShowStopMenu] = useState(false);
+  const [checkingSubagents, setCheckingSubagents] = useState(false);
+  const [liveSubagents, setLiveSubagents] = useState<Array<{
+    childSessionKey: string; label: string; task: string; model: string;
+  }>>([]);
+  const storeSubagentCount = useChatStore((s) => s.activeSubagentCount);
+  const stopMenuRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isComposingRef = useRef(false);
   const sendText = useCallback((text: string) => onSend(text), [onSend]);
   const slashCommands = useSlashCommands(setInput, sendText);
+
+  // Close stop menu when sending stops (but not if subagents still running)
+  useEffect(() => {
+    if (!sending && storeSubagentCount === 0) {
+      setShowStopMenu(false);
+      setLiveSubagents([]);
+    }
+  }, [sending, storeSubagentCount]);
+
+  // Close stop menu on click outside
+  useEffect(() => {
+    if (!showStopMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (stopMenuRef.current && !stopMenuRef.current.contains(e.target as Node)) {
+        setShowStopMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showStopMenu]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -223,11 +252,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false }:
   }, []);
 
   const allReady = attachments.length === 0 || attachments.every(a => a.status === 'ready');
-  const canSend = (input.trim() || attachments.length > 0) && allReady && !disabled && !sending;
+  // Send is enabled whenever there's text, even during streaming (message gets queued)
+  const canSend = (input.trim() || attachments.length > 0) && allReady && !disabled;
   const canStop = sending && !disabled && !!onStop;
 
   const handleSend = useCallback(() => {
     if (!canSend) return;
+    // If streaming, abort current run first then send
+    if (sending && onStop) {
+      onStop();
+    }
     const readyAttachments = attachments.filter(a => a.status === 'ready');
     // Capture values before clearing — clear input immediately for snappy UX,
     // but keep attachments available for the async send
@@ -252,6 +286,80 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false }:
     if (!canStop) return;
     onStop?.();
   }, [canStop, onStop]);
+
+  // Kill subagents only (when main stream is already stopped but subagents still running)
+  const handleKillSubagents = useCallback(async () => {
+    const currentSessionKey = useChatStore.getState().currentSessionKey;
+    try {
+      await window.electron.ipcRenderer.invoke(
+        'gateway:rpc', 'subagents.kill', { sessionKey: currentSessionKey },
+      );
+    } catch { /* ignore */ }
+    useChatStore.setState({ activeSubagentCount: 0 });
+  }, []);
+
+  // Query gateway for active subagents when stop button is clicked
+  const fetchActiveSubagents = useCallback(async () => {
+    const currentSessionKey = useChatStore.getState().currentSessionKey;
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'gateway:rpc', 'subagents.active', { sessionKey: currentSessionKey },
+      ) as { success: boolean; result?: { active?: Array<{ childSessionKey: string; label: string; task: string; model: string }>; count?: number } };
+      if (result.success && result.result?.active) {
+        return result.result.active;
+      }
+    } catch { /* ignore */ }
+    return [];
+  }, []);
+
+  const handleStopClick = useCallback(async () => {
+    if (!canStop) return;
+    setCheckingSubagents(true);
+    try {
+      const active = await fetchActiveSubagents();
+      if (active.length > 0) {
+        setLiveSubagents(active);
+        setShowStopMenu(true);
+      } else {
+        handleStop();
+      }
+    } catch {
+      handleStop();
+    } finally {
+      setCheckingSubagents(false);
+    }
+  }, [canStop, handleStop, fetchActiveSubagents]);
+
+  // Show stop menu when not streaming but subagents are running
+  const handleStopClickIdle = useCallback(async () => {
+    setCheckingSubagents(true);
+    try {
+      const active = await fetchActiveSubagents();
+      if (active.length > 0) {
+        setLiveSubagents(active);
+        setShowStopMenu(true);
+      } else {
+        useChatStore.setState({ activeSubagentCount: 0 });
+      }
+    } catch { /* ignore */ }
+    finally { setCheckingSubagents(false); }
+  }, [fetchActiveSubagents]);
+
+  // Kill a single subagent by session key
+  const handleKillOne = useCallback(async (childSessionKey: string) => {
+    const currentSessionKey = useChatStore.getState().currentSessionKey;
+    try {
+      await window.electron.ipcRenderer.invoke(
+        'gateway:rpc', 'subagents.kill',
+        { sessionKey: currentSessionKey, childSessionKey },
+      );
+    } catch { /* ignore */ }
+    // Refresh the list
+    const active = await fetchActiveSubagents();
+    setLiveSubagents(active);
+    useChatStore.setState({ activeSubagentCount: active.length });
+    if (active.length === 0) setShowStopMenu(false);
+  }, [fetchActiveSubagents]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -386,21 +494,82 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false }:
             />
           </div>
 
-          {/* Send Button */}
+          {/* Send Button — always visible when there's text */}
           <Button
-            onClick={sending ? handleStop : handleSend}
-            disabled={sending ? !canStop : !canSend}
+            onClick={handleSend}
+            disabled={!canSend}
             size="icon"
             className="shrink-0 h-[44px] w-[44px]"
-            variant={sending ? 'destructive' : 'default'}
-            title={sending ? 'Stop' : 'Send'}
+            variant="default"
+            title="Send"
           >
-            {sending ? (
-              <CircleStop className="h-4 w-4" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
+            <Send className="h-4 w-4" />
           </Button>
+
+          {/* Stop Button — visible during streaming OR when subagents are running */}
+          {(sending || storeSubagentCount > 0) && (
+            <div ref={stopMenuRef} className="relative shrink-0">
+              <Button
+                onClick={sending ? handleStopClick : handleStopClickIdle}
+                disabled={sending ? (!canStop || checkingSubagents) : checkingSubagents}
+                size="icon"
+                className="h-[44px] w-[44px]"
+                variant="destructive"
+                title={sending ? 'Stop' : `Stop ${storeSubagentCount} subagent${storeSubagentCount > 1 ? 's' : ''}`}
+              >
+                {checkingSubagents
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <CircleStop className="h-4 w-4" />}
+              </Button>
+              {/* Badge showing active subagent count */}
+              {storeSubagentCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-orange-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                  {storeSubagentCount}
+                </span>
+              )}
+              {/* Stop menu — shown when subagents are active */}
+              {showStopMenu && liveSubagents.length > 0 && (
+                <div className="absolute bottom-full right-0 mb-1 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[220px] max-w-[320px] z-50">
+                  {/* Individual subagents */}
+                  {liveSubagents.map((sub) => (
+                    <button
+                      key={sub.childSessionKey}
+                      className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
+                      onClick={() => handleKillOne(sub.childSessionKey)}
+                      title={sub.task}
+                    >
+                      <CircleStop className="h-3.5 w-3.5 shrink-0 text-orange-500" />
+                      <span className="truncate">Stop <strong>{sub.label}</strong></span>
+                    </button>
+                  ))}
+                  {/* Divider */}
+                  <div className="border-t border-border my-1" />
+                  {/* Stop main only — only when streaming */}
+                  {sending && (
+                    <button
+                      className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
+                      onClick={() => { setShowStopMenu(false); onStopMainOnly?.(); }}
+                    >
+                      <CircleStop className="h-3.5 w-3.5 shrink-0" />
+                      Stop main only
+                    </button>
+                  )}
+                  {/* Stop all */}
+                  <button
+                    className="w-full px-3 py-2 text-sm text-left hover:bg-destructive/10 text-destructive flex items-center gap-2"
+                    onClick={() => {
+                      setShowStopMenu(false);
+                      setLiveSubagents([]);
+                      if (sending) { handleStop(); } else { handleKillSubagents(); }
+                    }}
+                  >
+                    <CircleStop className="h-3.5 w-3.5 shrink-0" />
+                    Stop all ({liveSubagents.length} agent{liveSubagents.length > 1 ? 's' : ''}{sending ? ' + main' : ''})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

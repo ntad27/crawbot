@@ -4,7 +4,7 @@
  * via gateway:rpc IPC. Session selector, thinking toggle, and refresh
  * are in the toolbar; messages render with markdown + streaming.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Bot, MessageSquare, Sparkles } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { useChatStore, type RawMessage } from '@/stores/chat';
@@ -38,6 +38,17 @@ export function Chat() {
   const loadSessions = useChatStore((s) => s.loadSessions);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abortRun = useChatStore((s) => s.abortRun);
+  // Stop main session only (not subagents)
+  const abortMainOnly = useCallback(async () => {
+    const currentSessionKey = useChatStore.getState().currentSessionKey;
+    useChatStore.setState({
+      sending: false, activeRunId: null, streamingText: '', streamingMessage: null,
+      pendingFinal: false, streamingTools: [],
+    });
+    try {
+      await window.electron.ipcRenderer.invoke('gateway:rpc', 'chat.abort', { sessionKey: currentSessionKey });
+    } catch { /* ignore */ }
+  }, []);
   const clearError = useChatStore((s) => s.clearError);
 
   const agents = useAgentsStore((s) => s.agents);
@@ -221,6 +232,7 @@ export function Chat() {
         <ChatInput
           onSend={sendMessage}
           onStop={abortRun}
+          onStopMainOnly={abortMainOnly}
           disabled={!isGatewayRunning}
           sending={sending}
         />

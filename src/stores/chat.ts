@@ -85,6 +85,8 @@ interface ChatState {
   lastUserMessageAt: number | null;
   /** Images collected from tool results, attached to the next assistant message */
   pendingToolImages: AttachedFileMeta[];
+  /** Number of currently active subagents (from gateway subagents.active RPC) */
+  activeSubagentCount: number;
 
   // Sessions
   sessions: ChatSession[];
@@ -1004,6 +1006,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingFinal: false,
   lastUserMessageAt: null,
   pendingToolImages: [],
+  activeSubagentCount: 0,
 
   sessions: [],
   currentSessionKey: DEFAULT_SESSION_KEY,
@@ -1449,15 +1452,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
   abortRun: async () => {
     const { currentSessionKey } = get();
     if (safetyTimeoutId !== null) { clearTimeout(safetyTimeoutId); safetyTimeoutId = null; }
-    set({ sending: false, activeRunId: null, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [] });
+    set({ sending: false, activeRunId: null, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [], activeSubagentCount: 0 });
     set({ streamingTools: [] });
 
     try {
-      await window.electron.ipcRenderer.invoke(
-        'gateway:rpc',
-        'chat.abort',
-        { sessionKey: currentSessionKey },
-      );
+      // Kill subagents FIRST (before main abort) — prevents subagents from
+      // re-triggering the main session while we're aborting it.
+      // Then abort main session. Both run in parallel for speed.
+      await Promise.all([
+        window.electron.ipcRenderer.invoke(
+          'gateway:rpc',
+          'subagents.kill',
+          { sessionKey: currentSessionKey },
+        ).catch(() => {}),
+        window.electron.ipcRenderer.invoke(
+          'gateway:rpc',
+          'chat.abort',
+          { sessionKey: currentSessionKey },
+        ),
+      ]);
     } catch (err) {
       set({ error: String(err) });
     }
@@ -1784,38 +1797,84 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearError: () => set({ error: null }),
 }));
 
-// Auto-stop after sessions_yield: count yield occurrences in DOM
-if (typeof document !== 'undefined') {
-  let _yieldPoll: ReturnType<typeof setInterval> | null = null;
-  let _lastYieldCount = 0; // how many "yielded" appeared when we last stopped
+// ── Subagent tracking & sessions_yield auto-stop ──
+// 1) Poll activeSubagentCount whenever sessions_spawn completes (keeps stop button visible)
+// 2) Auto-stop main stream after sessions_yield (gateway never sends "final" for yield)
+{
+  let _yieldHandled = false;
+  let _spawnDetected = false;
+  let _subagentPoll: ReturnType<typeof setInterval> | null = null;
+
+  function startSubagentPoll(sessionKey: string) {
+    if (_subagentPoll) return; // already polling
+    const check = async () => {
+      try {
+        const result = await window.electron.ipcRenderer.invoke(
+          'gateway:rpc', 'subagents.active', { sessionKey },
+        ) as { success: boolean; result?: { count?: number } };
+        const count = result.success ? (result.result?.count ?? 0) : 0;
+        useChatStore.setState({ activeSubagentCount: count });
+        if (count === 0 && _subagentPoll) {
+          clearInterval(_subagentPoll); _subagentPoll = null;
+        }
+      } catch {
+        useChatStore.setState({ activeSubagentCount: 0 });
+        if (_subagentPoll) { clearInterval(_subagentPoll); _subagentPoll = null; }
+      }
+    };
+    void check();
+    _subagentPoll = setInterval(check, 3000);
+  }
+
+  function stopSubagentPoll() {
+    if (_subagentPoll) { clearInterval(_subagentPoll); _subagentPoll = null; }
+  }
 
   useChatStore.subscribe((state) => {
-    if (state.sending && !_yieldPoll) {
-      // Snapshot current yield count at stream start — ignore old yields
-      const currentBody = document.body.innerText;
-      _lastYieldCount = (currentBody.match(/"status":\s*"yielded"/g) || []).length;
-
-      _yieldPoll = setInterval(() => {
-        if (!useChatStore.getState().sending) {
-          clearInterval(_yieldPoll!); _yieldPoll = null; return;
-        }
-        const body = document.body.innerText;
-        const yieldCount = (body.match(/"status":\s*"yielded"/g) || []).length;
-        // Only trigger if a NEW "Turn yielded" appeared since streaming started
-        if (yieldCount > _lastYieldCount) {
-          clearInterval(_yieldPoll!); _yieldPoll = null;
-          _lastYieldCount = yieldCount;
-          setTimeout(() => {
-            if (useChatStore.getState().sending) {
-              console.log('[auto-stop] new sessions_yield detected — aborting');
-              void useChatStore.getState().abortRun();
-            }
-          }, 3000);
-        }
-      }, 1000);
-    } else if (!state.sending && _yieldPoll) {
-      clearInterval(_yieldPoll); _yieldPoll = null;
+    // Reset flags when a new send starts
+    if (state.sending && !_spawnDetected) {
+      _yieldHandled = false;
     }
+
+    // Detect sessions_spawn completed → start polling for active subagents
+    const hasSpawn = state.streamingTools.some(
+      (t) => t.name === 'sessions_spawn' && t.status === 'completed',
+    );
+    if (hasSpawn && !_spawnDetected) {
+      _spawnDetected = true;
+      startSubagentPoll(state.currentSessionKey);
+    }
+
+    // Reset spawn detection when not sending and no subagents
+    if (!state.sending && state.activeSubagentCount === 0) {
+      _spawnDetected = false;
+      stopSubagentPoll();
+    }
+
+    // Detect sessions_yield completed → auto-stop main stream after delay
+    if (!state.sending || _yieldHandled) return;
+    const hasYield = state.streamingTools.some(
+      (t) => t.name === 'sessions_yield' && t.status === 'completed',
+    );
+    if (!hasYield) return;
+
+    _yieldHandled = true;
+    setTimeout(() => {
+      const s = useChatStore.getState();
+      if (!s.sending) return;
+      console.log('[auto-stop] sessions_yield completed — aborting main stream only');
+      const currentSessionKey = s.currentSessionKey;
+      useChatStore.setState({
+        sending: false, activeRunId: null, streamingText: '', streamingMessage: null,
+        pendingFinal: false, streamingTools: [],
+      });
+      window.electron.ipcRenderer.invoke(
+        'gateway:rpc', 'chat.abort', { sessionKey: currentSessionKey },
+      ).catch(() => {});
+      void s.loadHistory(true);
+      // Ensure poll keeps running for subagents
+      startSubagentPoll(currentSessionKey);
+    }, 5000);
   });
 }
 
