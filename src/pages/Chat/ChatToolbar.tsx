@@ -3,8 +3,8 @@
  * Agent selector, session selector, model selector, new session, refresh, and thinking toggle.
  * Rendered in the Header when on the Chat page.
  */
-import { useMemo, useEffect } from 'react';
-import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe } from 'lucide-react';
+import { useMemo, useEffect, useState, useRef, useCallback } from 'react';
+import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe, X, Search, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useChatStore } from '@/stores/chat';
@@ -23,6 +23,7 @@ export function ChatToolbar() {
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
   const switchSession = useChatStore((s) => s.switchSession);
+  const deleteSession = useChatStore((s) => s.deleteSession);
   const switchAgent = useChatStore((s) => s.switchAgent);
   const newSession = useChatStore((s) => s.newSession);
   const refresh = useChatStore((s) => s.refresh);
@@ -68,12 +69,48 @@ export function ChatToolbar() {
     return key;
   };
 
+  // Session dropdown state
+  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
+  const sessionDropdownRef = useRef<HTMLDivElement>(null);
+  const sessionSearchRef = useRef<HTMLInputElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!sessionDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (sessionDropdownRef.current && !sessionDropdownRef.current.contains(e.target as Node)) {
+        setSessionDropdownOpen(false);
+        setSessionSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [sessionDropdownOpen]);
+
+  // Focus search when dropdown opens
+  useEffect(() => {
+    if (sessionDropdownOpen) sessionSearchRef.current?.focus();
+  }, [sessionDropdownOpen]);
+
+  const filteredSessions = useMemo(() => {
+    const allSessions = [...agentSessions];
+    // Include current session if not in list
+    if (!allSessions.some((s) => s.key === currentSessionKey)) {
+      allSessions.unshift({ key: currentSessionKey });
+    }
+    if (!sessionSearch) return allSessions;
+    const q = sessionSearch.toLowerCase();
+    return allSessions.filter((s) => sessionDisplayName(s.key).toLowerCase().includes(q));
+  }, [agentSessions, currentSessionKey, sessionSearch, agentPrefix]);
+
+  const isMainSession = useCallback(
+    (key: string) => key === `agent:${selectedAgentId}:main`,
+    [selectedAgentId],
+  );
+
   const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     switchAgent(e.target.value);
-  };
-
-  const handleSessionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    switchSession(e.target.value);
   };
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -191,29 +228,80 @@ export function ChatToolbar() {
       )}
 
       {/* Session Selector */}
-      <div className="relative">
-        <select
-          value={currentSessionKey}
-          onChange={handleSessionChange}
+      <div className="relative" ref={sessionDropdownRef}>
+        <button
+          type="button"
+          onClick={() => setSessionDropdownOpen((v) => !v)}
           className={cn(
-            'appearance-none rounded-md border border-border bg-background px-3 py-1.5 pr-8',
-            'text-sm text-foreground cursor-pointer',
+            'flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 pr-7',
+            'text-sm text-foreground cursor-pointer max-w-[220px]',
             'focus:outline-none focus:ring-2 focus:ring-ring',
+            sessionDropdownOpen && 'ring-2 ring-ring',
           )}
         >
-          {/* Show current session if not in filtered list */}
-          {!agentSessions.some((s) => s.key === currentSessionKey) && (
-            <option value={currentSessionKey}>
-              {sessionDisplayName(currentSessionKey)}
-            </option>
-          )}
-          {agentSessions.map((s) => (
-            <option key={s.key} value={s.key}>
-              {sessionDisplayName(s.key)}
-            </option>
-          ))}
-        </select>
+          <Lock className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          <span className="truncate">{sessionDisplayName(currentSessionKey)}</span>
+        </button>
         <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+
+        {sessionDropdownOpen && (
+          <div className="absolute top-full left-0 mt-1 z-50 w-[320px] rounded-md border border-border bg-popover shadow-lg">
+            {/* Search input */}
+            <div className="flex items-center gap-2 border-b border-border px-2 py-1.5">
+              <Search className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <input
+                ref={sessionSearchRef}
+                type="text"
+                value={sessionSearch}
+                onChange={(e) => setSessionSearch(e.target.value)}
+                placeholder="Search sessions..."
+                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+            {/* Session list */}
+            <div className="max-h-[300px] overflow-y-auto py-1">
+              {filteredSessions.length === 0 && (
+                <div className="px-3 py-2 text-sm text-muted-foreground">No sessions found</div>
+              )}
+              {filteredSessions.map((s) => (
+                <div
+                  key={s.key}
+                  className={cn(
+                    'flex items-center gap-1 px-2 py-1.5 text-sm cursor-pointer group',
+                    'hover:bg-accent hover:text-accent-foreground',
+                    s.key === currentSessionKey && 'bg-accent/50 font-medium',
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="flex-1 text-left truncate"
+                    onClick={() => {
+                      switchSession(s.key);
+                      setSessionDropdownOpen(false);
+                      setSessionSearch('');
+                    }}
+                  >
+                    {s.key === currentSessionKey && <span className="mr-1">✓</span>}
+                    {sessionDisplayName(s.key)}
+                  </button>
+                  {!isMainSession(s.key) && (
+                    <button
+                      type="button"
+                      className="flex-shrink-0 p-0.5 rounded hover:bg-destructive/20 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSession(s.key);
+                      }}
+                      title="Delete session"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Model Selector */}

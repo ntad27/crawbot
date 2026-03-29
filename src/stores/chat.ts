@@ -107,6 +107,7 @@ interface ChatState {
   abortRun: () => Promise<void>;
   handleChatEvent: (event: Record<string, unknown>) => void;
   handleAgentEvent: (event: Record<string, unknown>) => void;
+  deleteSession: (key: string) => void;
   toggleThinking: () => void;
   refresh: () => Promise<void>;
   clearError: () => void;
@@ -1143,6 +1144,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Sync model selection from session to models store
     syncSessionModelToStore(agentSession);
     get().loadHistory();
+  },
+
+  // ── Delete session ──
+
+  deleteSession: (key: string) => {
+    const { sessions, currentSessionKey, selectedAgentId } = get();
+    // Don't allow deleting the "main" session
+    const prefix = `agent:${selectedAgentId}:`;
+    if (key === `${prefix}main`) return;
+
+    const remaining = sessions.filter((s) => s.key !== key);
+    // If we're deleting the current session, switch to first agent session or main
+    if (key === currentSessionKey) {
+      const nextSession = remaining.find((s) => s.key.startsWith(prefix)) ?? remaining[0];
+      const nextKey = nextSession?.key ?? `${prefix}main`;
+      set({ sessions: remaining, currentSessionKey: nextKey, messages: [] });
+      get().loadHistory();
+    } else {
+      set({ sessions: remaining });
+    }
   },
 
   // ── New session ──
