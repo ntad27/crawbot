@@ -559,8 +559,13 @@ function ProviderCard({
                   disabled={reauthing}
                   onClick={async () => {
                     setReauthing(true);
-                    await triggerOAuthLogin(provider.type);
+                    const result = await triggerOAuthLogin(provider.type);
                     setReauthing(false);
+                    if (result?.success) {
+                      toast.success(t('aiProviders.oauth.refreshSuccess', 'OAuth token refreshed successfully'));
+                    } else if (result?.error) {
+                      toast.error(result.error);
+                    }
                   }}
                   title={t('aiProviders.oauth.reauth', 'Re-authenticate')}
                 >

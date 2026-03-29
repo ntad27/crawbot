@@ -328,6 +328,7 @@ const electronAPI = {
         'webauth:provider:status-changed',
         'webauth:provider:session-expired',
         'webauth:proxy:started',
+        'oauth:token-refreshed',
       ];
 
       if (validChannels.includes(channel)) {

@@ -5,7 +5,7 @@
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Component, useEffect } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
-import { Toaster } from 'sonner';
+import { toast, Toaster } from 'sonner';
 import i18n from './i18n';
 import { MainLayout } from './components/layout/MainLayout';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -131,6 +131,29 @@ function App() {
       }
     };
   }, [navigate]);
+
+  // Listen for OAuth token refresh notifications
+  useEffect(() => {
+    const providerLabels: Record<string, string> = {
+      'google-gemini-cli': 'Google Gemini',
+      anthropic: 'Claude',
+      'openai-codex': 'OpenAI',
+    };
+
+    const handleRefresh = (...args: unknown[]) => {
+      const data = args[0] as { provider?: string; success?: boolean; error?: string } | undefined;
+      if (!data) return;
+      const label = providerLabels[data.provider ?? ''] ?? data.provider;
+      if (data.success) {
+        toast.success(`${label} OAuth token refreshed`);
+      } else {
+        toast.error(`${label} OAuth token refresh failed: ${data.error ?? 'Unknown error'}`);
+      }
+    };
+
+    const unsubscribe = window.electron.ipcRenderer.on('oauth:token-refreshed', handleRefresh);
+    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
 
   // Apply theme
   useEffect(() => {

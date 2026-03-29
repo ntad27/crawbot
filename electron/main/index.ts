@@ -370,7 +370,17 @@ async function initialize(): Promise<void> {
       const { startProactiveTokenRefresh } = await import('../utils/claude-oauth');
       startProactiveTokenRefresh();
     } catch (err) {
-      logger.warn('Failed to start proactive token refresh:', err);
+      logger.warn('Failed to start Anthropic proactive token refresh:', err);
+    }
+
+    // Start proactive OAuth token refresh for Google Gemini CLI.
+    // Uses the same client credentials as login to avoid client_id mismatch
+    // with pi-ai's built-in refreshToken().
+    try {
+      const { startGoogleProactiveTokenRefresh } = await import('../utils/google-oauth');
+      startGoogleProactiveTokenRefresh();
+    } catch (err) {
+      logger.warn('Failed to start Google proactive token refresh:', err);
     }
 
     // Inject CrawBot context into AGENTS.md after workspace files settle

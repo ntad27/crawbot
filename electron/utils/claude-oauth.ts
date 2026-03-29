@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { BrowserWindow } from 'electron';
 import { openExternalInDefaultProfile } from './open-external';
 import { logger } from './logger';
 
@@ -235,6 +236,17 @@ function writeAuthProfile(credential: {
   writeFileSync(authProfilesPath, JSON.stringify(store, null, 2), 'utf-8');
 }
 
+// ── Notification helper ──
+
+function notifyRenderer(provider: string, success: boolean, error?: string): void {
+  try {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('oauth:token-refreshed', { provider, success, error });
+    }
+  } catch { /* ignore — window may not exist yet */ }
+}
+
 // ── Proactive Token Refresh ──
 
 // Refresh the access token BEFORE it expires so the refresh token stays valid.
@@ -356,11 +368,13 @@ async function doProactiveRefresh(): Promise<void> {
         : undefined,
     });
     logger.info('[claude-oauth] Proactive refresh successful, new token written');
+    notifyRenderer('anthropic', true);
 
     // Schedule next refresh
     scheduleNextRefresh();
   } else {
     logger.error('[claude-oauth] Proactive refresh failed — user will need to re-authenticate');
+    notifyRenderer('anthropic', false, 'Token refresh failed. Please re-authenticate.');
     // Retry in 5 minutes in case it was a transient error
     refreshTimer = setTimeout(() => void doProactiveRefresh(), 5 * 60 * 1000);
     if (refreshTimer && typeof refreshTimer === 'object' && 'unref' in refreshTimer) {
