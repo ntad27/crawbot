@@ -1325,7 +1325,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, userMsg],
       sending: true,
       activeRunId: null,
-      error: null,
+          error: null,
       streamingText: '',
       streamingMessage: null,
       streamingTools: [],
@@ -1499,7 +1499,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // If we receive a delta after the safety timeout cleared the sending state,
         // the agent is still running — re-activate streaming so the UI resumes updates.
         if (!get().sending) {
-          console.log('[handleChatEvent] Received delta after timeout — re-activating streaming state');
+          // Don't re-activate for user-role messages (subagent completion announcements)
+          const deltaRole = (event.message as Record<string, unknown> | undefined)?.role;
+          if (deltaRole === 'user') {
+            void get().loadHistory(true);
+            break;
+          }
+          console.log('[handleChatEvent] Received delta after idle — re-activating streaming state');
           set({ sending: true, error: null, activeRunId: runId || null });
           startSafetyTimeout(get, set);
         }
@@ -1517,6 +1523,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })(),
           streamingTools: updates.length > 0 ? upsertToolStatuses(s.streamingTools, updates) : s.streamingTools,
         }));
+
         break;
       }
       case 'final': {
@@ -1650,7 +1657,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           // After the final response, quietly reload history to surface all intermediate
           // tool-use turns (thinking + tool blocks) from the Gateway's authoritative record.
-          if (hasOutput && !toolOnly) {
+          // Always reload for tool-only finals too (e.g., sessions_yield) — otherwise
+          // pendingFinal never clears and the streaming indicator hangs.
+          if (hasOutput || toolOnly) {
+            void get().loadHistory(true);
+          }
+          // For tool-only finals, always reload history to clear pendingFinal
+          if (toolOnly && !hasOutput) {
             void get().loadHistory(true);
           }
         } else {
@@ -1770,3 +1783,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+// Auto-stop after sessions_yield: count yield occurrences in DOM
+if (typeof document !== 'undefined') {
+  let _yieldPoll: ReturnType<typeof setInterval> | null = null;
+  let _lastYieldCount = 0; // how many "yielded" appeared when we last stopped
+
+  useChatStore.subscribe((state) => {
+    if (state.sending && !_yieldPoll) {
+      // Snapshot current yield count at stream start — ignore old yields
+      const currentBody = document.body.innerText;
+      _lastYieldCount = (currentBody.match(/"status":\s*"yielded"/g) || []).length;
+
+      _yieldPoll = setInterval(() => {
+        if (!useChatStore.getState().sending) {
+          clearInterval(_yieldPoll!); _yieldPoll = null; return;
+        }
+        const body = document.body.innerText;
+        const yieldCount = (body.match(/"status":\s*"yielded"/g) || []).length;
+        // Only trigger if a NEW "Turn yielded" appeared since streaming started
+        if (yieldCount > _lastYieldCount) {
+          clearInterval(_yieldPoll!); _yieldPoll = null;
+          _lastYieldCount = yieldCount;
+          setTimeout(() => {
+            if (useChatStore.getState().sending) {
+              console.log('[auto-stop] new sessions_yield detected — aborting');
+              void useChatStore.getState().abortRun();
+            }
+          }, 3000);
+        }
+      }, 1000);
+    } else if (!state.sending && _yieldPoll) {
+      clearInterval(_yieldPoll); _yieldPoll = null;
+    }
+  });
+}
+
+
