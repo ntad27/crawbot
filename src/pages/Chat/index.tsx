@@ -198,13 +198,18 @@ export function Chat() {
         {error && (
           <div className="px-4 py-2 bg-destructive/10 border-t border-destructive/20">
             <div className="max-w-4xl mx-auto flex items-center justify-between">
-              <p className="text-sm text-destructive flex items-center gap-2">
-                <AlertCircle className="h-4 w-4" />
-                {error}
-              </p>
+              <div className="text-sm text-destructive flex items-start gap-2 min-w-0">
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p>{error}</p>
+                  {/oauth.token.refresh.failed|re-authenticate|expired|token has expired|unauthorized|\b401\b|\b403\b|Missing token|invalid.token|no credentials found/i.test(error) && (
+                    <p className="font-bold mt-1">{t('oauthReauthHint')}</p>
+                  )}
+                </div>
+              </div>
               <button
                 onClick={clearError}
-                className="text-xs text-destructive/60 hover:text-destructive underline"
+                className="text-xs text-destructive/60 hover:text-destructive underline shrink-0 ml-2"
               >
                 {t('common:actions.dismiss')}
               </button>

@@ -1,4 +1,5 @@
 {
+    "oauthReauthHint": "Go to Settings → AI Providers and click the refresh button to re-authenticate.",
     "gatewayNotRunning": "Gateway Not Running",
     "gatewayRequired": "The OpenClaw Gateway needs to be running to use chat. It will start automatically, or you can start it from Settings.",
     "welcome": {

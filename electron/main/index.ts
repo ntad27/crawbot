@@ -383,6 +383,14 @@ async function initialize(): Promise<void> {
       logger.warn('Failed to start Google proactive token refresh:', err);
     }
 
+    // Start proactive OAuth token refresh for OpenAI Codex.
+    try {
+      const { startCodexProactiveTokenRefresh } = await import('../utils/openai-codex-oauth');
+      startCodexProactiveTokenRefresh();
+    } catch (err) {
+      logger.warn('Failed to start OpenAI Codex proactive token refresh:', err);
+    }
+
     // Inject CrawBot context into AGENTS.md after workspace files settle
     setTimeout(async () => {
       try {

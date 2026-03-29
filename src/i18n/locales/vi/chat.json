@@ -1,4 +1,5 @@
 {
+    "oauthReauthHint": "Vào Cài đặt → AI Providers và bấm nút refresh để xác thực lại.",
     "gatewayNotRunning": "Gateway chưa chạy",
     "gatewayRequired": "OpenClaw Gateway cần được chạy để sử dụng trò chuyện. Nó sẽ tự động khởi động, hoặc bạn có thể khởi động từ Cài đặt.",
     "welcome": {
