@@ -22,6 +22,8 @@ export interface AutomationTab {
   url: string;
   title: string;
   partition: string;
+  sessionKey?: string;
+  sessionLabel?: string;
 }
 
 class AutomationViewManager {
@@ -40,15 +42,13 @@ class AutomationViewManager {
   /** Update the panel area bounds (called from renderer via IPC) */
   setPanelBounds(bounds: { x: number; y: number; width: number; height: number }): void {
     this.panelBounds = bounds;
-    // Apply bounds to ALL tabs (not just active) so they're ready when switched to
-    for (const [id, tab] of this.tabs) {
-      if (id === this.activeTabId) {
-        if (bounds.width > 0 && bounds.height > 0) {
-          tab.view.setVisible(true);
-          tab.view.setBounds(bounds);
-        } else {
-          tab.view.setVisible(false);
-        }
+    const hasBounds = bounds.width > 0 && bounds.height > 0;
+    // All tabs get same bounds — active tab on top via z-order
+    for (const [_id, tab] of this.tabs) {
+      if (tab.view.webContents.isDestroyed()) continue;
+      if (hasBounds) {
+        tab.view.setVisible(true);
+        tab.view.setBounds(bounds);
       } else {
         tab.view.setVisible(false);
       }
@@ -84,6 +84,11 @@ class AutomationViewManager {
         sandbox: true,
       },
     });
+
+    // Disable background throttling so inactive tabs still load/render for CDP
+    view.webContents.setBackgroundThrottling(false);
+    // Set opaque background so about:blank doesn't show tabs behind (all tabs share same bounds)
+    view.setBackgroundColor('#1e1e2e');
 
     const tab: AutomationTab = { id: tabId, view, url, title: 'New Tab', partition };
     this.tabs.set(tabId, tab);
@@ -229,8 +234,14 @@ class AutomationViewManager {
       }
     });
 
-    // Navigate
-    if (url && url !== 'about:blank') {
+    // Navigate — for about:blank, inject opaque background so inactive tabs behind don't show through
+    if (!url || url === 'about:blank') {
+      view.webContents.loadURL('about:blank').then(() => {
+        view.webContents.executeJavaScript(
+          'document.documentElement.style.background=document.body.style.background="#fff"'
+        ).catch(() => {});
+      }).catch(() => {});
+    } else {
       view.webContents.loadURL(url).catch((err) => {
         logger.error(`${LOG_TAG} Failed to load ${url}:`, err);
       });
@@ -272,25 +283,25 @@ class AutomationViewManager {
     logger.info(`${LOG_TAG} Closed tab ${tabId}`);
   }
 
-  /** Set active tab — shows it on top and hides others */
+  /** Set active tab — active on top via z-order, all tabs keep full bounds for CDP */
   setActiveTab(tabId: string): void {
     this.activeTabId = tabId;
+    const hasBounds = this.panelBounds.width > 0 && this.panelBounds.height > 0 && this.panelBounds.x > -9000;
 
     for (const [id, tab] of this.tabs) {
+      if (tab.view.webContents.isDestroyed()) continue;
       if (id === tabId) {
-        // Bring to front: remove and re-add so it's on top
+        // Bring to front: remove and re-add so it's the topmost child (z-order)
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
           try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* */ }
           this.mainWindow.contentView.addChildView(tab.view);
         }
-        if (tab.view.webContents.isDestroyed()) continue;
-        // Only show tab when renderer has reported valid panel bounds
-        if (this.panelBounds.width > 0 && this.panelBounds.height > 0 && this.panelBounds.x > -9000) {
-          tab.view.setVisible(true);
-          tab.view.setBounds(this.panelBounds);
-        } else {
-          tab.view.setVisible(false);
-        }
+      }
+      // All tabs get same bounds — only active is on top visually
+      // Inactive tabs render their DOM at full viewport for correct CDP screenshots
+      if (hasBounds) {
+        tab.view.setVisible(true);
+        tab.view.setBounds(this.panelBounds);
       } else {
         tab.view.setVisible(false);
       }
@@ -382,6 +393,41 @@ class AutomationViewManager {
       }
     }
     return null;
+  }
+
+  /** Map CDP hex target ID to CrawBot tab ID (set when tab is discovered in /json/list) */
+  private cdpTargetIdMap = new Map<string, string>();
+
+  /** Register mapping from CDP hex target ID to CrawBot tab ID */
+  registerCdpTargetId(cdpTargetId: string, tabId: string): void {
+    this.cdpTargetIdMap.set(cdpTargetId, tabId);
+  }
+
+  /** Find a tab by its CDP hex target ID */
+  findTabByCdpTargetId(cdpTargetId: string): AutomationTab | undefined {
+    const tabId = this.cdpTargetIdMap.get(cdpTargetId);
+    if (tabId) return this.tabs.get(tabId);
+    return undefined;
+  }
+
+  /** Tag a tab with agent session info (for tab grouping) */
+  setTabSession(tabId: string, sessionKey: string, sessionLabel?: string): void {
+    const tab = this.tabs.get(tabId);
+    if (tab) {
+      tab.sessionKey = sessionKey;
+      tab.sessionLabel = sessionLabel;
+      logger.info(`${LOG_TAG} Tagged tab ${tabId} → session=${sessionKey} label=${sessionLabel}`);
+    }
+  }
+
+  /** Find an automation tab by its CDP target ID (webContents numeric ID or hex ID) */
+  findTabByWebContentsId(webContentsId: number): AutomationTab | undefined {
+    for (const tab of this.tabs.values()) {
+      if (!tab.view.webContents.isDestroyed() && tab.view.webContents.id === webContentsId) {
+        return tab;
+      }
+    }
+    return undefined;
   }
 
   dispose(): void {

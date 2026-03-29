@@ -163,6 +163,21 @@ export class CdpFilterProxy {
         return this.isTargetAllowed(t, exposed);
       });
 
+      // Register hex CDP targetId → CrawBot tabId mappings by matching URLs
+      const allAutomationTabs = automationViews.getAllTabs();
+      for (const cdpTarget of filtered) {
+        const hexId = (cdpTarget as Record<string, unknown>).id as string;
+        const cdpUrl = (cdpTarget as Record<string, unknown>).url as string;
+        if (hexId && cdpUrl) {
+          for (const aTab of allAutomationTabs) {
+            if (!aTab.view.webContents.isDestroyed() && aTab.view.webContents.getURL() === cdpUrl) {
+              automationViews.registerCdpTargetId(hexId, aTab.id);
+              break;
+            }
+          }
+        }
+      }
+
       // Rewrite ports + mark active tab in title
       const activeTabId = automationViews.getActiveTabId();
       const rewritten = filtered.map((t: Record<string, unknown>) => {
@@ -263,6 +278,88 @@ export class CdpFilterProxy {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ type: 'string', value: 'Target activated' }));
       }
+    } else if (normalizedUrl === '/json/session-tag' && req.method === 'POST') {
+      // Tag a tab with agent session info (for tab grouping UI)
+      const body = await this.readJsonBody(req);
+      const { targetId, sessionKey } = body as {
+        targetId?: string; sessionKey?: string; sessionLabel?: string;
+      };
+      let { sessionLabel } = body as { sessionLabel?: string };
+      if (!targetId || !sessionKey) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'targetId and sessionKey required' }));
+        return;
+      }
+
+      // Try to resolve a better label from sessions.json if label is just a UUID prefix
+      if (!sessionLabel || /^[0-9a-f-]{8}$/i.test(sessionLabel)) {
+        try {
+          const { readFileSync } = await import('node:fs');
+          const { join } = await import('node:path');
+          const { homedir } = await import('node:os');
+          const sessPath = join(homedir(), '.openclaw', 'agents', 'main', 'sessions', 'sessions.json');
+          const sessions = JSON.parse(readFileSync(sessPath, 'utf8'));
+          const sessData = sessions[sessionKey];
+          if (sessData?.label) {
+            sessionLabel = sessData.label;
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Find the automation tab matching this CDP targetId
+      // CDP targetId is a hex string (e.g., "CF7926AC241C4253D389ABA44586136B")
+      // Use the hex→tabId mapping registered during createCdpPage
+      let found = false;
+
+      // Primary lookup: hex CDP target ID → registered mapping
+      const mappedTab = automationViews.findTabByCdpTargetId(targetId);
+      if (mappedTab) {
+        automationViews.setTabSession(mappedTab.id, sessionKey, sessionLabel);
+        automationViews.notifyRendererPublic('browser:tab:session-tagged', {
+          tabId: mappedTab.id, sessionKey, sessionLabel,
+        });
+        found = true;
+      }
+
+      // Fallback: try numeric webContents ID match
+      if (!found) {
+        const wcTab = automationViews.findTabByWebContentsId(Number(targetId));
+        if (wcTab) {
+          automationViews.setTabSession(wcTab.id, sessionKey, sessionLabel);
+          automationViews.notifyRendererPublic('browser:tab:session-tagged', {
+            tabId: wcTab.id, sessionKey, sessionLabel,
+          });
+          found = true;
+        }
+      }
+
+      // Last resort: match by URL via real CDP /json/list
+      if (!found) {
+        try {
+          const listRes = await this.fetchFromRealCdp(realCdpPort, '/json/list');
+          const targets = JSON.parse(listRes) as Array<{ id: string; url?: string }>;
+          const target = targets.find(t => t.id === targetId);
+          if (target?.url) {
+            const allTabs = automationViews.getAllTabs();
+            for (const tab of allTabs) {
+              if (tab.view.webContents.isDestroyed()) continue;
+              if (tab.view.webContents.getURL() === target.url) {
+                // Register this mapping for future lookups
+                automationViews.registerCdpTargetId(targetId, tab.id);
+                automationViews.setTabSession(tab.id, sessionKey, sessionLabel);
+                automationViews.notifyRendererPublic('browser:tab:session-tagged', {
+                  tabId: tab.id, sessionKey, sessionLabel,
+                });
+                found = true;
+                break;
+              }
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      res.writeHead(found ? 200 : 404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(found ? { ok: true } : { error: 'tab not found' }));
     } else {
       // Pass-through unknown endpoints
       try {
@@ -719,6 +816,17 @@ export class CdpFilterProxy {
 
   // ── Helpers ──
 
+  private readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      let data = '';
+      req.on('data', (chunk) => { data += chunk; });
+      req.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch { resolve({}); }
+      });
+      req.on('error', () => resolve({}));
+    });
+  }
+
   private async fetchFromRealCdp(port: number, path: string, method = 'GET'): Promise<string> {
     return new Promise((resolve, reject) => {
       const req = http.request(
@@ -786,6 +894,11 @@ export class CdpFilterProxy {
       }
 
       if (target) {
+        // Register hex CDP targetId → CrawBot tabId mapping for session-tag lookups
+        const hexId = (target as Record<string, unknown>).id;
+        if (typeof hexId === 'string') {
+          automationViews.registerCdpTargetId(hexId, tabId);
+        }
         return this.rewritePorts(target as Record<string, unknown>, realCdpPort, proxyPort);
       }
 
@@ -802,7 +915,12 @@ export class CdpFilterProxy {
           !t.url?.startsWith('devtools://')
       );
       if (pageTargets.length > 0) {
-        return this.rewritePorts(pageTargets[pageTargets.length - 1], realCdpPort, proxyPort);
+        const fallbackTarget = pageTargets[pageTargets.length - 1];
+        const fallbackHexId = fallbackTarget.id;
+        if (typeof fallbackHexId === 'string') {
+          automationViews.registerCdpTargetId(fallbackHexId, tabId);
+        }
+        return this.rewritePorts(fallbackTarget, realCdpPort, proxyPort);
       }
 
       logger.warn(`${LOG_TAG} createCdpPage: target not found after creation`);

@@ -7,7 +7,7 @@ After every OpenClaw version upgrade (`pnpm upgrade openclaw` or version bump in
 1. Start Gateway (via `pnpm dev` or the app)
 2. Look for these lines in logs:
    ```
-   [Gateway stderr] [openclaw-patches] dispatch: 3, relay: 8 patch(es) applied (some-file.js)
+   [Gateway stderr] [openclaw-patches] dispatch: 3, relay: 8, session-affinity: 7 patch(es) applied (some-file.js)
    [Gateway stderr] [openclaw-patches] screenshot: 1 patch(es) applied (some-file.js)
    [Gateway stderr] [openclaw-patches] oauth-refresh: 1 patch(es) applied (anthropic.js)
    ```
@@ -104,6 +104,31 @@ All must pass. Chrome must be open with the OpenClaw Browser Relay extension act
 - **Chrome extension**: `assets/chrome-extension/background.js`
 - **OpenClaw bundle**: `node_modules/openclaw/dist/*.js`
 - **E2E tests**: `tests/e2e-browser-relay-test.mjs`, `tests/e2e-stability-test.mjs`, `tests/e2e-idle-detach-test.mjs`
+
+## Patch F: Browser Session Tab Affinity (multi-agent tab isolation)
+
+**Added**: 2026.3.29 | **OpenClaw version**: 2026.3.13
+
+**Problem**: When multiple subagents use the browser tool concurrently, they all share `profileState.lastTargetId`, causing them to navigate on the same tab (race condition).
+
+**Fix**: Per-session `lastTargetId` via `__lastTargetBySession` Map on ProfileRuntimeState. 7 sub-patches:
+- F1: `ensureTabAvailable` accepts `sessionKey` param
+- F1B: `pickDefault` checks per-session sticky before global
+- F1C: Updates per-session sticky after tab selection
+- F2: `withRouteTabContext` extracts `sessionKey` from request body
+- F3: `browserNavigate` includes `sessionKey` in POST body
+- F4: Browser tool navigate call passes `agentSessionKey`
+- F5: `browserScreenshotAction` includes `sessionKey` in POST body
+
+**Detection strings**: `ensureTabAvailable`, `pickDefault` (both must be present in file)
+
+**Verify after upgrade**:
+```bash
+# Check the patch targets exist
+grep -c "const ensureTabAvailable = async (targetId)" node_modules/openclaw/dist/*.js
+grep -c "const pickDefault = () =>" node_modules/openclaw/dist/*.js
+grep -c "profileState.lastTargetId = chosen.targetId" node_modules/openclaw/dist/*.js
+```
 
 ## History of Breakages
 

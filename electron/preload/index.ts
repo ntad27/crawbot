@@ -320,6 +320,7 @@ const electronAPI = {
         'browser:tab:created',
         'browser:tab:closed',
         'browser:tab:activated',
+        'browser:tab:session-tagged',
         'webauth:browser:tab:created',
         'webauth:browser:tab:updated',
         'webauth:browser:tab:activated',
