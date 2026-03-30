@@ -19,20 +19,9 @@ export interface WebAuthBrowserTab {
   zoomFactor: number;
 }
 
-/** Google login state — when set, renderer shows <webview> overlay */
-export interface GoogleLoginState {
-  tabId: string;
-  googleUrl: string;
-  partition: string;
-}
-
 interface WebAuthBrowserState {
   tabs: WebAuthBrowserTab[];
   activeTabId: string | null;
-
-  /** When non-null, show <webview> for Google login instead of native view */
-  googleLogin: GoogleLoginState | null;
-  setGoogleLogin: (state: GoogleLoginState | null) => void;
 
   // Tab actions
   addTab: (url: string, partition: string) => string;
@@ -82,8 +71,6 @@ export const useWebAuthBrowserStore = create<WebAuthBrowserState>()(
     // ── Default state ──
     tabs: [],
     activeTabId: null,
-    googleLogin: null,
-    setGoogleLogin: (state) => set({ googleLogin: state }),
 
     // ── Tab actions ──
 
@@ -237,17 +224,7 @@ if (typeof window !== 'undefined' && window.electron?.ipcRenderer) {
     }
   });
 
-  // Google login intercept — main process detected Google OAuth redirect
-  // and tells renderer to show a <webview> tag instead (which is NOT
-  // affected by --remote-debugging-port)
-  window.electron.ipcRenderer.on(
-    'webauth:browser:google-login',
-    (tabId: unknown, googleUrl: unknown, partition: unknown) => {
-      if (typeof tabId === 'string' && typeof googleUrl === 'string' && typeof partition === 'string') {
-        useWebAuthBrowserStore.setState({
-          googleLogin: { tabId, googleUrl, partition },
-        });
-      }
-    }
-  );
+  // Google login intercept removed — Google OAuth now handled directly in
+  // WebContentsView with comprehensive anti-detection (preload + headers).
+  // If Google blocks login again, re-enable from git history.
 }

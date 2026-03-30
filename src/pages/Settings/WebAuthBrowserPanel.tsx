@@ -23,9 +23,10 @@ import {
   Globe,
   Cookie,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useWebAuthBrowserStore, type WebAuthBrowserTab, type GoogleLoginState } from '@/stores/webauth-browser';
+import { useWebAuthBrowserStore, type WebAuthBrowserTab } from '@/stores/webauth-browser';
 
 /** Find the nearest scrollable ancestor of an element */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -43,9 +44,6 @@ export function WebAuthBrowserPanel() {
   const tabs = useWebAuthBrowserStore((s) => s.tabs);
   const activeTabId = useWebAuthBrowserStore((s) => s.activeTabId);
   const setActiveTab = useWebAuthBrowserStore((s) => s.setActiveTab);
-  const googleLogin = useWebAuthBrowserStore((s) => s.googleLogin);
-  const setGoogleLogin = useWebAuthBrowserStore((s) => s.setGoogleLogin);
-
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -108,14 +106,8 @@ export function WebAuthBrowserPanel() {
   }, [reportBounds]);
 
   // Report bounds with retries after tab changes
-  // Hide WebContentsView when googleLogin webview is active (it would block clicks)
   useEffect(() => {
-    if (googleLogin) {
-      // Google login <webview> overlay is showing — hide native WebContentsView
-      window.electron?.ipcRenderer?.invoke('webauth:browser:panel:setBounds', {
-        x: -9999, y: 0, width: 0, height: 0,
-      });
-    } else if (tabs.length > 0 && activeTab) {
+    if (tabs.length > 0 && activeTab) {
       const t1 = setTimeout(reportBounds, 50);
       const t2 = setTimeout(reportBounds, 200);
       const t3 = setTimeout(reportBounds, 500);
@@ -125,7 +117,7 @@ export function WebAuthBrowserPanel() {
         x: -9999, y: 0, width: 0, height: 0,
       });
     }
-  }, [tabs.length, activeTab, googleLogin, reportBounds]);
+  }, [tabs.length, activeTab, reportBounds]);
 
   // Move views offscreen when unmounting (user navigates away from Settings)
   useEffect(() => {
@@ -181,31 +173,14 @@ export function WebAuthBrowserPanel() {
         ref={contentRef}
         className="flex-1 relative min-h-0"
       >
-        {/* Google login <webview> overlay — shown when Google OAuth is detected */}
-        {googleLogin && (
-          <GoogleLoginWebview
-            state={googleLogin}
-            onComplete={(providerUrl) => {
-              setGoogleLogin(null);
-              // Tell main process to reload the WebContentsView with cookies
-              window.electron?.ipcRenderer?.invoke(
-                'webauth:browser:google-login-done',
-                googleLogin.tabId,
-                providerUrl
-              );
-            }}
-            onCancel={() => setGoogleLogin(null)}
-          />
-        )}
-
         {/* Normal content (WebContentsView overlay from main process) */}
-        {!googleLogin && tabs.length === 0 && (
+        {tabs.length === 0 && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm p-4 text-center">
             No WebAuth sessions active.<br />
             Click &quot;Login&quot; on a provider to open its login page here.
           </div>
         )}
-        {!googleLogin && tabs.length > 0 && !activeTab && (
+        {tabs.length > 0 && !activeTab && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
             Select a tab above to view.
           </div>
@@ -224,6 +199,7 @@ function WebAuthToolbar({ tab }: { tab: WebAuthBrowserTab }) {
   const reload = useWebAuthBrowserStore((s) => s.reload);
   const setZoom = useWebAuthBrowserStore((s) => s.setZoom);
   const [isImporting, setIsImporting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   const [urlInput, setUrlInput] = useState(tab.url);
   const [isEditing, setIsEditing] = useState(false);
@@ -360,6 +336,51 @@ function WebAuthToolbar({ tab }: { tab: WebAuthBrowserTab }) {
           : <Cookie className="h-3.5 w-3.5" />
         }
       </NavButton>
+
+      {/* Clear all site data — confirm via toast */}
+      <NavButton
+        onClick={() => {
+          try {
+            const hostname = new URL(tab.url).hostname;
+            toast(`Clear all data for ${hostname}?`, {
+              description: 'Cookies, storage, cache will be deleted',
+              action: {
+                label: 'Clear',
+                onClick: async () => {
+                  if (isClearing) return;
+                  setIsClearing(true);
+                  try {
+                    const result = await window.electron.ipcRenderer.invoke(
+                      'browser:cookies:clear-site-data',
+                      tab.partition,
+                      tab.url,
+                    ) as { success: boolean; error?: string };
+                    if (result.success) {
+                      toast.success('Cleared all site data (cookies, storage, cache)');
+                      reload();
+                    } else {
+                      toast.error(`Failed to clear: ${result.error}`);
+                    }
+                  } catch (err) {
+                    toast.error(`Clear failed: ${String(err)}`);
+                  } finally {
+                    setIsClearing(false);
+                  }
+                },
+              },
+              cancel: { label: 'Cancel', onClick: () => {} },
+              duration: 10000,
+            });
+          } catch (_) {}
+        }}
+        disabled={isClearing || !tab.url || tab.url === 'about:blank'}
+        title="Clear all site data (cookies, storage, cache)"
+      >
+        {isClearing
+          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          : <Trash2 className="h-3.5 w-3.5" />
+        }
+      </NavButton>
     </div>
   );
 }
@@ -387,86 +408,6 @@ function NavButton({
   );
 }
 
-// ── Google Login Webview ──
-// Uses <webview> tag (renderer process) instead of WebContentsView (main process).
-// <webview> is NOT affected by --remote-debugging-port, so Google allows login.
-
-function GoogleLoginWebview({
-  state,
-  onComplete,
-  onCancel,
-}: {
-  state: GoogleLoginState;
-  onComplete: (providerUrl: string) => void;
-  onCancel: () => void;
-}) {
-  const webviewRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const wv = webviewRef.current;
-    if (!wv) return;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const handleNavigate = (event: any) => {
-      const url = String(event?.url || '');
-      if (url && !url.includes('accounts.google.com') && !url.includes('myaccount.google.com')) {
-        onComplete(url);
-      }
-    };
-
-    // Inject anti-detection — exact same code from working commit 7b11e7d
-    const handleDomReady = () => {
-      const webview = wv as unknown as { executeJavaScript: (code: string) => Promise<unknown> };
-      if (!webview.executeJavaScript) return;
-      webview.executeJavaScript(`
-        try {
-          // Hide navigator.webdriver
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          // Remove Electron from userAgent in navigator
-          if (navigator.userAgent.includes('Electron')) {
-            Object.defineProperty(navigator, 'userAgent', {
-              get: () => navigator.userAgent.replace(/Electron\\/[\\d.]+ /, '')
-            });
-          }
-          // Fake plugins (Chrome has plugins, Electron doesn't)
-          Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-          });
-          // Fake languages
-          Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-          });
-        } catch(e) {}
-      `).catch(() => {});
-    };
-
-    wv.addEventListener('did-navigate', handleNavigate);
-    wv.addEventListener('dom-ready', handleDomReady);
-    return () => {
-      wv.removeEventListener('did-navigate', handleNavigate);
-      wv.removeEventListener('dom-ready', handleDomReady);
-    };
-  }, [onComplete]);
-
-  return (
-    <div className="absolute inset-0 z-50 bg-background flex flex-col">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-muted/30 text-xs">
-        <span className="font-medium">Google Sign-in</span>
-        <button
-          onClick={onCancel}
-          className="px-2 py-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
-        >
-          Cancel
-        </button>
-      </div>
-      <webview
-        ref={webviewRef}
-        src={state.googleUrl}
-        partition={state.partition}
-        style={{ flex: 1, width: '100%', height: '100%', display: 'flex' }}
-        allowpopups={'true' as unknown as boolean}
-        webpreferences="contextIsolation=no, nodeIntegration=no"
-      />
-    </div>
-  );
-}
+// GoogleLoginWebview removed — Google OAuth now handled directly in WebContentsView
+// with comprehensive anti-detection (preload + header spoofing).
+// If Google blocks login again, re-enable from git history (commit a8a6265).

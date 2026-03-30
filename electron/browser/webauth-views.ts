@@ -231,27 +231,11 @@ class WebAuthViewManager {
       `).catch(() => {});
     });
 
-    // ── Google OAuth workaround ──
-    // Google blocks sign-in from WebContentsView because the main process has
-    // --remote-debugging-port=9222 enabled. We detect Google login redirects and
-    // notify the renderer to show a <webview> tag instead (which runs in a
-    // separate renderer process NOT affected by the CDP port flag).
-    view.webContents.on('will-navigate', (event, navUrl) => {
-      if (navUrl.includes('accounts.google.com')) {
-        event.preventDefault();
-        logger.info(`${LOG_TAG} Google login detected for tab ${tabId}, switching to webview mode`);
-        // Tell renderer to use <webview> for this tab's login
-        this.notifyRenderer('webauth:browser:google-login', tabId, navUrl, tab.partition);
-      }
-    });
-
-    view.webContents.on('will-redirect', (event, navUrl) => {
-      if (navUrl.includes('accounts.google.com')) {
-        event.preventDefault();
-        logger.info(`${LOG_TAG} Google login redirect for tab ${tabId}, switching to webview mode`);
-        this.notifyRenderer('webauth:browser:google-login', tabId, navUrl, tab.partition);
-      }
-    });
+    // ── Google OAuth ──
+    // Previously redirected to a <webview> tag workaround because Google blocked
+    // sign-in when --remote-debugging-port was enabled. Now handled directly in
+    // WebContentsView with comprehensive anti-detection (preload + headers).
+    // If Google blocks login again, re-enable the webview workaround from git history.
 
     // Prevent popups — navigate in the same view instead of opening new window
     view.webContents.setWindowOpenHandler(({ url }) => {
