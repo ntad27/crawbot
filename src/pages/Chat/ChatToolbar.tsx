@@ -4,7 +4,7 @@
  * Rendered in the Header when on the Chat page.
  */
 import { useMemo, useEffect, useState, useRef, useCallback } from 'react';
-import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe, X, Search, Lock } from 'lucide-react';
+import { RefreshCw, Brain, ChevronDown, Plus, Cpu, Bot, PanelRightOpen, PanelRightClose, Globe, X, Search, Lock, MessageSquarePlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useChatStore } from '@/stores/chat';
@@ -26,6 +26,7 @@ export function ChatToolbar() {
   const deleteSession = useChatStore((s) => s.deleteSession);
   const switchAgent = useChatStore((s) => s.switchAgent);
   const newSession = useChatStore((s) => s.newSession);
+  const sendMessage = useChatStore((s) => s.sendMessage);
   const refresh = useChatStore((s) => s.refresh);
   const loading = useChatStore((s) => s.loading);
   const showThinking = useChatStore((s) => s.showThinking);
@@ -357,6 +358,23 @@ export function ChatToolbar() {
         </TooltipTrigger>
         <TooltipContent>
           <p>{t('toolbar.newSession')}</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* New Chat — send /new command in current session */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => sendMessage('/new')}
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>New chat (/new)</p>
         </TooltipContent>
       </Tooltip>
 

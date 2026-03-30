@@ -107,7 +107,7 @@ interface ChatState {
   abortRun: () => Promise<void>;
   handleChatEvent: (event: Record<string, unknown>) => void;
   handleAgentEvent: (event: Record<string, unknown>) => void;
-  deleteSession: (key: string) => void;
+  deleteSession: (key: string) => Promise<void>;
   toggleThinking: () => void;
   refresh: () => Promise<void>;
   clearError: () => void;
@@ -1148,11 +1148,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Delete session ──
 
-  deleteSession: (key: string) => {
+  deleteSession: async (key: string) => {
     const { sessions, currentSessionKey, selectedAgentId } = get();
     // Don't allow deleting the "main" session
     const prefix = `agent:${selectedAgentId}:`;
     if (key === `${prefix}main`) return;
+
+    // Call gateway RPC to delete session permanently
+    try {
+      await window.electron.ipcRenderer.invoke(
+        'gateway:rpc', 'sessions.delete', { key, deleteTranscript: true },
+      );
+    } catch (err) {
+      console.warn('Failed to delete session via gateway:', err);
+      // Still remove locally even if RPC fails
+    }
 
     const remaining = sessions.filter((s) => s.key !== key);
     // If we're deleting the current session, switch to first agent session or main
@@ -1883,15 +1893,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     setTimeout(() => {
       const s = useChatStore.getState();
       if (!s.sending) return;
-      console.log('[auto-stop] sessions_yield completed — aborting main stream only');
+      console.log('[auto-stop] sessions_yield completed — stopping stream only (agent keeps running)');
       const currentSessionKey = s.currentSessionKey;
       useChatStore.setState({
         sending: false, activeRunId: null, streamingText: '', streamingMessage: null,
         pendingFinal: false, streamingTools: [],
       });
-      window.electron.ipcRenderer.invoke(
-        'gateway:rpc', 'chat.abort', { sessionKey: currentSessionKey },
-      ).catch(() => {});
       void s.loadHistory(true);
       // Ensure poll keeps running for subagents
       startSubagentPoll(currentSessionKey);

@@ -38,7 +38,7 @@ export function Chat() {
   const loadSessions = useChatStore((s) => s.loadSessions);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abortRun = useChatStore((s) => s.abortRun);
-  // Stop main session only (not subagents)
+  // Stop main stream only (not subagents) — stops streaming output
   const abortMainOnly = useCallback(async () => {
     const currentSessionKey = useChatStore.getState().currentSessionKey;
     useChatStore.setState({
@@ -48,6 +48,20 @@ export function Chat() {
     try {
       await window.electron.ipcRenderer.invoke('gateway:rpc', 'chat.abort', { sessionKey: currentSessionKey });
     } catch { /* ignore */ }
+  }, []);
+
+  // Stop main agent — abort main agent's current work entirely
+  const abortMainAgent = useCallback(async () => {
+    const currentSessionKey = useChatStore.getState().currentSessionKey;
+    useChatStore.setState({
+      sending: false, activeRunId: null, streamingText: '', streamingMessage: null,
+      pendingFinal: false, streamingTools: [],
+    });
+    try {
+      await window.electron.ipcRenderer.invoke('gateway:rpc', 'chat.abort', { sessionKey: currentSessionKey });
+    } catch { /* ignore */ }
+    // Reload history to reflect final state
+    setTimeout(() => useChatStore.getState().loadHistory(), 500);
   }, []);
   const clearError = useChatStore((s) => s.clearError);
 
@@ -233,6 +247,7 @@ export function Chat() {
           onSend={sendMessage}
           onStop={abortRun}
           onStopMainOnly={abortMainOnly}
+          onStopMainAgent={abortMainAgent}
           disabled={!isGatewayRunning}
           sending={sending}
         />

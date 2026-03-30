@@ -31,6 +31,7 @@ interface ChatInputProps {
   onSend: (text: string, attachments?: FileAttachment[]) => void;
   onStop?: () => void;
   onStopMainOnly?: () => void;
+  onStopMainAgent?: () => void;
   disabled?: boolean;
   sending?: boolean;
 }
@@ -79,7 +80,7 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, onStopMainOnly, disabled = false, sending = false }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, onStopMainOnly, onStopMainAgent, disabled = false, sending = false }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [showStopMenu, setShowStopMenu] = useState(false);
@@ -282,11 +283,6 @@ export function ChatInput({ onSend, onStop, onStopMainOnly, disabled = false, se
     onSend(textToSend, attachmentsToSend);
   }, [input, attachments, canSend, onSend]);
 
-  const handleStop = useCallback(() => {
-    if (!canStop) return;
-    onStop?.();
-  }, [canStop, onStop]);
-
   // Kill subagents only (when main stream is already stopped but subagents still running)
   const handleKillSubagents = useCallback(async () => {
     const currentSessionKey = useChatStore.getState().currentSessionKey;
@@ -314,29 +310,26 @@ export function ChatInput({ onSend, onStop, onStopMainOnly, disabled = false, se
 
   const handleStopClick = useCallback(async () => {
     if (!canStop) return;
+    // Always show the stop menu so user can choose what to stop
     setCheckingSubagents(true);
     try {
       const active = await fetchActiveSubagents();
-      if (active.length > 0) {
-        setLiveSubagents(active);
-        setShowStopMenu(true);
-      } else {
-        handleStop();
-      }
+      setLiveSubagents(active);
     } catch {
-      handleStop();
+      setLiveSubagents([]);
     } finally {
       setCheckingSubagents(false);
+      setShowStopMenu(true);
     }
-  }, [canStop, handleStop, fetchActiveSubagents]);
+  }, [canStop, fetchActiveSubagents]);
 
   // Show stop menu when not streaming but subagents are running
   const handleStopClickIdle = useCallback(async () => {
     setCheckingSubagents(true);
     try {
       const active = await fetchActiveSubagents();
+      setLiveSubagents(active);
       if (active.length > 0) {
-        setLiveSubagents(active);
         setShowStopMenu(true);
       } else {
         useChatStore.setState({ activeSubagentCount: 0 });
@@ -527,44 +520,77 @@ export function ChatInput({ onSend, onStop, onStopMainOnly, disabled = false, se
                   {storeSubagentCount}
                 </span>
               )}
-              {/* Stop menu — shown when subagents are active */}
-              {showStopMenu && liveSubagents.length > 0 && (
-                <div className="absolute bottom-full right-0 mb-1 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[220px] max-w-[320px] z-50">
-                  {/* Individual subagents */}
-                  {liveSubagents.map((sub) => (
-                    <button
-                      key={sub.childSessionKey}
-                      className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
-                      onClick={() => handleKillOne(sub.childSessionKey)}
-                      title={sub.task}
-                    >
-                      <CircleStop className="h-3.5 w-3.5 shrink-0 text-orange-500" />
-                      <span className="truncate">Stop <strong>{sub.label}</strong></span>
-                    </button>
-                  ))}
-                  {/* Divider */}
-                  <div className="border-t border-border my-1" />
-                  {/* Stop main only — only when streaming */}
+              {/* Stop menu — always shown when showStopMenu is true */}
+              {showStopMenu && (
+                <div className="absolute bottom-full right-0 mb-1 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[240px] max-w-[340px] z-50">
+                  {/* Stop stream — only when streaming */}
                   {sending && (
                     <button
                       className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
                       onClick={() => { setShowStopMenu(false); onStopMainOnly?.(); }}
                     >
-                      <CircleStop className="h-3.5 w-3.5 shrink-0" />
-                      Stop main only
+                      <CircleStop className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+                      Stop stream
                     </button>
                   )}
-                  {/* Stop all */}
+                  {/* Stop agent main — abort main agent's work */}
+                  <button
+                    className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
+                    onClick={() => {
+                      setShowStopMenu(false);
+                      onStopMainAgent?.();
+                    }}
+                  >
+                    <CircleStop className="h-3.5 w-3.5 shrink-0 text-yellow-500" />
+                    Stop agent main
+                  </button>
+                  {/* Subagent section — only when subagents exist */}
+                  {liveSubagents.length > 0 && (
+                    <>
+                      {/* Divider */}
+                      <div className="border-t border-border my-1" />
+                      {/* Individual subagents */}
+                      {liveSubagents.map((sub) => (
+                        <button
+                          key={sub.childSessionKey}
+                          className="w-full px-3 py-2 text-sm text-left hover:bg-muted flex items-center gap-2"
+                          onClick={() => handleKillOne(sub.childSessionKey)}
+                          title={sub.task}
+                        >
+                          <CircleStop className="h-3.5 w-3.5 shrink-0 text-orange-500" />
+                          <span className="truncate">Stop <strong>{sub.label}</strong></span>
+                        </button>
+                      ))}
+                      {/* Divider */}
+                      <div className="border-t border-border my-1" />
+                      {/* Stop all subagents — kill subagents but keep main */}
+                      <button
+                        className="w-full px-3 py-2 text-sm text-left hover:bg-orange-500/10 text-orange-600 dark:text-orange-400 flex items-center gap-2"
+                        onClick={() => {
+                          setShowStopMenu(false);
+                          setLiveSubagents([]);
+                          handleKillSubagents();
+                        }}
+                      >
+                        <CircleStop className="h-3.5 w-3.5 shrink-0" />
+                        Stop all subagents ({liveSubagents.length})
+                      </button>
+                    </>
+                  )}
+                  {/* Divider before stop all */}
+                  <div className="border-t border-border my-1" />
+                  {/* Stop all — main + subagents */}
                   <button
                     className="w-full px-3 py-2 text-sm text-left hover:bg-destructive/10 text-destructive flex items-center gap-2"
                     onClick={() => {
                       setShowStopMenu(false);
                       setLiveSubagents([]);
-                      if (sending) { handleStop(); } else { handleKillSubagents(); }
+                      if (liveSubagents.length > 0) handleKillSubagents();
+                      onStopMainAgent?.();
                     }}
                   >
                     <CircleStop className="h-3.5 w-3.5 shrink-0" />
-                    Stop all ({liveSubagents.length} agent{liveSubagents.length > 1 ? 's' : ''}{sending ? ' + main' : ''})
+                    Stop all{liveSubagents.length > 0 ? ` (main + ${liveSubagents.length} subagent${liveSubagents.length > 1 ? 's' : ''})` : ''}
                   </button>
                 </div>
               )}
