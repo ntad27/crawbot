@@ -25,12 +25,25 @@ import {
 import { ClawHubService } from '../gateway/clawhub';
 import { ensureManagedBinInProcessPath } from '../utils/nodejs-setup';
 
-// Disable GPU acceleration for better compatibility
-app.disableHardwareAcceleration();
+// NOTE: Hardware acceleration is ENABLED to support WebGL fingerprinting.
+// disableHardwareAcceleration() was removed because it disables WebGL entirely,
+// which is a major anti-bot detection signal (real Chrome always has WebGL).
+// If GPU crashes occur on specific hardware, add per-platform fallback instead.
 
 // Enable CDP (Chrome DevTools Protocol) on internal port for browser automation
 // The CDP Filter Proxy (port 9333) will filter and relay to this internal port
 app.commandLine.appendSwitch('remote-debugging-port', '9222');
+
+// Anti-detection: disable Blink's AutomationControlled feature
+// This prevents navigator.webdriver from being set to true by the engine
+// (patchright + puppeteer-extra-plugin-stealth technique)
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+
+// Anti-detection: ensure --enable-automation is not present
+// This flag triggers the "Chrome is being controlled by automated software" infobar
+try { app.commandLine.removeSwitch('enable-automation'); } catch (_) {
+  // removeSwitch may not exist in all Electron versions
+}
 
 // Register 'local-file' as a privileged scheme so it can be used in <iframe>, <img>, <video>, <audio>.
 // Must be called before app.whenReady().

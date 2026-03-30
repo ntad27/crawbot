@@ -135,18 +135,30 @@ export class BrowserManager {
     try {
       const ses = session.fromPartition(partition);
       const chromeVersion = process.versions.chrome || '130.0.0.0';
+      const majorVersion = chromeVersion.split('.')[0];
       const ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
       ses.setUserAgent(ua);
 
-      // Remove "Electron" from client hints and headers that Google checks
+      // Remove ALL Electron/embedded-browser fingerprints from headers
       ses.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = { ...details.requestHeaders };
+
         // Remove Electron-specific headers
         delete headers['X-Electron-Version'];
-        // Ensure sec-ch-ua doesn't contain "Electron"
-        if (headers['sec-ch-ua']) {
-          headers['sec-ch-ua'] = `"Chromium";v="${chromeVersion.split('.')[0]}", "Google Chrome";v="${chromeVersion.split('.')[0]}", "Not-A.Brand";v="99"`;
+
+        // sec-ch-ua family — must include "Google Chrome" brand
+        headers['sec-ch-ua'] = `"Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}", "Not-A.Brand";v="99"`;
+        headers['sec-ch-ua-platform'] = '"macOS"';
+        headers['sec-ch-ua-mobile'] = '?0';
+        if (headers['sec-ch-ua-full-version-list'] !== undefined) {
+          headers['sec-ch-ua-full-version-list'] = `"Chromium";v="${chromeVersion}", "Google Chrome";v="${chromeVersion}", "Not-A.Brand";v="99.0.0.0"`;
         }
+
+        // Fix Sec-Fetch-Dest — Electron sends "webview" instead of "document"
+        if (headers['Sec-Fetch-Dest'] === 'webview') {
+          headers['Sec-Fetch-Dest'] = 'document';
+        }
+
         callback({ requestHeaders: headers });
       });
     } catch (err) {

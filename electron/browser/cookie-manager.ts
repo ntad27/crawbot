@@ -64,6 +64,65 @@ export async function clearPartition(partition: string): Promise<void> {
 }
 
 /**
+ * Clear ALL site data for a specific origin (like Chrome DevTools "Clear site data").
+ * Clears: cookies, localStorage, sessionStorage, IndexedDB, Cache API, Service Workers.
+ * Also clears cookies from related domains (e.g., .shopee.vn for shopee.vn).
+ */
+export async function clearSiteData(partition: string, url: string): Promise<void> {
+  try {
+    const ses = session.fromPartition(partition);
+    const origin = new URL(url).origin;
+
+    // 1. Clear all storage types scoped to this origin
+    await ses.clearStorageData({
+      origin,
+      storages: [
+        'cookies',
+        'localstorage',
+        'sessionstorage',
+        'indexdb',
+        'cachestorage',
+        'serviceworkers',
+        'shadercache',
+        'websql',
+      ],
+    });
+
+    // 2. Also clear cookies that match the domain (including parent/subdomain cookies)
+    //    clearStorageData may miss .domain cookies, so remove them explicitly
+    const hostname = new URL(url).hostname;
+    const allCookies = await ses.cookies.get({});
+    const domainParts = hostname.split('.');
+    // Build list of domain patterns: e.g., ["shopee.vn", ".shopee.vn"]
+    const domainPatterns: string[] = [];
+    for (let i = 0; i < domainParts.length - 1; i++) {
+      const d = domainParts.slice(i).join('.');
+      domainPatterns.push(d, `.${d}`);
+    }
+
+    let removedCookies = 0;
+    for (const cookie of allCookies) {
+      const cookieDomain = cookie.domain || '';
+      if (domainPatterns.some((p) => cookieDomain === p || cookieDomain.endsWith(p))) {
+        try {
+          const cookieUrl = `http${cookie.secure ? 's' : ''}://${cookieDomain.replace(/^\./, '')}${cookie.path || '/'}`;
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          removedCookies++;
+        } catch (_) { /* best-effort */ }
+      }
+    }
+
+    // 3. Clear HTTP cache for good measure
+    await ses.clearCache().catch(() => {});
+
+    logger.info(`${LOG_TAG} Cleared site data for ${origin} in ${partition} (${removedCookies} cookies removed)`);
+  } catch (err) {
+    logger.error(`${LOG_TAG} clearSiteData failed:`, err);
+    throw err;
+  }
+}
+
+/**
  * Export all cookies from a partition as JSON
  */
 export async function exportCookies(partition: string): Promise<CookieData[]> {

@@ -193,7 +193,7 @@ function App() {
 
         {/* Global toast notifications */}
         <Toaster
-          position="bottom-left"
+          position="top-right"
           richColors
           closeButton
           style={{ zIndex: 99999 }}

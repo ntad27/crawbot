@@ -209,90 +209,24 @@ class WebAuthViewManager {
       }
     });
 
-    // Enhanced anti-detection injected at dom-ready (supplements preload)
+    // Re-enforce anti-detection on dom-ready (defense-in-depth for SPA navigations)
+    // The preload script handles the bulk of anti-detection at document_start.
+    // This dom-ready injection re-enforces key properties that SPAs may reset.
     view.webContents.on('dom-ready', () => {
       view.webContents.executeJavaScript(`
         try {
-          // Ensure navigator.webdriver is undefined
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-
-          // Realistic navigator.plugins (PluginArray-like objects)
-          const fakePlugins = {
-            0: { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1, 0: { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' } },
-            1: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: '', length: 1, 0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: '' } },
-            2: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', length: 1, 0: { type: 'application/pdf', suffixes: 'pdf', description: '' } },
-            3: { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 2, 0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' }, 1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' } },
-            4: { name: 'Chromium PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1, 0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' } },
-            length: 5,
-            item(i) { return this[i] || null; },
-            namedItem(n) { for (let i = 0; i < this.length; i++) { if (this[i] && this[i].name === n) return this[i]; } return null; },
-            refresh() {},
-            [Symbol.iterator]: function*() { for (let i = 0; i < this.length; i++) if (this[i]) yield this[i]; },
-          };
-          Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
-
-          // window.chrome object with runtime, csi, loadTimes
-          if (!window.chrome) window.chrome = {};
-          if (!window.chrome.runtime) {
-            window.chrome.runtime = {
-              connect() {
-                return {
-                  onMessage: { addListener() {} },
-                  postMessage() {},
-                  onDisconnect: { addListener() {} },
-                };
-              },
-              sendMessage() {},
-              id: undefined,
-            };
+          // Re-enforce webdriver=false (some frameworks reset it)
+          if (navigator.webdriver !== false) {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
           }
-          if (!window.chrome.csi) {
-            window.chrome.csi = function() {
-              return { onloadT: Date.now(), pageT: performance.now(), startE: Date.now(), tran: 15 };
-            };
+          // Clean any newly-injected automation artifacts
+          delete window.__playwright;
+          delete window.__puppeteer;
+          for (const prop of Object.getOwnPropertyNames(window)) {
+            if (prop.startsWith('cdc_') || prop.startsWith('__cdc_')) {
+              try { delete window[prop]; } catch(e) {}
+            }
           }
-          if (!window.chrome.loadTimes) {
-            window.chrome.loadTimes = function() {
-              return {
-                commitLoadTime: Date.now() / 1000, connectionInfo: 'h2',
-                finishDocumentLoadTime: Date.now() / 1000, finishLoadTime: Date.now() / 1000,
-                firstPaintAfterLoadTime: 0, firstPaintTime: Date.now() / 1000,
-                navigationType: 'Other', npnNegotiatedProtocol: 'h2',
-                requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000,
-                wasAlternateProtocolAvailable: false, wasFetchedViaSpdy: true, wasNpnNegotiated: true,
-              };
-            };
-          }
-
-          // navigator.userAgentData override
-          const chromeVer = navigator.userAgent.match(/Chrome\\/(\\d+)/)?.[1] || '130';
-          const fullVer = navigator.userAgent.match(/Chrome\\/([\\d.]+)/)?.[1] || '130.0.0.0';
-          const fakeUAData = {
-            brands: [
-              { brand: 'Chromium', version: chromeVer },
-              { brand: 'Google Chrome', version: chromeVer },
-              { brand: 'Not-A.Brand', version: '99' },
-            ],
-            mobile: false,
-            platform: 'macOS',
-            getHighEntropyValues(hints) {
-              return Promise.resolve({
-                brands: this.brands, mobile: false, platform: 'macOS',
-                platformVersion: '15.3.0', architecture: 'arm', bitness: '64', model: '',
-                uaFullVersion: fullVer,
-                fullVersionList: [
-                  { brand: 'Chromium', version: fullVer },
-                  { brand: 'Google Chrome', version: fullVer },
-                  { brand: 'Not-A.Brand', version: '99.0.0.0' },
-                ],
-                wow64: false,
-              });
-            },
-            toJSON() { return { brands: this.brands, mobile: this.mobile, platform: this.platform }; },
-          };
-          Object.defineProperty(navigator, 'userAgentData', { get: () => fakeUAData, configurable: true });
-
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
         } catch(e) {}
       `).catch(() => {});
     });

@@ -12,9 +12,13 @@
  */
 
 import { BrowserWindow, WebContentsView, session } from 'electron';
+import { join } from 'node:path';
 import { logger } from '../utils/logger';
 
 const LOG_TAG = '[AutomationViews]';
+
+// Anti-detection preload script path (CommonJS, runs at document_start)
+const ANTI_DETECTION_PRELOAD = join(__dirname, '..', 'browser', 'anti-detection-preload.cjs');
 
 export interface AutomationTab {
   id: string;
@@ -63,16 +67,30 @@ class AutomationViewManager {
 
     // Set user-agent to match real Chrome
     const chromeVersion = process.versions.chrome || '130.0.0.0';
+    const majorVersion = chromeVersion.split('.')[0];
     const ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
     ses.setUserAgent(ua);
 
-    // Remove Electron from headers
+    // Remove ALL Electron/embedded-browser fingerprints from headers
     ses.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = { ...details.requestHeaders };
+
+      // Remove Electron-specific headers
       delete headers['X-Electron-Version'];
-      if (headers['sec-ch-ua']) {
-        headers['sec-ch-ua'] = `"Chromium";v="${chromeVersion.split('.')[0]}", "Google Chrome";v="${chromeVersion.split('.')[0]}", "Not-A.Brand";v="99"`;
+
+      // sec-ch-ua family — must include "Google Chrome" brand (Electron only has "Chromium")
+      headers['sec-ch-ua'] = `"Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}", "Not-A.Brand";v="99"`;
+      headers['sec-ch-ua-platform'] = '"macOS"';
+      headers['sec-ch-ua-mobile'] = '?0';
+      if (headers['sec-ch-ua-full-version-list'] !== undefined) {
+        headers['sec-ch-ua-full-version-list'] = `"Chromium";v="${chromeVersion}", "Google Chrome";v="${chromeVersion}", "Not-A.Brand";v="99.0.0.0"`;
       }
+
+      // Fix Sec-Fetch-Dest — Electron sends "webview" instead of "document"
+      if (headers['Sec-Fetch-Dest'] === 'webview') {
+        headers['Sec-Fetch-Dest'] = 'document';
+      }
+
       callback({ requestHeaders: headers });
     });
 
@@ -80,8 +98,9 @@ class AutomationViewManager {
       webPreferences: {
         session: ses,
         nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
+        contextIsolation: false,  // Required for anti-detection preload to modify page globals
+        sandbox: false,           // Required for preload script injection
+        preload: ANTI_DETECTION_PRELOAD,
       },
     });
 
@@ -196,13 +215,22 @@ class AutomationViewManager {
       `).catch(() => {});
     });
 
-    // Inject anti-detection
+    // Re-enforce anti-detection on dom-ready (defense-in-depth for SPA navigations)
     view.webContents.on('dom-ready', () => {
       view.webContents.executeJavaScript(`
         try {
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+          // Re-enforce webdriver=false (some frameworks reset it)
+          if (navigator.webdriver !== false) {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
+          }
+          // Clean any newly-injected automation artifacts
+          delete window.__playwright;
+          delete window.__puppeteer;
+          for (const prop of Object.getOwnPropertyNames(window)) {
+            if (prop.startsWith('cdc_') || prop.startsWith('__cdc_')) {
+              try { delete window[prop]; } catch(e) {}
+            }
+          }
         } catch(e) {}
       `).catch(() => {});
     });

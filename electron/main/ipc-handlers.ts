@@ -3890,6 +3890,17 @@ function registerBuiltinBrowserHandlers(mainWindow: BrowserWindow): void {
     return { success: true };
   });
 
+  // Clear all site data for a specific URL (cookies, storage, cache, SW — like Chrome DevTools)
+  ipcMain.handle('browser:cookies:clear-site-data', async (_, partition: string, url: string) => {
+    try {
+      const { clearSiteData } = await import('../browser/cookie-manager');
+      await clearSiteData(partition, url);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
   ipcMain.handle('browser:cookies:export', async (_, partition: string) => {
     const cookies = await exportCookies(partition);
     return { success: true, cookies };

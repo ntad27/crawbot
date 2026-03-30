@@ -245,6 +245,7 @@ const electronAPI = {
         'browser:cookies:get',
         'browser:cookies:remove',
         'browser:cookies:clear',
+        'browser:cookies:clear-site-data',
         'browser:cookies:export',
         'browser:cookies:import',
         'browser:cookies:import-from-chrome',

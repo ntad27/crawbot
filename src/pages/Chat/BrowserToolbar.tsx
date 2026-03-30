@@ -11,6 +11,7 @@ import {
   Lock,
   Cookie,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import { useBrowserStore, type BrowserTab } from '@/stores/browser';
 import { toast } from 'sonner';
@@ -26,6 +27,7 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
   const [isEditing, setIsEditing] = useState(false);
   const justNavigatedRef = useRef(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   // Sync URL bar from tab when NOT editing (e.g., webview navigated internally)
   useEffect(() => {
@@ -119,6 +121,28 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
     }
   }, [isImporting, tab.url, tab.partition, reload]);
 
+  const handleClearSiteData = useCallback(async () => {
+    if (isClearing || !tab.url || tab.url === 'about:blank') return;
+    setIsClearing(true);
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'browser:cookies:clear-site-data',
+        tab.partition,
+        tab.url,
+      ) as { success: boolean; error?: string };
+      if (result.success) {
+        toast.success('Cleared all site data (cookies, storage, cache)');
+        reload();
+      } else {
+        toast.error(`Failed to clear: ${result.error}`);
+      }
+    } catch (err) {
+      toast.error(`Clear failed: ${String(err)}`);
+    } finally {
+      setIsClearing(false);
+    }
+  }, [isClearing, tab.url, tab.partition, reload]);
+
   const isSecure = tab.url.startsWith('https://');
 
   return (
@@ -185,6 +209,29 @@ export function BrowserToolbar({ tab }: { tab: BrowserTab }) {
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Cookie className="h-3.5 w-3.5" />
+        )}
+      </NavButton>
+
+      {/* Clear all site data — confirm via toast */}
+      <NavButton
+        onClick={() => {
+          try {
+            const hostname = new URL(tab.url).hostname;
+            toast(`Clear all data for ${hostname}?`, {
+              description: 'Cookies, storage, cache will be deleted',
+              action: { label: 'Clear', onClick: handleClearSiteData },
+              cancel: { label: 'Cancel', onClick: () => {} },
+              duration: 10000,
+            });
+          } catch (_) {}
+        }}
+        disabled={isClearing || !tab.url || tab.url === 'about:blank'}
+        title="Clear all site data (cookies, storage, cache)"
+      >
+        {isClearing ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Trash2 className="h-3.5 w-3.5" />
         )}
       </NavButton>
     </div>
