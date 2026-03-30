@@ -1,6 +1,6 @@
 {
     "name": "crawbot",
-    "version": "2026.3.21",
+    "version": "2026.3.22",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@whiskeysockets/baileys",
