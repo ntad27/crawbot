@@ -85,7 +85,15 @@
             "chatGPTSignIn": "ChatGPT Sign-In",
             "waitingAuth": "Waiting for browser authorization...",
             "oauthActive": "OAuth Active",
-            "reAuth": "Re-authenticate"
+            "reAuth": "Re-authenticate",
+            "googleProjectId": "Google Cloud Project ID",
+            "googleProjectIdPlaceholder": "my-project-id",
+            "googleProjectIdHint": "Only required for Google Workspace / Enterprise accounts. Personal Gmail accounts don't need this.",
+            "googleProjectIdHelp": "Ask your IT admin for the project ID with Gemini API enabled.",
+            "googleWorkspaceError": "It looks like you are using a Google Workspace or Enterprise account. Your organization requires a Google Cloud project to use Gemini. Please enter your Google Cloud Project ID above, or ask your IT admin for help.",
+            "googleValidationRequired": "Google requires you to verify your account before using Gemini. Please complete the verification, then try again.",
+            "googleSetupFailed": "Could not set up Gemini for your account. If you are using a Google Workspace account, please enter your Google Cloud Project ID above. If you are using a personal Gmail account, please try again.",
+            "googleLoginSuccessSetupFailed": "Google login succeeded but setup failed"
         }
     },
     "gateway": {

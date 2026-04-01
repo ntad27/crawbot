@@ -41,7 +41,7 @@ interface ProviderState {
   ) => Promise<{ valid: boolean; error?: string }>;
   getApiKey: (providerId: string) => Promise<string | null>;
   checkOAuthStatus: (providerType: string) => Promise<void>;
-  triggerOAuthLogin: (providerType: string) => Promise<{ success: boolean; error?: string }>;
+  triggerOAuthLogin: (providerType: string, options?: { googleCloudProject?: string }) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
   pasteSetupToken: (providerType: string, token: string) => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -261,7 +261,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     }
   },
 
-  triggerOAuthLogin: async (providerType) => {
+  triggerOAuthLogin: async (providerType, options) => {
     set((state) => ({
       oauthStatus: {
         ...state.oauthStatus,
@@ -272,8 +272,9 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     try {
       const result = await window.electron.ipcRenderer.invoke(
         'provider:oauthLogin',
-        providerType
-      ) as { success: boolean; error?: string };
+        providerType,
+        options,
+      ) as { success: boolean; error?: string; errorCode?: string };
 
       if (result.success) {
         set((state) => ({
@@ -300,7 +301,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
             },
           },
         }));
-        return { success: false, error: result.error };
+        return { success: false, error: result.error, errorCode: result.errorCode };
       }
     } catch (error) {
       set((state) => ({

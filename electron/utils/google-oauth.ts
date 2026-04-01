@@ -378,9 +378,35 @@ function isVpcScAffected(payload: unknown): boolean {
   );
 }
 
-function getDefaultTier(allowedTiers?: Array<{ id?: string; isDefault?: boolean }>): { id?: string } | undefined {
-  if (!allowedTiers?.length) return { id: TIER_LEGACY };
-  return allowedTiers.find((tier) => tier.isDefault) ?? { id: TIER_LEGACY };
+// Match Gemini CLI's getOnboardTier: pick the default tier, fallback to LEGACY
+function getOnboardTier(
+  allowedTiers?: Array<{ id?: string; name?: string; isDefault?: boolean; userDefinedCloudaicompanionProject?: boolean }>,
+): { id: string; name?: string; userDefinedCloudaicompanionProject?: boolean } {
+  if (allowedTiers?.length) {
+    const defaultTier = allowedTiers.find((tier) => tier.isDefault);
+    if (defaultTier?.id) return defaultTier as { id: string; name?: string; userDefinedCloudaicompanionProject?: boolean };
+  }
+  return { id: TIER_LEGACY, userDefinedCloudaicompanionProject: true };
+}
+
+// Extract human-readable ineligibility reasons from loadCodeAssist response
+function getIneligibilityMessage(
+  ineligibleTiers?: Array<{ reasonCode?: string; reasonMessage?: string; validationUrl?: string }>,
+): { message: string; validationUrl?: string } | null {
+  if (!ineligibleTiers?.length) return null;
+  // Check for VALIDATION_REQUIRED first — user can fix this
+  const validationTier = ineligibleTiers.find(
+    (t) => t.reasonCode === 'VALIDATION_REQUIRED' && t.validationUrl,
+  );
+  if (validationTier) {
+    return {
+      message: validationTier.reasonMessage || 'Account validation required',
+      validationUrl: validationTier.validationUrl,
+    };
+  }
+  // Other ineligibility reasons
+  const reasons = ineligibleTiers.map((t) => t.reasonMessage).filter(Boolean).join(', ');
+  return { message: reasons || 'Account is ineligible for Gemini' };
 }
 
 async function pollOperation(
@@ -388,7 +414,7 @@ async function pollOperation(
   headers: Record<string, string>,
 ): Promise<{ done?: boolean; response?: { cloudaicompanionProject?: { id?: string } } }> {
   for (let attempt = 0; attempt < 24; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     const response = await fetch(`${CODE_ASSIST_ENDPOINT}/v1internal/${operationName}`, { headers });
     if (!response.ok) continue;
     const data = await response.json() as { done?: boolean; response?: { cloudaicompanionProject?: { id?: string } } };
@@ -397,80 +423,143 @@ async function pollOperation(
   throw new Error('Operation polling timeout');
 }
 
-async function discoverProject(accessToken: string): Promise<string> {
-  const envProject = process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID;
+/**
+ * Discover or provision a Google Cloud project for Gemini API access.
+ *
+ * Matches the Gemini CLI's setup flow (gemini-cli-core/code_assist/setup.js):
+ * 1. Call loadCodeAssist → if user already has currentTier + project, done
+ * 2. If user needs onboarding → call onboardUser (free tier gets a managed project)
+ * 3. Handle VALIDATION_REQUIRED and ineligibleTiers with actionable error messages
+ *
+ */
+async function discoverProject(accessToken: string, userProject?: string): Promise<string> {
+  const envProject = userProject || process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID;
+  // Use the same metadata as Gemini CLI (IDE_UNSPECIFIED + PLATFORM_UNSPECIFIED)
+  const coreMetadata = {
+    ideType: 'IDE_UNSPECIFIED',
+    platform: 'PLATFORM_UNSPECIFIED',
+    pluginType: 'GEMINI',
+  };
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
     'User-Agent': 'google-api-nodejs-client/9.15.1',
-    'X-Goog-Api-Client': 'gl-node/openclaw',
+    'X-Goog-Api-Client': `gl-node/${process.versions.node}`,
   };
 
   const loadBody = {
-    cloudaicompanionProject: envProject,
+    ...(envProject ? { cloudaicompanionProject: envProject } : {}),
     metadata: {
-      ideType: 'IDE_UNSPECIFIED',
-      platform: 'PLATFORM_UNSPECIFIED',
-      pluginType: 'GEMINI',
-      duetProject: envProject,
+      ...coreMetadata,
+      ...(envProject ? { duetProject: envProject } : {}),
     },
+  };
+
+  type IneligibleTier = {
+    reasonCode?: string;
+    reasonMessage?: string;
+    validationUrl?: string;
   };
 
   type LoadResponse = {
-    currentTier?: { id?: string };
-    cloudaicompanionProject?: string | { id?: string };
-    allowedTiers?: Array<{ id?: string; isDefault?: boolean }>;
+    currentTier?: { id?: string; name?: string } | null;
+    cloudaicompanionProject?: string | null;
+    allowedTiers?: Array<{ id?: string; name?: string; isDefault?: boolean; userDefinedCloudaicompanionProject?: boolean }> | null;
+    ineligibleTiers?: IneligibleTier[] | null;
+    paidTier?: { id?: string; name?: string } | null;
   };
 
-  let data: LoadResponse;
+  let data: LoadResponse = {};
 
-  const response = await fetch(`${CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(loadBody),
-  });
+  try {
+    const response = await fetch(`${CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(loadBody),
+      signal: AbortSignal.timeout(15_000),
+    });
 
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => null);
-    if (isVpcScAffected(errorPayload)) {
-      data = { currentTier: { id: TIER_STANDARD } };
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => null);
+      if (isVpcScAffected(errorPayload)) {
+        data = { currentTier: { id: TIER_STANDARD } };
+      } else {
+        const errMsg = `loadCodeAssist failed: ${response.status} ${response.statusText}`;
+        if (envProject) return envProject;
+        throw new Error(errMsg);
+      }
     } else {
-      throw new Error(`loadCodeAssist failed: ${response.status} ${response.statusText}`);
+      data = await response.json() as LoadResponse;
+      logger.info(`[google-oauth] loadCodeAssist response: currentTier=${data.currentTier?.id}, project=${data.cloudaicompanionProject || 'none'}, allowedTiers=${data.allowedTiers?.map(t => t.id).join(',') || 'none'}, ineligible=${data.ineligibleTiers?.length || 0}`);
     }
-  } else {
-    data = await response.json() as LoadResponse;
+  } catch (err) {
+    if (envProject) return envProject;
+    throw err instanceof Error ? err : new Error('loadCodeAssist failed');
   }
 
+  // Check for VALIDATION_REQUIRED before proceeding (Gemini CLI does this check)
+  if (!data.currentTier && data.ineligibleTiers?.length) {
+    const ineligibility = getIneligibilityMessage(data.ineligibleTiers);
+    if (ineligibility?.validationUrl) {
+      throw new Error(
+        `Google requires you to verify your account before using Gemini. ` +
+        `Please visit ${ineligibility.validationUrl} to complete verification, then try logging in again.`,
+      );
+    }
+  }
+
+  // ── User already onboarded (has currentTier) ──
   if (data.currentTier) {
-    const project = data.cloudaicompanionProject;
-    if (typeof project === 'string' && project) return project;
-    if (typeof project === 'object' && project?.id) return project.id;
+    if (data.cloudaicompanionProject) return data.cloudaicompanionProject;
     if (envProject) return envProject;
+    // Surface ineligibility reasons if available (Gemini CLI: throwIneligibleOrProjectIdError)
+    const ineligibility = getIneligibilityMessage(data.ineligibleTiers ?? undefined);
+    if (ineligibility) {
+      const extra = ineligibility.validationUrl
+        ? ` Please visit ${ineligibility.validationUrl} to verify your account.`
+        : '';
+      throw new Error(`${ineligibility.message}${extra}`);
+    }
     throw new Error(
-      'This account requires GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID to be set.',
+      'It looks like you are using a Google Workspace or enterprise account. ' +
+      'Your organization requires a Google Cloud project to use Gemini. ' +
+      'Please ask your IT admin to enable the Gemini API on a Google Cloud project, ' +
+      'then set the GOOGLE_CLOUD_PROJECT environment variable to that project ID before launching CrawBot. ' +
+      'More info: https://ai.google.dev/gemini-api/docs/oauth',
     );
   }
 
-  const tier = getDefaultTier(data.allowedTiers);
-  const tierId = tier?.id || TIER_FREE;
+  // ── User needs onboarding ──
+  const tier = getOnboardTier(data.allowedTiers ?? undefined);
+  const tierId = tier.id;
+  logger.info(`[google-oauth] Onboarding user with tier: ${tierId}`);
+
   if (tierId !== TIER_FREE && !envProject) {
     throw new Error(
-      'This account requires GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID to be set.',
+      'It looks like you are using a Google Workspace or enterprise account. ' +
+      'Your organization requires a Google Cloud project to use Gemini. ' +
+      'Please ask your IT admin to enable the Gemini API on a Google Cloud project, ' +
+      'then set the GOOGLE_CLOUD_PROJECT environment variable to that project ID before launching CrawBot. ' +
+      'More info: https://ai.google.dev/gemini-api/docs/oauth',
     );
   }
 
-  const onboardBody: Record<string, unknown> = {
-    tierId,
-    metadata: {
-      ideType: 'IDE_UNSPECIFIED',
-      platform: 'PLATFORM_UNSPECIFIED',
-      pluginType: 'GEMINI',
-    },
-  };
-  if (tierId !== TIER_FREE && envProject) {
-    onboardBody.cloudaicompanionProject = envProject;
-    (onboardBody.metadata as Record<string, unknown>).duetProject = envProject;
-  }
+  // Free tier: DO NOT send cloudaicompanionProject — it causes Precondition Failed
+  // Other tiers: send envProject if available
+  const onboardBody: Record<string, unknown> = tierId === TIER_FREE
+    ? {
+        tierId,
+        cloudaicompanionProject: undefined,
+        metadata: coreMetadata,
+      }
+    : {
+        tierId,
+        cloudaicompanionProject: envProject,
+        metadata: {
+          ...coreMetadata,
+          duetProject: envProject,
+        },
+      };
 
   const onboardResponse = await fetch(`${CODE_ASSIST_ENDPOINT}/v1internal:onboardUser`, {
     method: 'POST',
@@ -493,11 +582,23 @@ async function discoverProject(accessToken: string): Promise<string> {
   }
 
   const projectId = lro.response?.cloudaicompanionProject?.id;
-  if (projectId) return projectId;
+  if (projectId) {
+    logger.info(`[google-oauth] Onboarding successful, project: ${projectId}`);
+    return projectId;
+  }
   if (envProject) return envProject;
 
+  // Onboarding succeeded but no project — surface ineligibility reasons
+  const ineligibility = getIneligibilityMessage(data.ineligibleTiers ?? undefined);
+  if (ineligibility) {
+    throw new Error(ineligibility.message);
+  }
   throw new Error(
-    'Could not discover or provision a Google Cloud project. Set GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID.',
+    'Could not set up Gemini for your account. ' +
+    'If you are using a Google Workspace account, please ask your IT admin to enable the Gemini API, ' +
+    'then set the GOOGLE_CLOUD_PROJECT environment variable before launching CrawBot. ' +
+    'If you are using a personal Gmail account, please try again or contact support. ' +
+    'More info: https://ai.google.dev/gemini-api/docs/oauth',
   );
 }
 
@@ -766,9 +867,12 @@ export function stopGoogleProactiveTokenRefresh(): void {
 
 // ── Public API ──
 
-export async function runGoogleOAuthFlow(): Promise<{
+export async function runGoogleOAuthFlow(options?: {
+  googleCloudProject?: string;
+}): Promise<{
   success: boolean;
   error?: string;
+  errorCode?: string;
   email?: string;
 }> {
   // 1. Resolve credentials
@@ -816,15 +920,21 @@ export async function runGoogleOAuthFlow(): Promise<{
   // 9. Discover/provision project (required — without projectId the credential is unusable)
   let projectId: string;
   try {
-    projectId = await discoverProject(tokens.access_token);
+    projectId = await discoverProject(tokens.access_token, options?.googleCloudProject?.trim());
     logger.info(`Google Cloud project: ${projectId}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Project discovery failed:', msg);
-    throw new Error(
-      `Google OAuth login succeeded but project discovery failed: ${msg}. ` +
-      'You may need to set GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID environment variable.',
-    );
+    // Determine error code for UI to show translated message
+    let errorCode = 'googleSetupFailed';
+    if (msg.includes('Workspace') || msg.includes('enterprise') || msg.includes('GOOGLE_CLOUD_PROJECT')) {
+      errorCode = 'googleWorkspaceError';
+    } else if (msg.includes('verify') || msg.includes('validation')) {
+      errorCode = 'googleValidationRequired';
+    }
+    const error = new Error(msg);
+    (error as Error & { errorCode?: string }).errorCode = errorCode;
+    throw error;
   }
 
   // 10. Write auth profile

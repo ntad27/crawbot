@@ -111,7 +111,13 @@
         "signInWithChatGPT": "ChatGPT でログイン",
         "chatGPTSignIn": "ChatGPT ログイン",
         "waitingAuth": "ブラウザでの認証を待機中...",
-        "oauthConfigured": "OAuth の設定に成功しました"
+        "oauthConfigured": "OAuth の設定に成功しました",
+        "googleProjectId": "Google Cloud プロジェクト ID",
+        "googleProjectIdPlaceholder": "my-project-id",
+        "googleProjectIdHint": "Google Workspace / 企業アカウントのみ必要です。個人の Gmail アカウントでは不要です。",
+        "googleWorkspaceError": "Google Workspace または企業アカウントをご使用のようです。Gemini を使用するには Google Cloud プロジェクトが必要です。上のフィールドに Google Cloud プロジェクト ID を入力するか、IT 管理者にお問い合わせください。",
+        "googleValidationRequired": "Gemini を使用する前にアカウントの確認が必要です。確認を完了してから、もう一度お試しください。",
+        "googleSetupFailed": "Gemini のセットアップに失敗しました。Google Workspace アカウントの場合は、上のフィールドにプロジェクト ID を入力してください。個人の Gmail の場合は、もう一度お試しください。"
     },
     "channel": {
         "title": "メッセージチャンネルを接続",

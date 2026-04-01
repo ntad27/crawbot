@@ -111,7 +111,13 @@
         "signInWithChatGPT": "使用 ChatGPT 登录",
         "chatGPTSignIn": "ChatGPT 登录",
         "waitingAuth": "等待浏览器授权...",
-        "oauthConfigured": "OAuth 配置成功"
+        "oauthConfigured": "OAuth 配置成功",
+        "googleProjectId": "Google Cloud 项目 ID",
+        "googleProjectIdPlaceholder": "my-project-id",
+        "googleProjectIdHint": "仅 Google Workspace / 企业账户需要填写。个人 Gmail 账户无需填写。",
+        "googleWorkspaceError": "您似乎使用的是 Google Workspace 或企业账户。您的组织需要 Google Cloud 项目才能使用 Gemini。请在上方输入 Google Cloud 项目 ID，或联系 IT 管理员。",
+        "googleValidationRequired": "Google 要求您在使用 Gemini 之前验证账户。请完成验证后重试。",
+        "googleSetupFailed": "无法为您的账户设置 Gemini。如果您使用 Google Workspace 账户，请在上方输入项目 ID。如果使用个人 Gmail，请重试。"
     },
     "channel": {
         "title": "连接消息频道",

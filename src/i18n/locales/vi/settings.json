@@ -85,7 +85,15 @@
             "chatGPTSignIn": "Đăng nhập ChatGPT",
             "waitingAuth": "Đang chờ ủy quyền từ trình duyệt...",
             "oauthActive": "OAuth đang hoạt động",
-            "reAuth": "Xác thực lại"
+            "reAuth": "Xác thực lại",
+            "googleProjectId": "Google Cloud Project ID",
+            "googleProjectIdPlaceholder": "my-project-id",
+            "googleProjectIdHint": "Chỉ cần thiết cho tài khoản Google Workspace / Doanh nghiệp. Tài khoản Gmail cá nhân không cần điền.",
+            "googleProjectIdHelp": "Hỏi quản trị viên IT của bạn để lấy Project ID đã bật Gemini API.",
+            "googleWorkspaceError": "Tài khoản của bạn thuộc Google Workspace / Doanh nghiệp. Tổ chức của bạn yêu cầu Google Cloud Project để sử dụng Gemini. Vui lòng nhập Google Cloud Project ID ở trên, hoặc liên hệ quản trị viên IT.",
+            "googleValidationRequired": "Google yêu cầu xác minh tài khoản trước khi sử dụng Gemini. Vui lòng hoàn tất xác minh rồi thử lại.",
+            "googleSetupFailed": "Không thể thiết lập Gemini cho tài khoản của bạn. Nếu bạn dùng tài khoản Google Workspace, hãy nhập Google Cloud Project ID ở trên. Nếu dùng Gmail cá nhân, vui lòng thử lại.",
+            "googleLoginSuccessSetupFailed": "Đăng nhập Google thành công nhưng thiết lập thất bại"
         }
     },
     "gateway": {

@@ -1087,6 +1087,7 @@ function ProviderContent({
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const [authMethod, setAuthMethod] = useState<'apikey' | 'oauth'>('apikey');
+  const [googleCloudProject, setGoogleCloudProject] = useState('');
   const allModels = useModelsStore((s) => s.models);
   const fetchModels = useModelsStore((s) => s.fetchModels);
 
@@ -1230,10 +1231,17 @@ function ProviderContent({
     try {
       // OAuth: oauth2 flow (Anthropic, Google, OpenAI Codex)
       if (effectiveAuthMethod === 'oauth' && selectedProviderData?.oauthType === 'oauth2') {
-        const result = await triggerOAuthLogin(selectedProvider);
+        const oauthOptions = selectedProvider === 'google' && googleCloudProject.trim()
+          ? { googleCloudProject: googleCloudProject.trim() }
+          : undefined;
+        const result = await triggerOAuthLogin(selectedProvider, oauthOptions);
         if (!result.success) {
           setKeyValid(false);
-          toast.error(result.error || t('provider.invalid'));
+          // Use translated error message if error code is available
+          const translatedError = result.errorCode
+            ? t(`provider.${result.errorCode}`, { defaultValue: '' })
+            : '';
+          toast.error(translatedError || result.error || t('provider.invalid'));
           setValidating(false);
           return;
         }
@@ -1498,6 +1506,32 @@ function ProviderContent({
           {/* OAuth: OAuth2 flow (Anthropic, Google, OpenAI Codex) */}
           {effectiveAuthMethod === 'oauth' && selectedProviderData?.oauthType === 'oauth2' && (
             <div className="space-y-3">
+              {/* Google Cloud Project ID — optional, for Workspace/enterprise accounts */}
+              {selectedProvider === 'google' && (
+                <div className="space-y-1.5">
+                  <label htmlFor="setupGoogleProjectId" className="text-sm font-medium">
+                    {t('provider.googleProjectId')}
+                  </label>
+                  <input
+                    id="setupGoogleProjectId"
+                    className="w-full px-3 py-2 text-sm rounded-md border border-input bg-background"
+                    placeholder={t('provider.googleProjectIdPlaceholder')}
+                    value={googleCloudProject}
+                    onChange={(e) => setGoogleCloudProject(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('provider.googleProjectIdHint')}{' '}
+                    <a
+                      href="https://ai.google.dev/gemini-api/docs/oauth"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      Learn more
+                    </a>
+                  </p>
+                </div>
+              )}
               {validating ? (
                 <div className="flex items-center gap-3 p-4 rounded-lg bg-muted/50">
                   <Loader2 className="h-5 w-5 animate-spin text-primary" />

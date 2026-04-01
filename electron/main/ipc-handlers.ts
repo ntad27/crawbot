@@ -2231,14 +2231,19 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
   // OAuth login (native PKCE flow — no CLI/TTY dependency)
   ipcMain.handle(
     'provider:oauthLogin',
-    async (_, providerType: string) => {
+    async (_, providerType: string, options?: { googleCloudProject?: string }) => {
       if (providerType === 'google') {
         try {
           const { runGoogleOAuthFlow } = await import('../utils/google-oauth');
-          return await runGoogleOAuthFlow();
+          return await runGoogleOAuthFlow(options);
         } catch (error) {
           logger.error('Google OAuth login failed:', error);
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
+          const errorCode = (error as Error & { errorCode?: string })?.errorCode;
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            ...(errorCode ? { errorCode } : {}),
+          };
         }
       }
 

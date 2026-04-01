@@ -111,7 +111,13 @@
         "signInWithChatGPT": "Đăng nhập bằng ChatGPT",
         "chatGPTSignIn": "Đăng nhập ChatGPT",
         "waitingAuth": "Đang chờ ủy quyền từ trình duyệt...",
-        "oauthConfigured": "Đã cấu hình OAuth thành công"
+        "oauthConfigured": "Đã cấu hình OAuth thành công",
+        "googleProjectId": "Google Cloud Project ID",
+        "googleProjectIdPlaceholder": "my-project-id",
+        "googleProjectIdHint": "Chỉ cần thiết cho tài khoản Google Workspace / Doanh nghiệp. Gmail cá nhân không cần điền.",
+        "googleWorkspaceError": "Tài khoản của bạn thuộc Google Workspace / Doanh nghiệp. Tổ chức của bạn yêu cầu Google Cloud Project để sử dụng Gemini. Vui lòng nhập Google Cloud Project ID ở trên, hoặc liên hệ quản trị viên IT.",
+        "googleValidationRequired": "Google yêu cầu xác minh tài khoản trước khi sử dụng Gemini. Vui lòng hoàn tất xác minh rồi thử lại.",
+        "googleSetupFailed": "Không thể thiết lập Gemini. Nếu bạn dùng tài khoản Google Workspace, hãy nhập Google Cloud Project ID ở trên. Nếu dùng Gmail cá nhân, vui lòng thử lại."
     },
     "channel": {
         "title": "Kết nối kênh nhắn tin",

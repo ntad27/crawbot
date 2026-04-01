@@ -616,6 +616,7 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [authMethod, setAuthMethod] = useState<'apikey' | 'oauth'>('apikey');
+  const [googleCloudProject, setGoogleCloudProject] = useState('');
   const { triggerOAuthLogin } = useProviderStore();
 
   const typeInfo = PROVIDER_TYPE_INFO.find((t) => t.id === selectedType);
@@ -638,9 +639,16 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
     try {
       // OAuth flow: oauth2 (Anthropic, Google, OpenAI Codex)
       if (effectiveAuthMethod === 'oauth' && typeInfo?.oauthType === 'oauth2') {
-        const result = await triggerOAuthLogin(selectedType);
+        const oauthOptions = selectedType === 'google' && googleCloudProject.trim()
+          ? { googleCloudProject: googleCloudProject.trim() }
+          : undefined;
+        const result = await triggerOAuthLogin(selectedType, oauthOptions);
         if (!result.success) {
-          setValidationError(result.error || t('aiProviders.toast.oauthFailed'));
+          // Use translated error message if error code is available
+          const translatedError = result.errorCode
+            ? t(`aiProviders.oauth.${result.errorCode}`, { defaultValue: '' })
+            : '';
+          setValidationError(translatedError || result.error || t('aiProviders.toast.oauthFailed'));
           setSaving(false);
           return;
         }
@@ -805,6 +813,31 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
               {/* OAuth: OAuth2 flow (Anthropic, Google, OpenAI Codex) */}
               {effectiveAuthMethod === 'oauth' && typeInfo?.oauthType === 'oauth2' && (
                 <div className="space-y-3">
+                  {/* Google Cloud Project ID — optional, for Workspace/enterprise accounts */}
+                  {selectedType === 'google' && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="googleProjectId" className="text-sm">
+                        {t('aiProviders.oauth.googleProjectId')}
+                      </Label>
+                      <Input
+                        id="googleProjectId"
+                        placeholder={t('aiProviders.oauth.googleProjectIdPlaceholder')}
+                        value={googleCloudProject}
+                        onChange={(e) => setGoogleCloudProject(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('aiProviders.oauth.googleProjectIdHint')}{' '}
+                        <a
+                          href="https://ai.google.dev/gemini-api/docs/oauth"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          {t('aiProviders.oauth.googleProjectIdHelp')}
+                        </a>
+                      </p>
+                    </div>
+                  )}
                   {saving ? (
                     <div className="flex items-center gap-3 p-4 rounded-lg bg-muted/50">
                       <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -827,7 +860,7 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
                     </Button>
                   )}
                   {validationError && (
-                    <p className="text-xs text-destructive">{validationError}</p>
+                    <p className="text-xs text-destructive whitespace-pre-wrap">{validationError}</p>
                   )}
                 </div>
               )}
