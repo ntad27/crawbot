@@ -2270,6 +2270,18 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
       return { success: false, error: `OAuth login not supported for provider type: ${providerType}` };
     }
   );
+
+  // Cancel a running OAuth flow (closes callback server, unblocks the waiting promise)
+  ipcMain.handle(
+    'provider:oauthCancel',
+    async (_, providerType: string) => {
+      if (providerType === 'openai-codex') {
+        const { cancelOpenAICodexOAuthFlow } = await import('../utils/openai-codex-oauth');
+        cancelOpenAICodexOAuthFlow();
+      }
+      // Other providers can be added here as needed
+    }
+  );
 }
 
 type ValidationProfile = 'openai-compatible' | 'google-query-key' | 'anthropic-header' | 'openrouter' | 'none';

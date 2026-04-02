@@ -42,6 +42,7 @@ interface ProviderState {
   getApiKey: (providerId: string) => Promise<string | null>;
   checkOAuthStatus: (providerType: string) => Promise<void>;
   triggerOAuthLogin: (providerType: string, options?: { googleCloudProject?: string }) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
+  cancelOAuthLogin: (providerType: string) => void;
   pasteSetupToken: (providerType: string, token: string) => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -316,6 +317,16 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       }));
       return { success: false, error: String(error) };
     }
+  },
+
+  cancelOAuthLogin: (providerType) => {
+    window.electron.ipcRenderer.invoke('provider:oauthCancel', providerType);
+    set((state) => ({
+      oauthStatus: {
+        ...state.oauthStatus,
+        [providerType]: { authenticated: false, checking: false },
+      },
+    }));
   },
 
   pasteSetupToken: async (providerType, token) => {

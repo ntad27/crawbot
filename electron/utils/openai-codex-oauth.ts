@@ -412,12 +412,34 @@ export function stopCodexProactiveTokenRefresh(): void {
   }
 }
 
+// ── Active flow tracking (for cancel & port-conflict cleanup) ──
+
+let activeCallbackServer: Server | null = null;
+
+function cleanupActiveServer(): void {
+  if (activeCallbackServer) {
+    try { activeCallbackServer.close(); } catch { /* ignore */ }
+    activeCallbackServer = null;
+    logger.info('[openai-codex-oauth] Cleaned up stale callback server');
+  }
+}
+
 // ── Public API ──
+
+/**
+ * Cancel any in-progress OAuth flow (closes callback server, unblocks waitForCallback).
+ */
+export function cancelOpenAICodexOAuthFlow(): void {
+  cleanupActiveServer();
+}
 
 export async function runOpenAICodexOAuthFlow(): Promise<{
   success: boolean;
   error?: string;
 }> {
+  // Clean up any stale server from a previous cancelled/failed attempt
+  cleanupActiveServer();
+
   // 1. Generate PKCE
   logger.info('Starting OpenAI Codex OAuth PKCE flow');
   const { verifier, challenge } = generatePkce();
@@ -425,50 +447,59 @@ export async function runOpenAICodexOAuthFlow(): Promise<{
 
   // 2. Start callback server (fixed port 1455 — OpenAI requires exact redirect_uri)
   const { server } = await startCallbackServer();
+  activeCallbackServer = server;
 
-  // 3. Build auth URL
-  const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    response_type: 'code',
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPES,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    state,
-    codex_cli_simplified_flow: 'true',
-    id_token_add_organizations: 'true',
-    originator: 'pi',
-  });
-  const authUrl = `${AUTH_URL}?${params}`;
+  try {
+    // 3. Build auth URL
+    const params = new URLSearchParams({
+      client_id: CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: REDIRECT_URI,
+      scope: SCOPES,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state,
+      codex_cli_simplified_flow: 'true',
+      id_token_add_organizations: 'true',
+      originator: 'pi',
+    });
+    const authUrl = `${AUTH_URL}?${params}`;
 
-  // 4. Open browser for consent
-  logger.info('Opening browser for OpenAI Codex OAuth consent');
-  await openExternalInDefaultProfile(authUrl);
+    // 4. Open browser for consent
+    logger.info('Opening browser for OpenAI Codex OAuth consent');
+    await openExternalInDefaultProfile(authUrl);
 
-  // 5. Wait for callback
-  const { code } = await waitForCallback(server, state, CALLBACK_TIMEOUT_MS);
-  logger.info('Received OAuth callback with authorization code');
+    // 5. Wait for callback
+    const { code } = await waitForCallback(server, state, CALLBACK_TIMEOUT_MS);
+    logger.info('Received OAuth callback with authorization code');
 
-  // 6. Exchange code for tokens
-  const tokens = await exchangeCodeForTokens(code, verifier);
-  logger.info('Token exchange successful');
+    // 6. Exchange code for tokens
+    const tokens = await exchangeCodeForTokens(code, verifier);
+    logger.info('Token exchange successful');
 
-  // 7. Extract accountId from JWT
-  const accountId = extractAccountId(tokens.access_token);
-  logger.info(`OpenAI Codex account: ${accountId || 'unknown'}`);
+    // 7. Extract accountId from JWT
+    const accountId = extractAccountId(tokens.access_token);
+    logger.info(`OpenAI Codex account: ${accountId || 'unknown'}`);
 
-  // 8. Write auth profile
-  const expires = Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000;
-  writeAuthProfile({
-    access: tokens.access_token,
-    refresh: tokens.refresh_token,
-    expires,
-    accountId,
-  });
-  logger.info('OpenAI Codex OAuth credentials saved to auth-profiles.json');
+    // 8. Write auth profile
+    const expires = Date.now() + tokens.expires_in * 1000 - 5 * 60 * 1000;
+    writeAuthProfile({
+      access: tokens.access_token,
+      refresh: tokens.refresh_token,
+      expires,
+      accountId,
+    });
+    logger.info('OpenAI Codex OAuth credentials saved to auth-profiles.json');
 
-  // Kick off proactive refresh for the new token
-  scheduleCodexRefresh();
+    // Kick off proactive refresh for the new token
+    scheduleCodexRefresh();
 
-  return { success: true };
+    return { success: true };
+  } finally {
+    // Always clean up the server reference
+    if (activeCallbackServer === server) {
+      activeCallbackServer = null;
+    }
+    try { server.close(); } catch { /* ignore */ }
+  }
 }

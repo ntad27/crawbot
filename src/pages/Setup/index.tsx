@@ -1091,7 +1091,7 @@ function ProviderContent({
   const allModels = useModelsStore((s) => s.models);
   const fetchModels = useModelsStore((s) => s.fetchModels);
 
-  const { triggerOAuthLogin } = useProviderStore();
+  const { triggerOAuthLogin, cancelOAuthLogin } = useProviderStore();
 
   // OAuth-only providers (supportsOAuth but no API key) skip the toggle
   const selectedProviderDataEarly = providers.find((p) => p.id === selectedProvider);
@@ -1533,11 +1533,23 @@ function ProviderContent({
                 </div>
               )}
               {validating ? (
-                <div className="flex items-center gap-3 p-4 rounded-lg bg-muted/50">
-                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                  <span className="text-sm text-muted-foreground">
-                    {t('provider.waitingAuth')}
-                  </span>
+                <div className="flex items-center justify-between gap-3 p-4 rounded-lg bg-muted/50">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <span className="text-sm text-muted-foreground">
+                      {t('provider.waitingAuth')}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      cancelOAuthLogin(selectedProvider);
+                      setValidating(false);
+                    }}
+                  >
+                    {t('provider.cancel', 'Cancel')}
+                  </Button>
                 </div>
               ) : null}
             </div>

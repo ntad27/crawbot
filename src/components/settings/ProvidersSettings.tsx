@@ -617,7 +617,7 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
   const [validationError, setValidationError] = useState<string | null>(null);
   const [authMethod, setAuthMethod] = useState<'apikey' | 'oauth'>('apikey');
   const [googleCloudProject, setGoogleCloudProject] = useState('');
-  const { triggerOAuthLogin } = useProviderStore();
+  const { triggerOAuthLogin, cancelOAuthLogin } = useProviderStore();
 
   const typeInfo = PROVIDER_TYPE_INFO.find((t) => t.id === selectedType);
 
@@ -933,7 +933,12 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
           <Separator />
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose}>
+            <Button variant="outline" onClick={() => {
+              if (saving && selectedType) {
+                cancelOAuthLogin(selectedType);
+              }
+              onClose();
+            }}>
               {t('aiProviders.dialog.cancel')}
             </Button>
             {/* Hide the Add button for oauth2 since the sign-in button is inline */}
