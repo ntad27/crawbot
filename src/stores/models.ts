@@ -116,6 +116,19 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
   setSelectedModel: async (modelId) => {
     set({ selectedModel: modelId });
 
+    // For custom/ollama providers, update openclaw.json config so the Gateway
+    // knows the baseUrl + api for routing. Then restart Gateway to pick it up.
+    if (modelId) {
+      const providerType = modelId.split('/')[0];
+      if (providerType === 'custom' || providerType === 'ollama') {
+        try {
+          await window.electron.ipcRenderer.invoke('provider:switchModel', modelId);
+        } catch (err) {
+          console.warn('Failed to switch custom provider model config:', err);
+        }
+      }
+    }
+
     // Patch the session model on the Gateway via sessions.patch
     try {
       const { useChatStore } = await import('./chat');

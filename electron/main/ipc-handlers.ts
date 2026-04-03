@@ -2112,6 +2112,47 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     return await getDefaultProvider();
   });
 
+  // Switch model for custom/ollama providers: update openclaw.json config and restart Gateway.
+  ipcMain.handle('provider:switchModel', async (_, modelId: string) => {
+    try {
+      // modelId format: "custom/gemma-4-e4b-it" or "ollama/llama3"
+      const slashIdx = modelId.indexOf('/');
+      if (slashIdx < 0) return { success: false, error: 'Invalid model ID format' };
+      const providerType = modelId.slice(0, slashIdx);
+
+      // Find a matching configured provider to get baseUrl
+      const allProviders = await getAllProvidersWithKeyInfo();
+      const matchingProvider = allProviders.find((p) => p.type === providerType && p.baseUrl);
+      if (!matchingProvider) {
+        return { success: false, error: `No configured ${providerType} provider with baseUrl found` };
+      }
+
+      // Update openclaw.json with the new model + baseUrl
+      setOpenClawDefaultModelWithOverride(providerType, modelId, {
+        baseUrl: matchingProvider.baseUrl,
+        api: 'openai-completions',
+      });
+
+      // Sync API key
+      const providerKey = await getApiKey(matchingProvider.id);
+      if (providerKey) {
+        saveProviderKeyToOpenClaw(providerType, providerKey);
+      }
+
+      // Restart Gateway to pick up config changes
+      if (gatewayManager.isConnected()) {
+        logger.info(`Restarting Gateway after custom model switch to "${modelId}"`);
+        void gatewayManager.restart().catch((err) => {
+          logger.warn('Gateway restart after model switch failed:', err);
+        });
+      }
+
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
   // Fetch available models from a custom/OpenAI-compatible provider's /v1/models endpoint.
   ipcMain.handle(
     'provider:fetchModels',
