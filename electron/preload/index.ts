@@ -83,6 +83,7 @@ const electronAPI = {
         'provider:setDefault',
         'provider:getDefault',
         'provider:validateKey',
+        'provider:fetchModels',
         'provider:pasteSetupToken',
         'provider:oauthLogin',
         'provider:oauthCancel',

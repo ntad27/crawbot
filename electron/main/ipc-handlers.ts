@@ -2112,6 +2112,75 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     return await getDefaultProvider();
   });
 
+  // Fetch available models from a custom/OpenAI-compatible provider's /v1/models endpoint.
+  ipcMain.handle(
+    'provider:fetchModels',
+    async (
+      _,
+      baseUrl: string,
+      apiKey?: string
+    ): Promise<{ success: boolean; models?: Array<{ id: string; name?: string }>; error?: string }> => {
+      try {
+        const trimmedBaseUrl = baseUrl?.trim();
+        if (!trimmedBaseUrl) {
+          return { success: false, error: 'Base URL is required' };
+        }
+
+        const base = normalizeBaseUrl(trimmedBaseUrl);
+        const headers: Record<string, string> = {};
+        if (apiKey?.trim()) {
+          headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+        }
+
+        // Try multiple endpoint patterns:
+        // 1. {base}/v1/models (LM Studio, most OpenAI-compatible servers)
+        // 2. {base}/models (if base already includes /v1)
+        const urlsToTry = base.endsWith('/v1')
+          ? [`${base}/models`]
+          : [`${base}/v1/models`, `${base}/models`];
+
+        let response: Response | null = null;
+        let lastError = '';
+        for (const modelsUrl of urlsToTry) {
+          console.log(`[crawbot-fetchModels] GET ${modelsUrl}`);
+          try {
+            const res = await fetch(modelsUrl, { headers });
+            if (res.ok) {
+              response = res;
+              break;
+            }
+            lastError = `API error: ${res.status}`;
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
+        }
+
+        if (!response) {
+          return { success: false, error: lastError };
+        }
+
+        const data = await response.json() as {
+          data?: Array<{ id: string; owned_by?: string }>;
+          models?: Array<{ id: string; name?: string }>;
+        };
+
+        // OpenAI format: { data: [...] }
+        // Some providers: { models: [...] }
+        const rawModels = data.data || data.models || [];
+        const models = rawModels.map((m: { id: string; name?: string }) => ({
+          id: m.id,
+          name: m.name || m.id,
+        }));
+
+        console.log(`[crawbot-fetchModels] Found ${models.length} models`);
+        return { success: true, models };
+      } catch (error) {
+        console.error('[crawbot-fetchModels] Error:', error);
+        return { success: false, error: `Connection error: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+  );
+
   // Validate API key by making a real test request to the provider.
   // providerId can be either a stored provider ID or a provider type.
   ipcMain.handle(
@@ -2365,7 +2434,11 @@ function normalizeBaseUrl(baseUrl: string): string {
 }
 
 function buildOpenAiModelsUrl(baseUrl: string): string {
-  return `${normalizeBaseUrl(baseUrl)}/models?limit=1`;
+  const base = normalizeBaseUrl(baseUrl);
+  // If base URL already ends with /v1, append /models directly
+  // Otherwise, insert /v1 (most OpenAI-compatible servers expect /v1/models)
+  const prefix = base.endsWith('/v1') ? base : `${base}/v1`;
+  return `${prefix}/models?limit=1`;
 }
 
 function logValidationRequest(

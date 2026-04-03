@@ -2,7 +2,7 @@
  * Providers Settings Component
  * Manage AI provider configurations and API keys
  */
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Plus,
   Trash2,
@@ -45,6 +45,8 @@ function ModelIdComboInput({
   placeholder,
   className,
   id,
+  baseUrl,
+  apiKey,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -52,21 +54,75 @@ function ModelIdComboInput({
   placeholder?: string;
   className?: string;
   id?: string;
+  /** For custom/ollama providers: fetch models directly from this endpoint */
+  baseUrl?: string;
+  /** For custom providers: API key for authentication */
+  apiKey?: string;
 }) {
   const allModels = useModelsStore((s) => s.models);
   const fetchModels = useModelsStore((s) => s.fetchModels);
   const typeInfo = PROVIDER_TYPE_INFO.find((t) => t.id === providerType);
+
+  // Custom provider models fetched directly from the endpoint
+  const [customModels, setCustomModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [fetchingCustom, setFetchingCustom] = useState(false);
+
+  // Fetch models from custom provider's /v1/models endpoint
+  const fetchCustomModels = useCallback(async () => {
+    if (!baseUrl?.trim()) return;
+    setFetchingCustom(true);
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'provider:fetchModels',
+        baseUrl,
+        apiKey || '',
+      ) as { success: boolean; models?: Array<{ id: string; name?: string }>; error?: string };
+      if (result.success && result.models) {
+        setCustomModels(result.models.map((m) => ({ id: m.id, name: m.name || m.id })));
+      }
+    } catch {
+      // silently fail — user can still type manually
+    } finally {
+      setFetchingCustom(false);
+    }
+  }, [baseUrl, apiKey]);
 
   // Refresh model catalog when the component mounts
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
 
+  // Auto-fetch custom models when baseUrl changes
+  useEffect(() => {
+    if (typeInfo?.showModelId && baseUrl?.trim()) {
+      fetchCustomModels();
+    }
+  }, [typeInfo?.showModelId, baseUrl, fetchCustomModels]);
+
   // Filter models for this provider from the synced catalog
   const providerModels = useMemo(
     () => allModels.filter((m) => m.provider === providerType),
     [allModels, providerType],
   );
+
+  // Merge gateway catalog models with directly-fetched custom models
+  const mergedModels = useMemo(() => {
+    const seen = new Set<string>();
+    const result: Array<{ id: string; name: string }> = [];
+    for (const m of customModels) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        result.push(m);
+      }
+    }
+    for (const m of providerModels) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        result.push({ id: m.id, name: m.name || m.id });
+      }
+    }
+    return result;
+  }, [customModels, providerModels]);
 
   // For built-in providers, use a proper <select> dropdown
   // Ensure the current value is always in the list
@@ -82,25 +138,40 @@ function ModelIdComboInput({
   if (typeInfo?.showModelId) {
     const datalistId = `model-list-${providerType}`;
     return (
-      <>
-        <Input
-          id={id}
-          list={datalistId}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className={className}
-        />
-        {providerModels.length > 0 && (
-          <datalist id={datalistId}>
-            {providerModels.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name || m.id}
-              </option>
-            ))}
-          </datalist>
+      <div className="flex gap-2">
+        <div className="flex-1 relative">
+          <Input
+            id={id}
+            list={datalistId}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            className={className}
+          />
+          {mergedModels.length > 0 && (
+            <datalist id={datalistId}>
+              {mergedModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </datalist>
+          )}
+        </div>
+        {baseUrl?.trim() && (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="shrink-0"
+            onClick={fetchCustomModels}
+            disabled={fetchingCustom}
+            title="Fetch models from provider"
+          >
+            <RefreshCw className={cn('h-4 w-4', fetchingCustom && 'animate-spin')} />
+          </Button>
         )}
-      </>
+      </div>
     );
   }
 
@@ -430,6 +501,7 @@ function ProviderCard({
                   providerType={provider.type}
                   placeholder={typeInfo?.modelIdPlaceholder || typeInfo?.defaultModelId || 'provider/model-id'}
                   className="h-9 text-sm"
+                  baseUrl={baseUrl || provider.baseUrl}
                 />
               </div>
             )}
@@ -922,6 +994,8 @@ function AddProviderDialog({ existingTypes, onClose, onAdd, onValidateKey }: Add
                         }}
                         providerType={selectedType || ''}
                         placeholder={typeInfo?.modelIdPlaceholder || typeInfo?.defaultModelId || 'provider/model-id'}
+                        baseUrl={baseUrl}
+                        apiKey={apiKey}
                       />
                     </div>
                   )}

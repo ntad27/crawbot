@@ -66,6 +66,43 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
           filtered = filtered.filter((m) => m.provider !== 'google');
         }
 
+        // Inject models from custom/ollama providers by fetching their /v1/models endpoints
+        const customProviders = providers.filter(
+          (p) => (p.type === 'custom' || p.type === 'ollama') && p.baseUrl,
+        );
+        const existingIds = new Set(filtered.map((m) => `${m.provider}/${m.id}`));
+        const customFetches = customProviders.map(async (p) => {
+          try {
+            const res = await window.electron.ipcRenderer.invoke(
+              'provider:fetchModels',
+              p.baseUrl,
+              '',
+            ) as { success: boolean; models?: Array<{ id: string; name?: string }> };
+            if (res.success && res.models) {
+              return res.models.map((m) => ({
+                id: m.id,
+                name: m.name || m.id,
+                provider: p.type,
+              }));
+            }
+          } catch { /* ignore */ }
+          // Fallback: if the provider has a saved model, include it
+          if (p.model) {
+            return [{ id: p.model, name: p.model, provider: p.type }];
+          }
+          return [];
+        });
+        const customResults = await Promise.all(customFetches);
+        for (const models of customResults) {
+          for (const m of models) {
+            const key = `${m.provider}/${m.id}`;
+            if (!existingIds.has(key)) {
+              existingIds.add(key);
+              filtered.push(m);
+            }
+          }
+        }
+
         set({ models: filtered, loading: false });
       } else {
         set({ models: [], loading: false, error: result.error || 'No models returned' });
