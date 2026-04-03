@@ -522,6 +522,67 @@ export function setOpenClawDefaultModelWithOverride(
 }
 
 /**
+ * Register a custom/ollama provider in openclaw.json WITHOUT changing the default model.
+ * Only writes models.providers.{type} config (baseUrl, api, models list).
+ */
+export function registerOpenClawProviderConfig(
+  provider: string,
+  options: { baseUrl: string; api: string; modelId?: string }
+): void {
+  const configPath = join(homedir(), '.openclaw', 'openclaw.json');
+
+  let config: Record<string, unknown> = {};
+  try {
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    }
+  } catch (err) {
+    console.warn('Failed to read openclaw.json:', err);
+  }
+
+  const models = (config.models || {}) as Record<string, unknown>;
+  const providers = (models.providers || {}) as Record<string, unknown>;
+
+  const existingProvider =
+    providers[provider] && typeof providers[provider] === 'object'
+      ? (providers[provider] as Record<string, unknown>)
+      : {};
+
+  const existingModels = Array.isArray(existingProvider.models)
+    ? (existingProvider.models as Array<Record<string, unknown>>)
+    : [];
+  const mergedModels = [...existingModels];
+  if (options.modelId && !mergedModels.some((m) => m.id === options.modelId)) {
+    mergedModels.push({ id: options.modelId, name: options.modelId });
+  }
+
+  // Normalize baseUrl: ensure /v1 suffix for OpenAI-compatible APIs
+  let normalizedBaseUrl = options.baseUrl.trim().replace(/\/+$/, '');
+  if (options.api === 'openai-completions' && !normalizedBaseUrl.endsWith('/v1')) {
+    normalizedBaseUrl = `${normalizedBaseUrl}/v1`;
+  }
+
+  providers[provider] = {
+    ...existingProvider,
+    baseUrl: normalizedBaseUrl,
+    api: options.api,
+    models: mergedModels,
+  };
+  models.providers = providers;
+  config.models = models;
+
+  const dir = join(configPath, '..');
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  console.log(
+    `Registered OpenClaw provider config for "${provider}" (baseUrl: ${normalizedBaseUrl})`
+  );
+}
+
+/**
  * Repair auth profiles with wrong field names.
  * A previous version wrote Anthropic OAuth profiles with token/refreshToken/expiresAt
  * instead of the correct access/refresh/expires for type: "oauth".

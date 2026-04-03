@@ -42,6 +42,7 @@ import {
   removeProviderFromOpenClawConfig,
   setOpenClawDefaultModel,
   setOpenClawDefaultModelWithOverride,
+  registerOpenClawProviderConfig,
 } from '../utils/openclaw-auth';
 import { logger } from '../utils/logger';
 import {
@@ -1803,15 +1804,14 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         }
       }
 
-      // For custom/ollama providers, update openclaw.json config and restart Gateway
-      if (config.type === 'custom' || config.type === 'ollama') {
+      // For custom/ollama providers, register provider config in openclaw.json
+      // (baseUrl + models list) without changing the default model, then restart Gateway.
+      if ((config.type === 'custom' || config.type === 'ollama') && config.baseUrl) {
         try {
-          const modelOverride = config.model
-            ? `${config.type}/${config.model}`
-            : undefined;
-          setOpenClawDefaultModelWithOverride(config.type, modelOverride, {
+          registerOpenClawProviderConfig(config.type, {
             baseUrl: config.baseUrl,
             api: 'openai-completions',
+            modelId: config.model,
           });
         } catch (err) {
           console.warn('Failed to write custom provider config to OpenClaw:', err);
@@ -1977,30 +1977,41 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         }
 
         // Re-apply OpenClaw config so model/baseUrl changes take effect.
-        // For custom/ollama providers, always update config and restart Gateway
-        // (they need baseUrl in openclaw.json regardless of default status).
+        // Re-apply OpenClaw config so model/baseUrl changes take effect.
         const currentDefault = await getDefaultProvider();
         const isDefault = currentDefault === providerId;
         const isCustomProvider = nextConfig.type === 'custom' || nextConfig.type === 'ollama';
 
         if (isDefault || isCustomProvider) {
           try {
-            let modelOverride = nextConfig.model
-              ? `${nextConfig.type}/${nextConfig.model}`
-              : undefined;
-
-            const providerHasKey = await hasApiKey(providerId);
-            if (nextConfig.type === 'google' && !providerHasKey) {
-              const googleModel = nextConfig.model || 'gemini-3-pro-preview';
-              modelOverride = `google-gemini-cli/${googleModel}`;
-            }
-
             if (isCustomProvider) {
-              setOpenClawDefaultModelWithOverride(nextConfig.type, modelOverride, {
-                baseUrl: nextConfig.baseUrl,
+              // For custom/ollama: register provider config without changing default model
+              registerOpenClawProviderConfig(nextConfig.type, {
+                baseUrl: nextConfig.baseUrl || '',
                 api: 'openai-completions',
+                modelId: nextConfig.model,
               });
+              // Only set as default model if this provider IS the default
+              if (isDefault) {
+                const modelOverride = nextConfig.model
+                  ? `${nextConfig.type}/${nextConfig.model}`
+                  : undefined;
+                setOpenClawDefaultModelWithOverride(nextConfig.type, modelOverride, {
+                  baseUrl: nextConfig.baseUrl,
+                  api: 'openai-completions',
+                });
+              }
             } else {
+              // Built-in providers: update default model as before
+              let modelOverride = nextConfig.model
+                ? `${nextConfig.type}/${nextConfig.model}`
+                : undefined;
+
+              const providerHasKey = await hasApiKey(providerId);
+              if (nextConfig.type === 'google' && !providerHasKey) {
+                const googleModel = nextConfig.model || 'gemini-3-pro-preview';
+                modelOverride = `google-gemini-cli/${googleModel}`;
+              }
               setOpenClawDefaultModel(nextConfig.type, modelOverride);
             }
 
@@ -2145,14 +2156,15 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     return await getDefaultProvider();
   });
 
-  // Switch model for custom/ollama providers: update openclaw.json config.
-  // OpenClaw reads openclaw.json per-request, so no gateway restart needed.
+  // Switch model for custom/ollama providers: register provider config in openclaw.json
+  // WITHOUT changing the default model. sessions.patch handles the session-level switch.
   ipcMain.handle('provider:switchModel', async (_, modelId: string) => {
     try {
       // modelId format: "custom/gemma-4-e4b-it" or "ollama/llama3"
       const slashIdx = modelId.indexOf('/');
       if (slashIdx < 0) return { success: false, error: 'Invalid model ID format' };
       const providerType = modelId.slice(0, slashIdx);
+      const modelName = modelId.slice(slashIdx + 1);
 
       // Find a matching configured provider to get baseUrl
       const allProviders = await getAllProvidersWithKeyInfo();
@@ -2161,10 +2173,11 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         return { success: false, error: `No configured ${providerType} provider with baseUrl found` };
       }
 
-      // Update openclaw.json with the new model + baseUrl
-      setOpenClawDefaultModelWithOverride(providerType, modelId, {
+      // Only register provider config (baseUrl + model), don't change default model
+      registerOpenClawProviderConfig(providerType, {
         baseUrl: matchingProvider.baseUrl,
         api: 'openai-completions',
+        modelId: modelName,
       });
 
       // Sync API key
