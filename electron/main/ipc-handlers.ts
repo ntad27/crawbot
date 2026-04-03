@@ -1803,6 +1803,27 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         }
       }
 
+      // For custom/ollama providers, update openclaw.json config and restart Gateway
+      if (config.type === 'custom' || config.type === 'ollama') {
+        try {
+          const modelOverride = config.model
+            ? `${config.type}/${config.model}`
+            : undefined;
+          setOpenClawDefaultModelWithOverride(config.type, modelOverride, {
+            baseUrl: config.baseUrl,
+            api: 'openai-completions',
+          });
+        } catch (err) {
+          console.warn('Failed to write custom provider config to OpenClaw:', err);
+        }
+        if (gatewayManager.isConnected()) {
+          logger.info(`Restarting Gateway after adding ${config.type} provider "${config.name}"`);
+          void gatewayManager.restart().catch((err) => {
+            logger.warn('Gateway restart after provider add failed:', err);
+          });
+        }
+      }
+
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -1883,6 +1904,14 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         }
       }
 
+      // Restart Gateway so it picks up the removed provider config
+      if (!wasDefault && gatewayManager.isConnected()) {
+        logger.info(`Restarting Gateway after deleting provider "${providerId}"`);
+        void gatewayManager.restart().catch((err) => {
+          logger.warn('Gateway restart after provider delete failed:', err);
+        });
+      }
+
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -1947,10 +1976,14 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
           }
         }
 
-        // If this provider is the current default, re-apply OpenClaw config
-        // so model/baseUrl changes take effect immediately.
+        // Re-apply OpenClaw config so model/baseUrl changes take effect.
+        // For custom/ollama providers, always update config and restart Gateway
+        // (they need baseUrl in openclaw.json regardless of default status).
         const currentDefault = await getDefaultProvider();
-        if (currentDefault === providerId) {
+        const isDefault = currentDefault === providerId;
+        const isCustomProvider = nextConfig.type === 'custom' || nextConfig.type === 'ollama';
+
+        if (isDefault || isCustomProvider) {
           try {
             let modelOverride = nextConfig.model
               ? `${nextConfig.type}/${nextConfig.model}`
@@ -1962,7 +1995,7 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
               modelOverride = `google-gemini-cli/${googleModel}`;
             }
 
-            if (nextConfig.type === 'custom' || nextConfig.type === 'ollama') {
+            if (isCustomProvider) {
               setOpenClawDefaultModelWithOverride(nextConfig.type, modelOverride, {
                 baseUrl: nextConfig.baseUrl,
                 api: 'openai-completions',
@@ -1972,7 +2005,7 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
             }
 
             if (gatewayManager.isConnected()) {
-              logger.info(`Restarting Gateway after default provider config update`);
+              logger.info(`Restarting Gateway after ${isCustomProvider ? 'custom' : 'default'} provider config update`);
               void gatewayManager.restart().catch((err) => {
                 logger.warn('Gateway restart after provider update failed:', err);
               });
@@ -2112,7 +2145,8 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     return await getDefaultProvider();
   });
 
-  // Switch model for custom/ollama providers: update openclaw.json config and restart Gateway.
+  // Switch model for custom/ollama providers: update openclaw.json config.
+  // OpenClaw reads openclaw.json per-request, so no gateway restart needed.
   ipcMain.handle('provider:switchModel', async (_, modelId: string) => {
     try {
       // modelId format: "custom/gemma-4-e4b-it" or "ollama/llama3"
@@ -2139,14 +2173,6 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
         saveProviderKeyToOpenClaw(providerType, providerKey);
       }
 
-      // Restart Gateway to pick up config changes
-      if (gatewayManager.isConnected()) {
-        logger.info(`Restarting Gateway after custom model switch to "${modelId}"`);
-        void gatewayManager.restart().catch((err) => {
-          logger.warn('Gateway restart after model switch failed:', err);
-        });
-      }
-
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -2159,7 +2185,8 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
     async (
       _,
       baseUrl: string,
-      apiKey?: string
+      apiKey?: string,
+      providerId?: string
     ): Promise<{ success: boolean; models?: Array<{ id: string; name?: string }>; error?: string }> => {
       try {
         const trimmedBaseUrl = baseUrl?.trim();
@@ -2167,10 +2194,17 @@ function registerProviderHandlers(gatewayManager: GatewayManager): void {
           return { success: false, error: 'Base URL is required' };
         }
 
+        // Resolve API key: use provided key, or look up from keychain via providerId
+        let resolvedKey = apiKey?.trim() || '';
+        if (!resolvedKey && providerId) {
+          const storedKey = await getApiKey(providerId);
+          if (storedKey) resolvedKey = storedKey;
+        }
+
         const base = normalizeBaseUrl(trimmedBaseUrl);
         const headers: Record<string, string> = {};
-        if (apiKey?.trim()) {
-          headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+        if (resolvedKey) {
+          headers['Authorization'] = `Bearer ${resolvedKey}`;
         }
 
         // Try multiple endpoint patterns:

@@ -47,6 +47,7 @@ function ModelIdComboInput({
   id,
   baseUrl,
   apiKey,
+  providerId,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -58,6 +59,8 @@ function ModelIdComboInput({
   baseUrl?: string;
   /** For custom providers: API key for authentication */
   apiKey?: string;
+  /** Provider ID to look up API key from keychain when apiKey prop is not provided */
+  providerId?: string;
 }) {
   const allModels = useModelsStore((s) => s.models);
   const fetchModels = useModelsStore((s) => s.fetchModels);
@@ -76,6 +79,7 @@ function ModelIdComboInput({
         'provider:fetchModels',
         baseUrl,
         apiKey || '',
+        providerId || '',
       ) as { success: boolean; models?: Array<{ id: string; name?: string }>; error?: string };
       if (result.success && result.models) {
         setCustomModels(result.models.map((m) => ({ id: m.id, name: m.name || m.id })));
@@ -85,7 +89,7 @@ function ModelIdComboInput({
     } finally {
       setFetchingCustom(false);
     }
-  }, [baseUrl, apiKey]);
+  }, [baseUrl, apiKey, providerId]);
 
   // Refresh model catalog when the component mounts
   useEffect(() => {
@@ -134,28 +138,45 @@ function ModelIdComboInput({
     return result;
   }, [providerModels, value]);
 
-  // For freeform providers (ollama, custom) keep the text input + datalist
+  // For freeform providers (ollama, custom) use a select dropdown + manual input toggle
   if (typeInfo?.showModelId) {
-    const datalistId = `model-list-${providerType}`;
+    // Ensure current value is in the list
+    const selectOptions = [...mergedModels];
+    if (value && !selectOptions.some((m) => m.id === value)) {
+      selectOptions.unshift({ id: value, name: value });
+    }
+
     return (
       <div className="flex gap-2">
-        <div className="flex-1 relative">
-          <Input
-            id={id}
-            list={datalistId}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={placeholder}
-            className={className}
-          />
-          {mergedModels.length > 0 && (
-            <datalist id={datalistId}>
-              {mergedModels.map((m) => (
+        <div className="flex-1">
+          {mergedModels.length > 0 ? (
+            <select
+              id={id}
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              className={cn(
+                'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                className,
+              )}
+            >
+              {!value && (
+                <option value="">{placeholder || 'Select model...'}</option>
+              )}
+              {selectOptions.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
                 </option>
               ))}
-            </datalist>
+            </select>
+          ) : (
+            <Input
+              id={id}
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={placeholder}
+              className={className}
+            />
           )}
         </div>
         {baseUrl?.trim() && (
@@ -502,6 +523,7 @@ function ProviderCard({
                   placeholder={typeInfo?.modelIdPlaceholder || typeInfo?.defaultModelId || 'provider/model-id'}
                   className="h-9 text-sm"
                   baseUrl={baseUrl || provider.baseUrl}
+                  providerId={provider.id}
                 />
               </div>
             )}

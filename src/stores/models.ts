@@ -77,6 +77,7 @@ export const useModelsStore = create<ModelsState>((set, get) => ({
               'provider:fetchModels',
               p.baseUrl,
               '',
+              p.id,
             ) as { success: boolean; models?: Array<{ id: string; name?: string }> };
             if (res.success && res.models) {
               return res.models.map((m) => ({

@@ -482,9 +482,16 @@ export function setOpenClawDefaultModelWithOverride(
       mergedModels.push({ id: modelId, name: modelId });
     }
 
+    // Ensure baseUrl includes /v1 for OpenAI-compatible APIs.
+    // OpenClaw appends /chat/completions to baseUrl, so it needs the /v1 prefix.
+    let normalizedBaseUrl = override.baseUrl.trim().replace(/\/+$/, '');
+    if (override.api === 'openai-completions' && !normalizedBaseUrl.endsWith('/v1')) {
+      normalizedBaseUrl = `${normalizedBaseUrl}/v1`;
+    }
+
     const nextProvider: Record<string, unknown> = {
       ...existingProvider,
-      baseUrl: override.baseUrl,
+      baseUrl: normalizedBaseUrl,
       api: override.api,
       models: mergedModels,
     };
